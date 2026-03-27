@@ -1,0 +1,151 @@
+---
+version: 1
+short-desc: "DESTRUCTIVE end-to-end functional tests — modifies instance state"
+reads:
+  - "^/.codex/"
+  - "^/.state/"
+  - "^/.claude/"
+  - "^/.templates/"
+writes:
+  - "^/.state/tests/explicit/test-burn/"
+  - "^/test-burn-child/"
+---
+
+# test-burn
+
+Functional end-to-end test suite. Creates temporary state, exercises commands, verifies results, cleans up. **This test modifies the instance** — creates files, runs purge, creates and deletes a child project.
+
+Run `test-safe` first to verify structural integrity.
+
+## Usage
+
+`test-burn` — run all functional tests
+
+## Procedure
+
+Run each phase in order. Print `[PASS]` or `[FAIL]` per step. On failure, print detail. At the end, print a summary and write the full log to `^/.state/tests/explicit/test-burn/YYYY-MM-DDTHHMM.log`.
+
+---
+
+### Phase 1: Child Project Lifecycle
+
+**B01** — Create child project via bootstrap-child.py
+Action: Run `python .codex/explicit/new-project/bootstrap-child.py test-burn-child --project-root ^`
+Condition: exit code 0, directory `^/test-burn-child/` exists
+
+**B02** — Child has CLAUDE.md with correct frontmatter
+Action: read `^/test-burn-child/CLAUDE.md`
+Condition: frontmatter contains `root: true` and `codex: ^/^/.codex`
+
+**B03** — Child has .state/ scaffolding
+Action: check directories exist
+Condition: `memory/`, `work/`, `tests/`, `traces/` all exist under `^/test-burn-child/.state/`
+
+**B04** — Child has .gitignore
+Action: check file exists
+Condition: `^/test-burn-child/.gitignore` exists and contains `_*`
+
+**B05** — Child has .claude/settings.local.json with correct absolute path
+Action: read `^/test-burn-child/.claude/settings.local.json`
+Condition: `autoMemoryDirectory` is an absolute path ending in `test-burn-child/.state/memory`
+
+---
+
+### Phase 2: Scrub
+
+**B06** — scrub.py runs in full mode without error
+Action: Run `python .codex/explicit/scrub/scrub.py full --project-root ^`
+Condition: exit code is 0 (clean) or 1 (matches found — both are valid, not 2 which is error)
+
+**B07** — Scrub report was written
+Action: check `.state/tests/explicit/scrub/` for a file matching `scrub-*.md`
+Condition: at least one report file exists
+
+---
+
+### Phase 3: State Accumulation (create junk to purge)
+
+**B08** — Create fake trace file
+Action: write `[2099-01-01T00:00:00Z] TEST: burn test marker` to `.state/traces/2099-01-01.trace`
+Condition: file exists after write
+
+**B09** — Create fake boot log
+Action: write `Test boot log` to `.state/tests/boot/2099-01-01T0000.log`
+Condition: file exists after write
+
+**B10** — Create fake session artifact
+Action: write `[]` to `.claude/test-burn-session.jsonl`
+Condition: file exists after write
+
+**B11** — Create fake memory file
+Action: write a test memory file to `.state/memory/test-burn-memory.md` with proper frontmatter (type: project, name: burn test)
+Condition: file exists after write
+
+---
+
+### Phase 4: Purge Default (dry run first)
+
+**B12** — purge.py dry-run lists expected files
+Action: Run `python .codex/explicit/purge/purge.py default --project-root ^ --dry-run`
+Condition: output contains "would remove" for the fake trace, boot log, and session artifact. Output does NOT contain "would remove" for memory files (default scope preserves memory).
+
+**B13** — purge.py default actually removes transient files
+Action: Run `python .codex/explicit/purge/purge.py default --project-root ^`
+Condition: fake trace file gone, fake boot log gone, fake session artifact gone. Fake memory file STILL EXISTS (default scope preserves memory).
+
+---
+
+### Phase 5: Purge All
+
+**B14** — purge.py all removes memory and work files
+Action: Run `python .codex/explicit/purge/purge.py all --project-root ^ --confirm`
+Condition: fake memory file is now gone. `.state/memory/` directory may still exist but `test-burn-memory.md` is deleted.
+
+**B15** — Never-purge items survived
+Action: check these paths still exist after purge all
+Condition: `.codex/start.md` exists, `.state/tests/audits/start.md` exists, `.state/pauses/` exists (as directory), `.state/bundles/start.md` exists
+
+---
+
+### Phase 6: Restore & Cleanup
+
+**B16** — Restore core files deleted by purge all
+Action: for each file below, check if it exists first. Only recreate it if missing (start.md files survive purge and should already be present — read before writing if they need updating):
+- `.state/memory/user.md` — write frontmatter: `name: User profile`, `type: user`
+- `.state/memory/decisions.md` — write: `# Design Decisions`
+- `.state/memory/state-abstract.md` — write frontmatter: `name: State abstract`, `type: abstract`
+- `.state/work/backlog.md` — write: `# Backlog` with empty High/Medium/Low Priority sections
+- `.state/work/platform.md` — write: `# Platform Constraints`
+- `.state/work/architecture.md` — write: `# Architecture Debt`
+- `.state/work/boundaries.md` — write: `# Boundary Gaps`
+- `.state/work/enhancements.md` — write: `# Enhancements`
+- `.state/traces/start.md` — should already exist (never-purged); only recreate if missing
+Condition: all 9 files exist after restoration
+
+**B17** — Delete test child project
+Action: Run `bash -c "rm -rf ^/test-burn-child"`
+Condition: directory no longer exists
+
+**B18** — Verify no test artifacts remain
+Action: check that `test-burn-memory.md`, `2099-01-01.trace`, `2099-01-01T0000.log`, `test-burn-session.jsonl` do not exist
+Condition: none of these files exist
+
+---
+
+## Summary
+
+Print final results:
+
+```
+═══════════════════════════════════════
+  test-burn: 18/18 passed
+═══════════════════════════════════════
+```
+
+## Notes
+
+- The child project uses `test-burn-child` (no prefix) to avoid collision with naming conventions (`_` = invisible, `.` = internal, `+` = kit). Cleaned up in Phase 6.
+- Phase 3 creates files with year-2099 timestamps to avoid colliding with real data.
+- Phase 5 uses `--confirm` to skip the interactive prompt (the protocol-level CONFIRMED HOLD is for human sessions, not automated tests).
+- Phase 6 restores blank stubs for core files that purge all removed, ensuring test-safe passes afterward.
+- Run `cboot.py` after test-burn to restore generated artifacts (prefs-resolved.json, settings.json, skill shims).

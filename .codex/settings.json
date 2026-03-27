@@ -1,0 +1,6 @@
+{
+  "$comment": "Codex-authoritative Claude Code settings. Materialized to .claude/settings.json at boot by codex-register.",
+  "modules": {
+    "statusline": ".codex/implicit/01-infrastructural/01b-materialization/statusline/settings.json"
+  }
+}

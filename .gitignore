@@ -1,0 +1,36 @@
+# ── Claudette2 .gitignore ──
+# Inverted model: ignore everything, whitelist framework.
+# Child projects (their own git repos) are invisible by default.
+
+# Ignore everything
+*
+
+# ── Root-level framework files ──
+!/*.py
+!/*.md
+!/.gitignore
+
+# ── Framework directories (fully tracked) ──
+!/.codex/
+!/.codex/**
+!/.templates/
+!/.templates/**
+
+# ── State directory (structure only, see .state/.gitignore) ──
+!/.state/
+!/.state/**
+
+# ── Generated (never track) ──
+.claude/
+
+# ── OS / editor artifacts (belt-and-suspenders) ──
+.DS_Store
+Thumbs.db
+desktop.ini
+*.swp
+*.swo
+
+# ── Secrets (never track) ──
+.env*
+*.key
+*.pem

@@ -1,0 +1,14 @@
+# Scrub patterns — one regex per line
+# Lines starting with # are comments
+# Matched against added lines (diff mode) or all lines (full mode)
+#
+# Add your own patterns below. Examples:
+#   First\s+Last              (real name)
+#   (?i)Users[/\\]username    (username in paths)
+#
+# Common secrets patterns (recommended):
+(?i)(api[_-]?key|api[_-]?secret|access[_-]?token|auth[_-]?token|bearer)\s*[:=]\s*\S+
+(?i)(password|passwd|pwd)\s*[:=]\s*["']?\S+
+(?i)sk-[a-zA-Z0-9]{20,}
+(?i)ghp_[a-zA-Z0-9]{36,}
+(?i)-----BEGIN\s+(RSA\s+)?PRIVATE\sKEY-----
