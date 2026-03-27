@@ -1,8 +1,8 @@
-# Claudette2
+# Claudette
 
-Claudette2 is a governance framework for Claude Code. It gives you enforced rules, persistent memory across sessions, and built-in commands for common workflows -- all without requiring you to hand-manage a sprawling CLAUDE.md file.
+Claudette is a governance framework for Claude Code. It gives you enforced rules, persistent memory across sessions, and built-in commands for common workflows -- all without requiring you to hand-manage a sprawling CLAUDE.md file.
 
-If you have used Claude Code before, you know the pattern: write a CLAUDE.md with instructions, hope Claude follows them, lose context when a session ends. Claudette2 replaces that with a modular system where rules are structurally enforced by hooks, state persists cleanly across sessions, and projects can nest inside each other.
+If you have used Claude Code before, you know the pattern: write a CLAUDE.md with instructions, hope Claude follows them, lose context when a session ends. Claudette replaces that with a modular system where rules are structurally enforced by hooks, state persists cleanly across sessions, and projects can nest inside each other.
 
 ## Quick Start
 
