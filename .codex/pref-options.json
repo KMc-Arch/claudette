@@ -1,0 +1,14 @@
+{
+    "tone": {
+        "description": "Controls verbosity and style of all output.",
+        "options": ["concise", "detailed", "conversational", "formal"],
+        "default": "concise",
+        "default_context": "No filler, no preamble. Lead with the answer."
+    },
+    "emojis": {
+        "description": "Whether to use emojis in output.",
+        "options": [true, false],
+        "default": false,
+        "default_context": "Never use emojis unless explicitly requested."
+    }
+}
