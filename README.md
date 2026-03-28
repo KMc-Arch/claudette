@@ -4,17 +4,15 @@ Claudette is a governance framework for Claude Code. It replaces hand-managed CL
 
 ## Why Claudette Exists
 
-Claude Code provides powerful primitives: hooks, CLAUDE.md hierarchy, skills, commands. But it ships **zero pre-built governance**. You get the raw materials and assemble them yourself -- every time, from scratch, untested.
+Claude Code ships hooks, CLAUDE.md hierarchy, skills, and commands -- but no pre-built governance. Claudette assembles these primitives into a tested system:
 
-Claudette is the assembled, tested system. Clone once, boot once, and you have:
+**Structural enforcement.** 13 hook scripts execute at the tool-call level and block violations before Claude acts -- file containment, visibility guards, state gravity between parent/child projects, API access restrictions, audit immutability. Shell-level gates, not directives.
 
-**Structural enforcement, not just instructions.** 13 hook scripts execute at the tool-call level and block violations before Claude can act. A visibility guard prevents reading private files. A containment guard prevents writes outside the project. A gravity guard prevents child projects from leaking state into parent projects. An API guard blocks unauthorized Anthropic API calls. These are shell-level gates, not suggestions in a markdown file.
+**Persistent state.** Memory, work tracking (backlog, architecture debt, boundary gaps), session traces, and structured pause/unpause. All in `.state/`, persisted in your project across sessions.
 
-**State that survives sessions.** Memory (who you are, what decisions were made), work tracking (backlog, architecture debt, boundary gaps), session traces, and structured pause/unpause for picking up exactly where you left off. All in `.state/`, governed by the framework, persisted in your project.
+**Multi-project isolation.** Child projects inherit the parent's rules automatically, each as its own git repo with its own state. A gravity guard hook prevents child sessions from writing to parent state.
 
-**Multi-project governance with isolation.** Create child projects that inherit the parent's rules automatically. Each child is its own git repo with its own state. State gravity -- enforced by a hook -- ensures a child session cannot accidentally write to a parent's memory or backlog.
-
-**A framework that tests itself.** 4-tier verification: `ctest.py` validates bootstrap outputs, `chooks.py` tests all 13 hook scripts with mock JSON, `test-safe` runs 60 structural checks from inside a Claude session, `test-burn` exercises commands end-to-end. The hooks are shell scripts with concrete behavior -- testing them is standard engineering practice.
+**Self-testing.** 4-tier verification: `ctest.py` (bootstrap outputs), `chooks.py` (hook behavior via mock JSON), `test-safe` (60 structural checks inside a Claude session), `test-burn` (end-to-end command exercise).
 
 ## Quick Start
 
