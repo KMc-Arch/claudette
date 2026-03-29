@@ -336,12 +336,111 @@ def check_scripts(t, p):
         "scrub.py": p["codex"] / "explicit" / "scrub" / "scrub.py",
         "purge.py": p["codex"] / "explicit" / "purge" / "purge.py",
         "bootstrap-child.py": p["codex"] / "explicit" / "new-project" / "bootstrap-child.py",
+        "child_propagate.py": p["codex"] / "implicit" / "00-preboot" / "child_propagate.py",
     }
     missing = [name for name, path in scripts.items() if not path.is_file()]
     if missing:
         t.fail("V17", "Python scripts exist", f"Missing: {', '.join(missing)}")
     else:
         t.ok("V17", f"Scripts: all {len(scripts)} present")
+
+
+def check_child_propagation(t, p):
+    """V18-V21: Child project propagation artifacts are correct."""
+    # Discover children (lightweight re-implementation to keep ctest self-contained)
+    children = []
+    for d in sorted(p["root"].iterdir()):
+        if not d.is_dir() or d.name.startswith(".") or d.name.startswith("_"):
+            continue
+        claude_md = d / "CLAUDE.md"
+        if not claude_md.is_file():
+            continue
+        try:
+            text = claude_md.read_text(encoding="utf-8")
+            if text.startswith("---"):
+                end = text.find("---", 3)
+                if end != -1 and "root: true" in text[3:end]:
+                    children.append(d)
+        except (OSError, UnicodeDecodeError):
+            pass
+
+    if not children:
+        t.ok("V18", "Child propagation: no children to verify")
+        return
+
+    # V18: Each child has .claude/settings.json
+    missing_settings = [c.name for c in children if not (c / ".claude" / "settings.json").is_file()]
+    if missing_settings:
+        t.fail("V18", f"Child settings.json for {len(children)} children",
+               f"Missing: {', '.join(missing_settings)}")
+        return
+    t.ok("V18", f"Child settings.json: {len(children)} children have settings")
+
+    # V19: All child hook commands use ../ prefix and resolve to existing scripts
+    all_resolve = True
+    bad_prefix = []
+    broken_paths = []
+    for child in children:
+        try:
+            settings = json.loads((child / ".claude" / "settings.json").read_text())
+        except (json.JSONDecodeError, ValueError):
+            t.fail("V19", f"Child {child.name} settings.json is valid JSON")
+            all_resolve = False
+            continue
+
+        for event, matchers in settings.get("hooks", {}).items():
+            for block in matchers:
+                for hook in block.get("hooks", []):
+                    cmd = hook.get("command", "")
+                    if not cmd.startswith("bash "):
+                        continue
+                    script_rel = cmd[5:]
+                    if not script_rel.startswith("../"):
+                        bad_prefix.append(f"{child.name}:{script_rel}")
+                    # Resolve from child directory
+                    script_path = child / script_rel
+                    if not script_path.resolve().is_file():
+                        broken_paths.append(f"{child.name}:{script_rel}")
+                        all_resolve = False
+
+    if bad_prefix:
+        t.fail("V19", "Child hook commands use ../ prefix",
+               f"Missing prefix: {', '.join(bad_prefix[:3])}")
+    elif broken_paths:
+        t.fail("V19", "Child hook paths resolve to parent scripts",
+               f"Broken: {', '.join(broken_paths[:3])}")
+    else:
+        t.ok("V19", "Child hooks: all commands use ../ prefix and resolve")
+
+    # V20: Child prefs-resolved.json exists with project name (if parent has prefs)
+    parent_prefs = p["state"] / "prefs-resolved.json"
+    if not parent_prefs.is_file():
+        t.ok("V20", "Child prefs: skipped (no parent prefs-resolved.json)")
+        return
+
+    missing_prefs = []
+    wrong_project = []
+    for child in children:
+        child_prefs = child / ".state" / "prefs-resolved.json"
+        if not child_prefs.is_file():
+            missing_prefs.append(child.name)
+            continue
+        try:
+            prefs = json.loads(child_prefs.read_text())
+            meta_project = prefs.get("_meta", {}).get("project", "")
+            if meta_project != child.name:
+                wrong_project.append(f"{child.name} (got '{meta_project}')")
+        except (json.JSONDecodeError, ValueError):
+            missing_prefs.append(f"{child.name} (invalid JSON)")
+
+    if missing_prefs:
+        t.fail("V20", "Child prefs-resolved.json exists",
+               f"Missing: {', '.join(missing_prefs)}")
+    elif wrong_project:
+        t.fail("V20", "Child prefs _meta.project matches child name",
+               f"Wrong: {', '.join(wrong_project)}")
+    else:
+        t.ok("V20", f"Child prefs: {len(children)} children have correct prefs-resolved.json")
 
 
 # ── Main ─────────────────────────────────────────────────────────────
@@ -364,6 +463,7 @@ def main():
     check_settings_json(t, p)
     check_settings_local(t, p)
     check_scripts(t, p)
+    check_child_propagation(t, p)
 
     t.print_results()
     sys.exit(1 if t.fail_count > 0 else 0)

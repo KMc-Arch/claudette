@@ -1,5 +1,6 @@
 # Claudette
 
+<<<<<<< HEAD
 Claudette is a governance framework for Claude Code. It replaces hand-managed CLAUDE.md files with structurally enforced rules, persistent state across sessions, and a modular command system.
 
 ## Why Claudette Exists
@@ -13,6 +14,11 @@ Claude Code ships hooks, CLAUDE.md hierarchy, skills, and commands -- but no pre
 **Multi-project isolation.** Child projects inherit the parent's rules automatically, each as its own git repo with its own state. A gravity guard hook prevents child sessions from writing to parent state.
 
 **Self-testing.** 4-tier verification: `ctest.py` (bootstrap outputs), `chooks.py` (hook behavior via mock JSON), `test-safe` (60 structural checks inside a Claude session), `test-burn` (end-to-end command exercise).
+=======
+Claudette is a governance framework for Claude Code. It gives you enforced rules, persistent memory across sessions, and built-in commands for common workflows -- all without requiring you to hand-manage a sprawling CLAUDE.md file.
+
+If you have used Claude Code before, you know the pattern: write a CLAUDE.md with instructions, hope Claude follows them, lose context when a session ends. Claudette replaces that with a modular system where rules are structurally enforced by hooks, state persists cleanly across sessions, and projects can nest inside each other.
+>>>>>>> 339f92461233b490f01173e54cd978ffb08036ac
 
 ## Quick Start
 
