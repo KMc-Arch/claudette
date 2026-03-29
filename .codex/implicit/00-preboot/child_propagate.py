@@ -194,6 +194,7 @@ def _propagate_one(child, parent_settings, parent_prefs, report):
         if "_meta" in merged:
             merged["_meta"]["project"] = child.name
         prefs_output = child / ".state" / "prefs-resolved.json"
+        prefs_output.parent.mkdir(parents=True, exist_ok=True)
         prefs_output.write_text(json.dumps(merged, indent=4) + "\n")
 
 
