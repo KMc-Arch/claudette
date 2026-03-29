@@ -10,6 +10,7 @@ Usage:
     python cboot.py --resume   # pass args through to claude
 """
 
+import importlib.util
 import json
 import os
 import subprocess
@@ -25,8 +26,18 @@ CLAUDE = ROOT / ".claude"
 HOOKS_REL = ".codex/implicit/01-infrastructural/01b-materialization/hooks"
 HOOKS_DIR = ROOT / HOOKS_REL
 
+PREBOOT_DIR = CODEX / "implicit" / "00-preboot"
+
 
 # ── Utilities ────────────────────────────────────────────────────────
+
+
+def _load_module(path):
+    """Load a Python module from an arbitrary filesystem path."""
+    spec = importlib.util.spec_from_file_location(path.stem, path)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
 
 def now_iso():
     return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
@@ -589,6 +600,13 @@ def main():
     generate_skill_shims(report)
     resolve_preferences(report)
     assemble_settings(report)
+
+    # Child propagation (00-preboot) — must run after settings + prefs
+    preboot_script = PREBOOT_DIR / "child_propagate.py"
+    if preboot_script.exists():
+        child_propagate = _load_module(preboot_script)
+        child_propagate.propagate(ROOT, report)
+
     configure_auto_memory(report)
     configure_git_hooks(report)
     write_trace_marker(report)
