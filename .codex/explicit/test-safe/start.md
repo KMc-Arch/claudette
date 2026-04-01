@@ -121,8 +121,8 @@ Condition: extract all `"command"` values from hooks section, for each that star
 
 ### Category D: Explicit Commands
 
-**T19** — All 10 explicit command folders exist
-Condition: these folders exist in `.codex/explicit/`: `audit`, `bundle`, `new-project`, `pause`, `purge`, `rebuild`, `scrub`, `test-safe`, `test-burn`, `unpause`
+**T19** — All 11 explicit command folders exist
+Condition: these folders exist in `.codex/explicit/`: `audit`, `bundle`, `milestone`, `new-project`, `pause`, `purge`, `rebuild`, `scrub`, `test-safe`, `test-burn`, `unpause`
 
 **T20** — Each explicit command folder has a `start.md`
 Condition: `start.md` exists in each folder from T19
@@ -166,6 +166,9 @@ Condition: all five files exist
 Condition: both files exist
 
 **T31** — `.state/traces/start.md` exists
+Condition: file exists
+
+**T31a** — `.state/plans/start.md` exists
 Condition: file exists
 
 **T32** — `.state/bundles/start.md` exists
@@ -269,7 +272,7 @@ Condition: file exists
 Condition: directory and file exist
 
 **T56** — `.templates/child/.state/` has expected subdirs
-Condition: `memory/`, `work/`, `tests/`, `traces/` all exist under `.templates/child/.state/`
+Condition: `memory/`, `work/`, `tests/`, `traces/`, `plans/` all exist under `.templates/child/.state/`
 
 **T57** — `.templates/child/.gitignore` exists
 Condition: file exists

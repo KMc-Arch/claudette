@@ -418,6 +418,10 @@ def assemble_settings(report):
         ),
     }
 
+    # Pass through platform settings from codex
+    if "plansDirectory" in codex_settings:
+        settings["plansDirectory"] = codex_settings["plansDirectory"]
+
     if statusline_cmd:
         settings["statusline"] = {"command": statusline_cmd}
 
