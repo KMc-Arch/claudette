@@ -175,6 +175,9 @@ def _propagate_one(child, parent_settings, parent_prefs, report):
         ),
     }
 
+    if "plansDirectory" in parent_settings:
+        child_settings["plansDirectory"] = parent_settings["plansDirectory"]
+
     if "hooks" in parent_settings:
         child_settings["hooks"] = _rewrite_hooks(parent_settings["hooks"])
 

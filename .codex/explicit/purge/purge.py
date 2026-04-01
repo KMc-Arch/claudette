@@ -19,7 +19,7 @@ import shutil
 import sys
 from pathlib import Path
 
-NEVER_PURGE = {".codex", ".state/tests/audits", ".state/pauses", ".state/bundles"}
+NEVER_PURGE = {".codex", ".state/tests/audits", ".state/pauses", ".state/bundles", ".state/plans"}
 
 
 def _is_protected(path: Path, root: Path) -> bool:

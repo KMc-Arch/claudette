@@ -83,3 +83,5 @@ See `.state/start.md` for the canonical taxonomy. In memory context:
 <!-- Live index of all memory files. One line per file with description.
      Designed to survive context window truncation.
      Update this section when memory files are added, renamed, or removed. -->
+
+See [MEMORY.md](MEMORY.md) for the full index.
