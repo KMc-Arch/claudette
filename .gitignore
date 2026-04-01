@@ -23,6 +23,10 @@
 # ── Generated (never track) ──
 .claude/
 
+# ── Underscore-prefixed (invisible by convention, never track) ──
+_*/
+_*
+
 # ── OS / editor artifacts (belt-and-suspenders) ──
 .DS_Store
 Thumbs.db
