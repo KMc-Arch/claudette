@@ -43,6 +43,7 @@ Everything in default scope, plus:
 - `.codex/` — the framework definition, never cleaned by purge
 - `.state/tests/audits/` — immutable records, never deleted by automated processes
 - `.state/pauses/` — historical session context, preserved
+- `.state/plans/` — implementation plans, preserved
 - `.state/bundles/` — portable project snapshots, preserved
 
 ## Scoped to Child Project

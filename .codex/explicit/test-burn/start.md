@@ -39,7 +39,7 @@ Condition: frontmatter contains `root: true` and `codex: ^/^/.codex`
 
 **B03** — Child has .state/ scaffolding
 Action: check directories exist
-Condition: `memory/`, `work/`, `tests/`, `traces/` all exist under `^/test-burn-child/.state/`
+Condition: `memory/`, `work/`, `tests/`, `traces/`, `plans/` all exist under `^/test-burn-child/.state/`
 
 **B04** — Child has .gitignore
 Action: check file exists
@@ -123,7 +123,7 @@ Condition: fake memory file is now gone. `.state/memory/` directory may still ex
 
 **B15** — Never-purge items survived
 Action: check these paths still exist after purge all
-Condition: `.codex/start.md` exists, `.state/tests/audits/start.md` exists, `.state/pauses/` exists (as directory), `.state/bundles/start.md` exists
+Condition: `.codex/start.md` exists, `.state/tests/audits/start.md` exists, `.state/pauses/` exists (as directory), `.state/bundles/start.md` exists, `.state/plans/start.md` exists
 
 ---
 

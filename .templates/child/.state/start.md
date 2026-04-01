@@ -12,6 +12,7 @@ All `.state/` operations default to this project's `.state/` (state gravity). Th
 
 - **`memory/`** — Project knowledge. See `^/^/.state/memory/start.md` for type taxonomy.
 - **`work/`** — Project tracking. See `^/^/.state/work/start.md` for entry schema.
+- **`plans/`** — Plan mode files. See `^/^/.state/plans/start.md`.
 - **`tests/`** — Verification outputs.
 - **`traces/`** — Session observability.
 

@@ -31,6 +31,7 @@ Most entries should NOT have a prefix. Overuse dilutes signal value.
 - **`work/`** — Project state: what's tracked. Backlog, platform constraints, architecture debt, boundary gaps, enhancements.
 - **`tests/`** — All verification outputs, consolidated. Boot attestation, compliance, audits, module test results.
 - **`traces/`** — Session observability records. What happened during a session: codex loading, trigger activity, module invocations, tool calls.
+- **`plans/`** — Plan mode files. Claude Code's multi-step implementation plans, redirected here by `plansDirectory` setting.
 - **`pauses/`** — Session context snapshots for later resumption. Created by the `pause` command.
 - **`bundles/`** — Point-in-time portable snapshots of child projects. Created by the `bundle` command.
 
