@@ -23,6 +23,9 @@
 # ── Generated (never track) ──
 .claude/
 
+# ── Universal excludes (override all whitelists) ──
+_*
+
 # ── OS / editor artifacts (belt-and-suspenders) ──
 .DS_Store
 Thumbs.db

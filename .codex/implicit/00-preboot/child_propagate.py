@@ -3,7 +3,7 @@
 
 Discovers child projects (direct subdirectories with root: true in CLAUDE.md)
 and materializes their .claude/settings.json with hooks pointing to the
-parent's hook scripts via ../ relative paths.
+parent's hook scripts via absolute paths.
 
 Called by cboot.py after parent materialization is complete. Reads the parent's
 generated .claude/settings.json and .state/prefs-resolved.json, derives child
@@ -60,18 +60,24 @@ def _has_root_true(claude_md):
 # ── Hook rewriting ──────────────────────────────────────────────────
 
 
-def _rewrite_command(cmd):
-    """Rewrite a hook/statusline command to reference parent via ../.
+def _rewrite_command(cmd, parent_root):
+    """Rewrite a hook/statusline command to use absolute parent path.
 
-    Only rewrites commands that start with 'bash <relative-path>'.
-    Absolute paths and already-prefixed paths are left unchanged.
+    Handles both 'bash <relative-path>' commands and bare relative paths.
+    Absolute paths are left unchanged.
     """
-    if cmd.startswith("bash ") and not cmd.startswith("bash /") and not cmd.startswith("bash ../"):
-        return "bash ../" + cmd[5:]
+    if cmd.startswith("bash "):
+        script_path = cmd[5:].strip('"')
+        if Path(script_path).is_absolute():
+            return cmd
+        abs_path = (parent_root / script_path).as_posix()
+        return f'bash "{abs_path}"'
+    elif not Path(cmd).is_absolute():
+        return (parent_root / cmd).as_posix()
     return cmd
 
 
-def _rewrite_hooks(hooks):
+def _rewrite_hooks(hooks, parent_root):
     """Deep-rewrite all hook commands in the settings hooks dict."""
     rewritten = {}
     for event, matchers in hooks.items():
@@ -81,7 +87,7 @@ def _rewrite_hooks(hooks):
             for hook in matcher_block["hooks"]:
                 new_hook = dict(hook)
                 if "command" in new_hook:
-                    new_hook["command"] = _rewrite_command(new_hook["command"])
+                    new_hook["command"] = _rewrite_command(new_hook["command"], parent_root)
                 new_block["hooks"].append(new_hook)
             rewritten[event].append(new_block)
     return rewritten
@@ -151,13 +157,13 @@ def propagate(root, report):
         return
 
     for child in children:
-        _propagate_one(child, parent_settings, parent_prefs, report)
+        _propagate_one(child, parent_settings, parent_prefs, root, report)
 
     names = ", ".join(c.name for c in children)
     report.ok(f"Child propagation: {len(children)} children ({names})")
 
 
-def _propagate_one(child, parent_settings, parent_prefs, report):
+def _propagate_one(child, parent_settings, parent_prefs, parent_root, report):
     """Materialize .claude/settings.json and prefs-resolved.json for one child."""
     claude_dir = child / ".claude"
     claude_dir.mkdir(parents=True, exist_ok=True)
@@ -179,12 +185,12 @@ def _propagate_one(child, parent_settings, parent_prefs, report):
         child_settings["plansDirectory"] = parent_settings["plansDirectory"]
 
     if "hooks" in parent_settings:
-        child_settings["hooks"] = _rewrite_hooks(parent_settings["hooks"])
+        child_settings["hooks"] = _rewrite_hooks(parent_settings["hooks"], parent_root)
 
     if "statusline" in parent_settings:
         sl = copy.deepcopy(parent_settings["statusline"])
         if "command" in sl:
-            sl["command"] = _rewrite_command(sl["command"])
+            sl["command"] = _rewrite_command(sl["command"], parent_root)
         child_settings["statusline"] = sl
 
     settings_file = claude_dir / "settings.json"
