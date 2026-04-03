@@ -49,7 +49,8 @@ def now_stamp():
 
 def hook_cmd(script_name):
     """Return the hook command string for a script in the hooks dir."""
-    return f"bash {HOOKS_REL}/{script_name}"
+    abs_path = (HOOKS_DIR / script_name).as_posix()
+    return f'bash "{abs_path}"'
 
 
 class BootReport:
@@ -407,7 +408,7 @@ def assemble_settings(report):
             if mod_file.exists():
                 mod_settings = json.loads(mod_file.read_text())
                 if mod_name == "statusline" and "command" in mod_settings:
-                    statusline_cmd = mod_settings["command"]
+                    statusline_cmd = (ROOT / mod_settings["command"]).as_posix()
 
     # Build the full settings
     settings = {
