@@ -1,13 +1,13 @@
 #!/usr/bin/env python3
-"""Child project propagation.
+"""Root propagation.
 
-Discovers child projects (direct subdirectories with root: true in CLAUDE.md)
-and materializes their .claude/settings.json with hooks pointing to the
-parent's hook scripts via ../ relative paths.
+Recursively discovers all root: true descendants (children, groups, nested
+children within groups) and materializes their .claude/settings.json with
+hooks pointing to the apex root's hook scripts via absolute paths.
 
 Called by cboot.py after parent materialization is complete. Reads the parent's
-generated .claude/settings.json and .state/prefs-resolved.json, derives child
-versions from them, and writes to each child.
+generated .claude/settings.json and .state/prefs-resolved.json, derives
+versions for each discovered root, and writes to each one.
 """
 
 import argparse
@@ -20,13 +20,13 @@ from pathlib import Path
 # ── Discovery ───────────────────────────────────────────────────────
 
 
-def discover_children(root):
-    """Find direct child directories with root: true in CLAUDE.md frontmatter.
+def discover_roots(root):
+    """Find all root: true descendants, recursing through nested roots.
 
     Skips dot-prefixed (internal) and underscore-prefixed (invisible) dirs.
-    Does NOT recurse — children have arbitrary substructure that is their own.
+    Returns a flat list of all discovered roots at any depth.
     """
-    children = []
+    roots = []
     for d in sorted(root.iterdir()):
         if not d.is_dir():
             continue
@@ -34,8 +34,10 @@ def discover_children(root):
             continue
         claude_md = d / "CLAUDE.md"
         if claude_md.exists() and _has_root_true(claude_md):
-            children.append(d)
-    return children
+            roots.append(d)
+            # Recurse — this root may contain nested roots (group pattern)
+            roots.extend(discover_roots(d))
+    return roots
 
 
 def _has_root_true(claude_md):
@@ -60,18 +62,24 @@ def _has_root_true(claude_md):
 # ── Hook rewriting ──────────────────────────────────────────────────
 
 
-def _rewrite_command(cmd):
-    """Rewrite a hook/statusline command to reference parent via ../.
+def _rewrite_command(cmd, parent_root):
+    """Rewrite a hook/statusline command to use absolute parent path.
 
-    Only rewrites commands that start with 'bash <relative-path>'.
-    Absolute paths and already-prefixed paths are left unchanged.
+    Handles both 'bash <relative-path>' commands and bare relative paths.
+    Absolute paths are left unchanged.
     """
-    if cmd.startswith("bash ") and not cmd.startswith("bash /") and not cmd.startswith("bash ../"):
-        return "bash ../" + cmd[5:]
+    if cmd.startswith("bash "):
+        script_path = cmd[5:].strip('"')
+        if Path(script_path).is_absolute():
+            return cmd
+        abs_path = (parent_root / script_path).as_posix()
+        return f'bash "{abs_path}"'
+    elif not Path(cmd).is_absolute():
+        return (parent_root / cmd).as_posix()
     return cmd
 
 
-def _rewrite_hooks(hooks):
+def _rewrite_hooks(hooks, parent_root):
     """Deep-rewrite all hook commands in the settings hooks dict."""
     rewritten = {}
     for event, matchers in hooks.items():
@@ -81,7 +89,7 @@ def _rewrite_hooks(hooks):
             for hook in matcher_block["hooks"]:
                 new_hook = dict(hook)
                 if "command" in new_hook:
-                    new_hook["command"] = _rewrite_command(new_hook["command"])
+                    new_hook["command"] = _rewrite_command(new_hook["command"], parent_root)
                 new_block["hooks"].append(new_hook)
             rewritten[event].append(new_block)
     return rewritten
@@ -145,19 +153,19 @@ def propagate(root, report):
         except (json.JSONDecodeError, ValueError):
             pass
 
-    children = discover_children(root)
-    if not children:
-        report.ok("Child propagation: no child projects found")
+    roots = discover_roots(root)
+    if not roots:
+        report.ok("Root propagation: no root: true descendants found")
         return
 
-    for child in children:
-        _propagate_one(child, parent_settings, parent_prefs, report)
+    for r in roots:
+        _propagate_one(r, parent_settings, parent_prefs, root, report)
 
-    names = ", ".join(c.name for c in children)
-    report.ok(f"Child propagation: {len(children)} children ({names})")
+    names = ", ".join(r.name for r in roots)
+    report.ok(f"Root propagation: {len(roots)} roots ({names})")
 
 
-def _propagate_one(child, parent_settings, parent_prefs, report):
+def _propagate_one(child, parent_settings, parent_prefs, parent_root, report):
     """Materialize .claude/settings.json and prefs-resolved.json for one child."""
     claude_dir = child / ".claude"
     claude_dir.mkdir(parents=True, exist_ok=True)
@@ -179,12 +187,12 @@ def _propagate_one(child, parent_settings, parent_prefs, report):
         child_settings["plansDirectory"] = parent_settings["plansDirectory"]
 
     if "hooks" in parent_settings:
-        child_settings["hooks"] = _rewrite_hooks(parent_settings["hooks"])
+        child_settings["hooks"] = _rewrite_hooks(parent_settings["hooks"], parent_root)
 
     if "statusline" in parent_settings:
         sl = copy.deepcopy(parent_settings["statusline"])
         if "command" in sl:
-            sl["command"] = _rewrite_command(sl["command"])
+            sl["command"] = _rewrite_command(sl["command"], parent_root)
         child_settings["statusline"] = sl
 
     settings_file = claude_dir / "settings.json"
@@ -222,7 +230,7 @@ class _CliReport:
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Propagate parent settings to child projects")
+    parser = argparse.ArgumentParser(description="Propagate apex settings to all root: true descendants")
     parser.add_argument("--project-root", type=Path, default=Path(__file__).resolve().parents[3],
                         help="Parent project root (default: inferred from script location)")
     args = parser.parse_args()
