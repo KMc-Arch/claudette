@@ -9,7 +9,8 @@ PATHS=$(echo "$INPUT" | grep -oE '"(file_path|path|pattern|command)"\s*:\s*"[^"]
 
 for P in $PATHS; do
     # Check each path segment for _ prefix
-    if echo "$P" | grep -qE '(^|[/\\])_[^/\\]'; then
+    # Match single-underscore prefix (_foo) but not double-underscore dunder (__init__, __main__, etc.)
+    if echo "$P" | grep -qE '(^|[/\\])_[^_/\\]'; then
         echo "BLOCKED: _-prefixed path detected: $P" >&2
         echo "The _ prefix means invisible. These items do not exist to Claude." >&2
         exit 2
