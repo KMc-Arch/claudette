@@ -8,4 +8,4 @@ Normal boot entries. Loaded after 01-infrastructural and 02-foundational. These 
 
 ## Entries
 
-None yet. Add entries here as the instance matures.
+- [plan-format.md](plan-format.md) — Progressive-disclosure plan format (3 layers, assumptions at L1)

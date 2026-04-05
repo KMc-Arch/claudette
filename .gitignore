@@ -20,6 +20,10 @@
 !/.state/
 !/.state/**
 
+# ── Testing group (shipped with platform, git-tracked) ──
+!/Testing/
+!/Testing/**
+
 # ── Generated (never track) ──
 .claude/
 

@@ -1,0 +1,8 @@
+_*
+.claude/
+.DS_Store
+Thumbs.db
+desktop.ini
+.env*
+*.key
+*.pem

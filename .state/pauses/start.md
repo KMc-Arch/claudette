@@ -20,4 +20,4 @@ N auto-increments for multiple pauses on the same day.
 
 - Created by `pause`, never modified after creation
 - Read by `unpause` to restore session context
-- Never deleted by `purge` (preserved by design)
+- Cleaned by `purge` (transient scope) and `purge all`
