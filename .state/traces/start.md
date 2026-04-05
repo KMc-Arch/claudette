@@ -56,6 +56,5 @@ Traces are high-volume, low-archival-value. Keep last 5 sessions. Older traces d
 |---|---|---|
 | Traces | `traces/` | What happened? (observability) |
 | Compliance | `tests/compliance/` | Were rules followed? (governance) |
-| Boot attestation | `tests/boot/` | Did boot complete correctly? (integrity) |
 | Module tests | `tests/explicit/`, etc. | Does the code work? (correctness) |
 | Audits | `tests/audits/` | Does the project meet specs? (standards) |

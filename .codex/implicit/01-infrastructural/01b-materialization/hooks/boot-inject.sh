@@ -29,9 +29,7 @@ The start.md convention: every folder has a start.md. Always read it BEFORE anyt
 
 After reading the above files, follow the loading rules in .codex/start.md to complete the boot sequence (implicit tiers, lazy-load indexes for explicit/reactive/reflexive).
 
-5. After implicit loading completes, run boot-attestation: verify frontmatter loaded, prefs resolved, shims registered, path containment active, state gravity active. Write attestation log to .state/tests/boot/.
-
-6. WARNING RELAY: If ANY other SessionStart hook produced a warning (look for lines containing ⚠ or BLOCKED or WARNING), you MUST reproduce that warning verbatim to the user in your FIRST response, BEFORE any other content. The user CANNOT see SessionStart hook output — you are the only relay. This is not optional.
+5. WARNING RELAY: If ANY other SessionStart hook produced a warning (look for lines containing ⚠ or BLOCKED or WARNING), you MUST reproduce that warning verbatim to the user in your FIRST response, BEFORE any other content. The user CANNOT see SessionStart hook output — you are the only relay. This is not optional.
 
 Available explicit commands (invoke by name or /slash-command): $EXPLICIT_CMDS
 When the user invokes any of these, read .codex/explicit/<name>/start.md and follow its protocol exactly.

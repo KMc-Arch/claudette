@@ -12,7 +12,6 @@ All verification outputs consolidated here. Mirrors `.codex/` structure where ap
 
 | Category | Path | Produced by |
 |---|---|---|
-| Boot attestation | `boot/` | `reflexive/boot-attestation` |
 | Boundary compliance | `compliance/` | `reflexive/session-compliance` |
 | Audit records | `audits/` | `explicit/audit` |
 | Contract conformance | `reflexive/contract-conformance/` | `reflexive/contract-conformance` |
@@ -28,7 +27,6 @@ When something goes wrong, look here:
 
 | Failure type | Look in |
 |---|---|
-| Boot failure | `boot/` |
 | Rule or boundary violation | `compliance/` |
 | Code bug in a codex module | `implicit/`, `explicit/`, or `reactive/` |
 | Audit finding | `audits/` |
@@ -68,7 +66,6 @@ See `.state/start.md` for the canonical taxonomy. In test context:
 
 | Category | Policy |
 |---|---|
-| Boot attestation | Keep last 10 runs. Archive older on demand. |
 | Compliance checks | Keep last 10 runs. Archive older on demand. |
 | Audit records | **Immutable. Never deleted.** Codex snapshot required per run. |
 | Module test results | Keep latest per module. Prior results overwritten. |

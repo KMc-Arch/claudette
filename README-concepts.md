@@ -13,7 +13,7 @@ The codex is organized into four categories, each with a different trigger model
 | `implicit/` | Every session start, eagerly | Foundational rules -- identity, path resolution, state gravity, hook registrations |
 | `explicit/` | When the user invokes a command | Commands and protocols -- audit, scrub, pause, purge, etc. |
 | `reactive/` | When a context condition matches | Project-specific behavior -- e.g., SQLite helper loads only if the project uses SQLite |
-| `reflexive/` | When an internal system event fires | Self-governance -- boot attestation, compliance checks, contract conformance |
+| `reflexive/` | When an internal system event fires | Self-governance -- compliance checks, contract conformance |
 
 ### Implicit Priority Tiers
 

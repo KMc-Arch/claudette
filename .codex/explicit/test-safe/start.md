@@ -137,8 +137,8 @@ Condition: both files exist
 **T22** — `sqlite/sqlite.py` exists
 Condition: file exists
 
-**T23** — Reflexive modules exist: `boot-attestation/start.md`, `codex-test-on-edit/start.md`, `contract-conformance/start.md`, `session-compliance/start.md`
-Condition: all four files exist
+**T23** — Reflexive modules exist: `codex-test-on-edit/start.md`, `contract-conformance/start.md`, `session-compliance/start.md`
+Condition: all three files exist
 
 ---
 
