@@ -1,8 +1,14 @@
 #!/bin/bash
 
-# Ensure jq is on PATH (winget install location for MINGW64 compatibility)
-JQ_DIR=$(find "$LOCALAPPDATA/Microsoft/WinGet/Packages" -maxdepth 1 -name 'jqlang.jq_*' -print -quit 2>/dev/null)
-[[ -n "$JQ_DIR" ]] && export PATH="$PATH:$JQ_DIR"
+# Ensure jq is on PATH
+if ! command -v jq &>/dev/null; then
+    JQ_DIR=$(find "$LOCALAPPDATA/Microsoft/WinGet/Packages" -maxdepth 1 -name 'jqlang.jq_*' -print -quit 2>/dev/null)
+    [[ -n "$JQ_DIR" ]] && export PATH="$PATH:$JQ_DIR"
+fi
+if ! command -v jq &>/dev/null; then
+    echo "statusline: jq not found"
+    exit 0
+fi
 
 # Color theme: gray, orange, blue, teal, green, lavender, rose, gold, slate, cyan
 COLOR="blue"
@@ -11,7 +17,7 @@ COLOR="blue"
 C_RESET='\033[0m'
 C_GRAY='\033[38;5;245m'
 C_BAR_EMPTY='\033[38;5;238m'
-C_WARN='\033[38;5;173m'
+C_WARN='\033[38;5;208m'
 case "$COLOR" in
     orange)   C_ACCENT='\033[38;5;173m' ;;
     blue)     C_ACCENT='\033[38;5;74m' ;;
@@ -62,6 +68,11 @@ if [[ -n "$cwd" ]]; then
         if [[ "$rel_path" == *"/"* ]]; then
             project_type=$(echo "$rel_path" | cut -d'/' -f1)
             project_id=$(echo "$rel_path" | cut -d'/' -f2)
+        fi
+
+        # Validate project_id — reject anything that isn't a safe identifier
+        if [[ -n "$project_id" && ! "$project_id" =~ ^[a-zA-Z0-9_-]+$ ]]; then
+            project_id=""
         fi
 
         if [[ -n "$project_id" ]]; then
@@ -118,7 +129,7 @@ git_status=""
 if [[ -n "$cwd" && -d "$cwd" ]]; then
     branch=$(git -C "$cwd" branch --show-current 2>/dev/null)
     if [[ -n "$branch" ]]; then
-        file_count=$(git -C "$cwd" --no-optional-locks status --porcelain -uall 2>/dev/null | wc -l | tr -d ' ')
+        file_count=$(git -C "$cwd" --no-optional-locks status --porcelain -unormal 2>/dev/null | wc -l | tr -d ' ')
         if [[ "$file_count" -eq 0 ]]; then
             git_status="(clean)"
         else
@@ -130,18 +141,44 @@ fi
 # --- Context bar ---
 transcript_path=$(echo "$input" | jq -r '.transcript_path // empty')
 max_context=$(echo "$input" | jq -r '.context_window.context_window_size // 200000')
+[[ "$max_context" =~ ^[0-9]+$ && "$max_context" -gt 0 ]] || max_context=200000
 max_k=$((max_context / 1000))
 
 if [[ -n "$transcript_path" && -f "$transcript_path" ]]; then
-    context_length=$(jq -s '
-        map(select(.message.usage and .isSidechain != true and .isApiErrorMessage != true)) |
-        last |
-        if . then
-            (.message.usage.input_tokens // 0) +
-            (.message.usage.cache_read_input_tokens // 0) +
-            (.message.usage.cache_creation_input_tokens // 0)
-        else 0 end
-    ' < "$transcript_path")
+    # Single-pass transcript extraction: context tokens + last user message
+    _transcript_data=$(jq -s '
+        def is_unhelpful:
+            startswith("[Request interrupted") or
+            startswith("[Request cancelled") or
+            . == "";
+        {
+            context_length: (
+                map(select(.message.usage and .isSidechain != true and .isApiErrorMessage != true)) |
+                last |
+                if . then
+                    (.message.usage.input_tokens // 0) +
+                    (.message.usage.cache_read_input_tokens // 0) +
+                    (.message.usage.cache_creation_input_tokens // 0) +
+                    (.message.usage.output_tokens // 0)
+                else 0 end
+            ),
+            last_user_msg: (
+                [.[] | select(.type == "user") |
+                 select(.message.content | type == "string" or
+                        (type == "array" and any(.[]; .type == "text")))] |
+                reverse |
+                map(.message.content |
+                    if type == "string" then .
+                    else [.[] | select(.type == "text") | .text] | join(" ") end |
+                    gsub("\n"; " ") | gsub("  +"; " ")) |
+                map(select(is_unhelpful | not)) |
+                first // ""
+            )
+        }
+    ' < "$transcript_path" 2>/dev/null)
+    context_length=$(echo "$_transcript_data" | jq -r '.context_length')
+    last_user_msg=$(echo "$_transcript_data" | jq -r '.last_user_msg')
+    [[ "$context_length" =~ ^[0-9]+$ ]] || context_length=0
 
     baseline=20000
     bar_width=10
@@ -226,24 +263,7 @@ if [[ -n "$transcript_path" && -f "$transcript_path" ]]; then
     [[ -n "$branch" ]] && plain_output+=" | ${branch} ${git_status}"
     plain_output+=" | xxxxxxxxxx ${pct}% of ${max_k}k tokens"
     max_len=${#plain_output}
-    last_user_msg=$(jq -rs '
-        def is_unhelpful:
-            startswith("[Request interrupted") or
-            startswith("[Request cancelled") or
-            . == "";
-
-        [.[] | select(.type == "user") |
-         select(.message.content | type == "string" or
-                (type == "array" and any(.[]; .type == "text")))] |
-        reverse |
-        map(.message.content |
-            if type == "string" then .
-            else [.[] | select(.type == "text") | .text] | join(" ") end |
-            gsub("\n"; " ") | gsub("  +"; " ")) |
-        map(select(is_unhelpful | not)) |
-        first // ""
-    ' < "$transcript_path" 2>/dev/null)
-
+    # last_user_msg already extracted in single-pass above
     if [[ -n "$last_user_msg" ]]; then
         if [[ ${#last_user_msg} -gt $max_len ]]; then
             echo "💬 ${last_user_msg:0:$((max_len - 3))}..."

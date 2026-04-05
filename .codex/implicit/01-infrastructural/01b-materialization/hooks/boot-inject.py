@@ -20,7 +20,12 @@ from pathlib import Path
 
 
 def parse_frontmatter(path):
-    """Extract simple key: value pairs from YAML frontmatter."""
+    """Extract simple key: value pairs from YAML frontmatter.
+
+    Handles only flat single-line 'key: value' pairs. Lists, multi-line
+    values, and nested YAML are silently ignored. Sufficient for the keys
+    this module queries (root, apex-root, codex).
+    """
     try:
         text = path.read_text(encoding="utf-8")
     except (OSError, UnicodeDecodeError):
@@ -69,11 +74,25 @@ def find_apex(start_dir):
     return highest_root
 
 
-def resolve_codex(project_dir, fm):
+def find_nearest_root(start_dir):
+    """Walk up from start_dir (exclusive) to find the nearest root: true ancestor."""
+    current = start_dir.resolve().parent
+    while current != current.parent:
+        claude_md = current / "CLAUDE.md"
+        if claude_md.exists():
+            fm = parse_frontmatter(claude_md)
+            if fm.get("root") is True or fm.get("apex-root") is True:
+                return current
+        current = current.parent
+    return None
+
+
+def resolve_codex(project_dir, fm, apex=None):
     """Resolve the effective codex directory for this project.
 
     Apex roots and projects with local .codex/: use local.
     Children with codex: ^/^/.codex: resolve to apex's .codex/.
+    Children with codex: ^/.codex: resolve to nearest root ancestor's .codex/.
     """
     codex_ref = fm.get("codex", "")
 
@@ -81,28 +100,54 @@ def resolve_codex(project_dir, fm):
         local = project_dir / ".codex"
         return local if local.is_dir() else None
 
-    if "^/^" in codex_ref:
-        apex = find_apex(project_dir)
+    if codex_ref.startswith("^/^"):
+        if not apex:
+            apex = find_apex(project_dir)
         if apex:
             relative = codex_ref.replace("^/^/", "", 1)
-            resolved = apex / relative
-            if resolved.is_dir():
+            resolved = (apex / relative).resolve()
+            if resolved.is_dir() and resolved.is_relative_to(apex.resolve()):
                 return resolved
+    elif codex_ref.startswith("^/"):
+        nearest = find_nearest_root(project_dir)
+        if nearest:
+            relative = codex_ref[2:]  # strip "^/"
+            resolved = (nearest / relative).resolve()
+            if resolved.is_dir() and resolved.is_relative_to(nearest.resolve()):
+                return resolved
+
+    if codex_ref:
+        print(f"WARNING: codex ref '{codex_ref}' could not be resolved", file=sys.stderr)
 
     local = project_dir / ".codex"
     return local if local.is_dir() else None
 
 
-def find_memory_file(project_dir, filename):
+def find_memory_file(project_dir, filename, apex=None):
     """Find a memory file, checking local .state/memory/ first,
-    then walking up through root: true ancestors.
+    then walking up through root: true ancestors. Stops at apex boundary.
     """
+    if "/" in filename or "\\" in filename or ".." in filename:
+        return None, None
+
     local = project_dir / ".state" / "memory" / filename
     if local.is_file():
         return local, "local"
 
-    current = project_dir.parent
+    apex_resolved = apex.resolve() if apex else None
+
+    # If project is the apex itself, local check above is sufficient — no ancestor walk
+    if apex_resolved and project_dir.resolve() == apex_resolved:
+        return None, None
+
+    current = project_dir.resolve().parent
     while current != current.parent:
+        # Stop at apex ceiling — check apex's own memory, then break
+        if apex_resolved and current == apex_resolved:
+            candidate = current / ".state" / "memory" / filename
+            if candidate.is_file():
+                return candidate, "inherited"
+            break
         claude_md = current / "CLAUDE.md"
         if claude_md.exists():
             fm = parse_frontmatter(claude_md)
@@ -160,7 +205,8 @@ def main():
     claude_md = project_dir / "CLAUDE.md"
     fm = parse_frontmatter(claude_md) if claude_md.exists() else {}
 
-    codex_dir = resolve_codex(project_dir, fm)
+    apex = find_apex(project_dir)
+    codex_dir = resolve_codex(project_dir, fm, apex=apex)
 
     # -- Governance content --
 
@@ -169,7 +215,7 @@ def main():
 
     emit_file(project_dir / ".state" / "start.md")
 
-    user_path, _ = find_memory_file(project_dir, "user.md")
+    user_path, _ = find_memory_file(project_dir, "user.md", apex=apex)
     if user_path:
         emit_file(user_path)
 
@@ -186,10 +232,6 @@ def main():
     print("  sequential), then lazy-load indexes for explicit/, reactive/, reflexive/")
     print("- The start.md convention: every folder has a start.md — read it BEFORE")
     print("  anything else in that folder")
-    print()
-    print("After implicit loading, run boot-attestation: verify prefs resolved,")
-    print("shims registered, path containment active, state gravity active.")
-    print("Write attestation log to .state/tests/boot/.")
     print()
     if cmds:
         print(f"Available explicit commands (invoke by name or /slash-command): {', '.join(cmds)}")

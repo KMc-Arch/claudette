@@ -26,10 +26,12 @@ def _is_protected(path: Path, root: Path) -> bool:
     """Return True if path falls inside a never-purge zone or is a start.md manifest."""
     if path.name == "start.md":
         return True
+    if path.is_symlink():
+        return True
     try:
         rel = path.resolve().relative_to(root.resolve())
     except ValueError:
-        return False
+        return True  # outside root = protected, never delete
     rel_posix = rel.as_posix()
     for zone in NEVER_PURGE:
         if rel_posix == zone or rel_posix.startswith(zone + "/"):
@@ -59,7 +61,7 @@ def _find_project_footprint(project_root: Path) -> Path | None:
 
     leaf = project_root.resolve().name
     for d in projects_dir.iterdir():
-        if d.is_dir() and leaf in d.name:
+        if d.is_dir() and d.name.endswith("-" + leaf):
             return d
 
     return None
@@ -108,6 +110,13 @@ class Purger:
 
     def remove_dir_external(self, path: Path) -> None:
         if not path.exists():
+            return
+        if path.is_symlink():
+            self.skipped.append(f"  PROTECTED (symlink): {path}")
+            return
+        projects_dir = Path.home() / ".claude" / "projects"
+        if not path.resolve().is_relative_to(projects_dir.resolve()):
+            self.skipped.append(f"  PROTECTED (outside ~/.claude/projects/): {path}")
             return
         label = str(path)
         if self.dry_run:
@@ -194,6 +203,8 @@ def _purge_state_high_value(purger: Purger, state_dir: Path) -> None:
         subdir = state_dir / subdir_name
         if subdir.is_dir():
             for item in subdir.iterdir():
+                if item.name == "start.md":
+                    continue
                 if _is_underscore_prefixed(item):
                     continue
                 if item.is_dir():
@@ -217,6 +228,9 @@ def purge_all(purger: Purger, project_root: Path) -> None:
 
 def purge_child(purger: Purger, project_root: Path, child_name: str) -> None:
     child_root = project_root / child_name
+    if not child_root.resolve().is_relative_to(project_root.resolve()):
+        print(f"error: child path escapes project root: {child_name}", file=sys.stderr)
+        sys.exit(1)
     if not child_root.is_dir():
         print(f"error: child project not found: {child_root}", file=sys.stderr)
         sys.exit(1)
