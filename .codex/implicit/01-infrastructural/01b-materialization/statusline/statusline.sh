@@ -1,7 +1,8 @@
 #!/bin/bash
 
 # Ensure jq is on PATH (winget install location for MINGW64 compatibility)
-export PATH="$PATH:/c/Users/kevin.mccormick/AppData/Local/Microsoft/WinGet/Packages/jqlang.jq_Microsoft.Winget.Source_8wekyb3d8bbwe"
+JQ_DIR=$(find "$LOCALAPPDATA/Microsoft/WinGet/Packages" -maxdepth 1 -name 'jqlang.jq_*' -print -quit 2>/dev/null)
+[[ -n "$JQ_DIR" ]] && export PATH="$PATH:$JQ_DIR"
 
 # Color theme: gray, orange, blue, teal, green, lavender, rose, gold, slate, cyan
 COLOR="blue"
