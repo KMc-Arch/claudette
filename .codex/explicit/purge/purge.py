@@ -19,17 +19,19 @@ import shutil
 import sys
 from pathlib import Path
 
-NEVER_PURGE = {".codex", ".state/tests/audits", ".state/pauses", ".state/bundles", ".state/plans"}
+NEVER_PURGE = {".codex", ".state/tests/audits"}
 
 
 def _is_protected(path: Path, root: Path) -> bool:
     """Return True if path falls inside a never-purge zone or is a start.md manifest."""
     if path.name == "start.md":
         return True
+    if path.is_symlink():
+        return True
     try:
         rel = path.resolve().relative_to(root.resolve())
     except ValueError:
-        return False
+        return True  # outside root = protected, never delete
     rel_posix = rel.as_posix()
     for zone in NEVER_PURGE:
         if rel_posix == zone or rel_posix.startswith(zone + "/"):
@@ -59,7 +61,7 @@ def _find_project_footprint(project_root: Path) -> Path | None:
 
     leaf = project_root.resolve().name
     for d in projects_dir.iterdir():
-        if d.is_dir() and leaf in d.name:
+        if d.is_dir() and d.name.endswith("-" + leaf):
             return d
 
     return None
@@ -108,6 +110,13 @@ class Purger:
 
     def remove_dir_external(self, path: Path) -> None:
         if not path.exists():
+            return
+        if path.is_symlink():
+            self.skipped.append(f"  PROTECTED (symlink): {path}")
+            return
+        projects_dir = Path.home() / ".claude" / "projects"
+        if not path.resolve().is_relative_to(projects_dir.resolve()):
+            self.skipped.append(f"  PROTECTED (outside ~/.claude/projects/): {path}")
             return
         label = str(path)
         if self.dry_run:
@@ -171,28 +180,31 @@ def _purge_state_transient(purger: Purger, state_dir: Path) -> None:
             else:
                 purger.remove_file(item)
 
-    traces_dir = state_dir / "traces"
-    if traces_dir.is_dir():
-        for item in traces_dir.iterdir():
-            if item.name == "start.md":
-                continue
-            if _is_underscore_prefixed(item):
-                continue
-            if item.is_dir():
-                purger.remove_dir(item)
-            else:
-                purger.remove_file(item)
-
-
-def _purge_state_high_value(purger: Purger, state_dir: Path) -> None:
-    """Clean memory/ and work/ inside .state/."""
-    if not state_dir.is_dir():
-        return
-
-    for subdir_name in ("memory", "work"):
+    for subdir_name in ("traces", "pauses"):
         subdir = state_dir / subdir_name
         if subdir.is_dir():
             for item in subdir.iterdir():
+                if item.name == "start.md":
+                    continue
+                if _is_underscore_prefixed(item):
+                    continue
+                if item.is_dir():
+                    purger.remove_dir(item)
+                else:
+                    purger.remove_file(item)
+
+
+def _purge_state_high_value(purger: Purger, state_dir: Path) -> None:
+    """Clean memory/, work/, plans/, and bundles/ inside .state/."""
+    if not state_dir.is_dir():
+        return
+
+    for subdir_name in ("memory", "work", "plans", "bundles"):
+        subdir = state_dir / subdir_name
+        if subdir.is_dir():
+            for item in subdir.iterdir():
+                if item.name == "start.md":
+                    continue
                 if _is_underscore_prefixed(item):
                     continue
                 if item.is_dir():
@@ -216,11 +228,18 @@ def purge_all(purger: Purger, project_root: Path) -> None:
 
 def purge_child(purger: Purger, project_root: Path, child_name: str) -> None:
     child_root = project_root / child_name
+    if not child_root.resolve().is_relative_to(project_root.resolve()):
+        print(f"error: child path escapes project root: {child_name}", file=sys.stderr)
+        sys.exit(1)
     if not child_root.is_dir():
         print(f"error: child project not found: {child_root}", file=sys.stderr)
         sys.exit(1)
-    _purge_claude_dir(purger, child_root / ".claude")
-    _purge_state_transient(purger, child_root / ".state")
+    # Scope to child root so NEVER_PURGE paths resolve correctly
+    child_purger = Purger(child_root, dry_run=purger.dry_run)
+    _purge_claude_dir(child_purger, child_root / ".claude")
+    _purge_state_transient(child_purger, child_root / ".state")
+    purger.removed.extend(child_purger.removed)
+    purger.skipped.extend(child_purger.skipped)
 
 
 def main(argv: list[str] | None = None) -> None:
@@ -246,7 +265,7 @@ def main(argv: list[str] | None = None) -> None:
     is_default = scope == "default"
 
     if is_all and not args.dry_run and not args.confirm:
-        print("WARNING: 'purge all' will remove .state/memory/ and .state/work/ files.")
+        print("WARNING: 'purge all' will remove .state/memory/, work/, plans/, and bundles/ files.")
         print("This is destructive and cannot be undone.")
         try:
             answer = input("Type 'yes' to confirm: ")

@@ -18,6 +18,16 @@ A milestone says: "this session produced durable knowledge — write it to the r
 
 `milestone` — flush session knowledge to `.state/`
 
+## BEFORE PROCEEDING — Branch Check
+
+**Check the current git branch.** If you are on `main`:
+
+> **You have uncommitted or un-branched work on main.**
+> Creating a milestone here means your next commit lands directly on main.
+> Want me to create a feature branch first so this work is isolated?
+
+Wait for the user's response before continuing. If they say yes, create an appropriately named branch before flushing. If they say no (or are already on a non-main branch), proceed normally.
+
 ## Procedure
 
 Walk the `.state/` subdirectory index. For each applicable subdirectory, evaluate what the session produced and persist it.

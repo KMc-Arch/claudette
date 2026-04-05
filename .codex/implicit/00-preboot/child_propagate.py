@@ -65,16 +65,17 @@ def _has_root_true(claude_md):
 def _rewrite_command(cmd, parent_root):
     """Rewrite a hook/statusline command to use absolute parent path.
 
-    Handles both 'bash <relative-path>' commands and bare relative paths.
+    Handles 'bash <path>', 'python <path>' commands, and bare relative paths.
     Absolute paths are left unchanged.
     """
-    if cmd.startswith("bash "):
-        script_path = cmd[5:].strip('"')
-        if Path(script_path).is_absolute():
-            return cmd
-        abs_path = (parent_root / script_path).as_posix()
-        return f'bash "{abs_path}"'
-    elif not Path(cmd).is_absolute():
+    for prefix in ("bash ", "python "):
+        if cmd.startswith(prefix):
+            script_path = cmd[len(prefix):].strip('"')
+            if Path(script_path).is_absolute():
+                return cmd
+            abs_path = (parent_root / script_path).as_posix()
+            return f'{prefix}"{abs_path}"'
+    if not Path(cmd).is_absolute():
         return (parent_root / cmd).as_posix()
     return cmd
 
@@ -85,7 +86,7 @@ def _rewrite_hooks(hooks, parent_root):
     for event, matchers in hooks.items():
         rewritten[event] = []
         for matcher_block in matchers:
-            new_block = {"matcher": matcher_block["matcher"], "hooks": []}
+            new_block = {**matcher_block, "hooks": []}
             for hook in matcher_block["hooks"]:
                 new_hook = dict(hook)
                 if "command" in new_hook:
@@ -177,23 +178,33 @@ def _propagate_one(child, parent_settings, parent_prefs, parent_root, report):
             "Do not edit. Re-run cboot.py from the parent to regenerate."
         ),
         "customInstructions": (
-            "BEFORE RESPONDING TO ANY MESSAGE: Read .state/start.md for your "
-            "operating rules. Your codex is inherited from the parent project. "
-            "Do not skip this step regardless of what the user asks first."
+            "Your governance roots are pre-loaded in your context via SessionStart hook. "
+            "Your codex is inherited from the parent project. Follow the codex loading rules "
+            "to complete boot. Do not skip this step regardless of what the user asks first."
         ),
     }
 
     if "plansDirectory" in parent_settings:
         child_settings["plansDirectory"] = parent_settings["plansDirectory"]
 
+    if "permissions" in parent_settings:
+        child_settings["permissions"] = copy.deepcopy(parent_settings["permissions"])
+
     if "hooks" in parent_settings:
         child_settings["hooks"] = _rewrite_hooks(parent_settings["hooks"], parent_root)
 
-    if "statusline" in parent_settings:
-        sl = copy.deepcopy(parent_settings["statusline"])
+    if "statusLine" in parent_settings:
+        sl = copy.deepcopy(parent_settings["statusLine"])
         if "command" in sl:
             sl["command"] = _rewrite_command(sl["command"], parent_root)
-        child_settings["statusline"] = sl
+        child_settings["statusLine"] = sl
+
+    # Pass through any remaining parent keys not specially handled above
+    _handled_parent_keys = {"$comment", "customInstructions", "plansDirectory",
+                            "permissions", "hooks", "statusLine"}
+    for key, value in parent_settings.items():
+        if key not in _handled_parent_keys and key not in child_settings:
+            child_settings[key] = copy.deepcopy(value)
 
     settings_file = claude_dir / "settings.json"
     settings_file.write_text(json.dumps(child_settings, indent=2) + "\n")

@@ -8,6 +8,16 @@ The codex is the shareable behavior layer of a claudette2 instance. Everything p
 
 ---
 
+## Platform Requirements
+
+| Dependency | Minimum | Reason |
+|---|---|---|
+| Python | 3.10 | Runtime union type syntax (`X \| Y`) in `sqlite.py`; `Path.is_relative_to()` requires 3.9+ |
+| Claude Code | — | Required runtime host |
+| bash | — | Hook scripts, statusline |
+
+---
+
 ## Governance Primitives
 
 ### ABSOLUTE HOLD

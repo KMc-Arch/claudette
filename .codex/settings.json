@@ -1,6 +1,21 @@
 {
   "$comment": "Codex-authoritative Claude Code settings. Materialized to .claude/settings.json at boot by codex-register.",
   "plansDirectory": ".state/plans",
+  "permissions": {
+    "allow": [
+      "Read",
+      "Glob",
+      "Grep",
+      "Bash(command:git status*)",
+      "Bash(command:git log*)",
+      "Bash(command:git diff*)",
+      "Bash(command:git branch*)",
+      "Bash(command:git show*)",
+      "Bash(command:git rev-parse*)",
+      "Bash(command:ls *)",
+      "Bash(command:mkdir -p *)"
+    ]
+  },
   "modules": {
     "statusline": ".codex/implicit/01-infrastructural/01b-materialization/statusline/settings.json"
   }

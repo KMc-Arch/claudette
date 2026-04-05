@@ -18,7 +18,7 @@ YYYYMMDD-HHMM-<project>/
 - Created by the `bundle` explicit command
 - Each bundle is a snapshot, not a sync mechanism
 - Bundles are never modified after creation
-- Old bundles can be deleted manually (purge preserves bundles by default)
+- Preserved by `purge` (default scope); cleaned by `purge all` (high-value scope)
 
 ## What's Included
 

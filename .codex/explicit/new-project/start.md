@@ -47,6 +47,10 @@ All `start.md` files are pre-populated with child-appropriate content that refer
 python .codex/explicit/new-project/bootstrap-child.py <name> --project-root ^
 ```
 
+## Post-Creation
+
+After the project is scaffolded, ask the user what the project is about. Write a one-line description to the project's `CLAUDE.md` body, above the `Read .state/start.md` line. If the user provided the purpose alongside the creation request, write it directly without prompting.
+
 ## Child Project Spec
 
 See `.codex/specs/child-project.md` for the minimum standard and guidance on when/why a child project would add its own `.codex/` entries.

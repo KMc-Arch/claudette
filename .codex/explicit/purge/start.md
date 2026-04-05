@@ -1,5 +1,5 @@
 ---
-version: 2
+version: 3
 short-desc: "Clean transient state; purge all is DESTRUCTIVE (requires confirmation)"
 runtime: python
 reads:
@@ -28,6 +28,7 @@ Removes transient state that accumulates during sessions:
 - `.state/prefs-resolved.json` (regenerated at next boot)
 - `.state/tests/` transient outputs (boot, compliance logs — NOT audits)
 - `.state/traces/` session traces
+- `.state/pauses/` session context snapshots
 - User-level `~/.claude/projects/<hash>/` footprint (external auto-memory)
 
 ## `purge all`
@@ -35,6 +36,8 @@ Removes transient state that accumulates during sessions:
 Everything in default scope, plus:
 - `.state/memory/` files (user profile, decisions, state abstract)
 - `.state/work/` files (backlog, platform notes, architecture debt)
+- `.state/plans/` implementation plans
+- `.state/bundles/` portable project snapshots
 
 **This is destructive.** Requires CONFIRMED HOLD — single user confirmation before execution.
 
@@ -42,13 +45,16 @@ Everything in default scope, plus:
 
 - `.codex/` — the framework definition, never cleaned by purge
 - `.state/tests/audits/` — immutable records, never deleted by automated processes
-- `.state/pauses/` — historical session context, preserved
-- `.state/plans/` — implementation plans, preserved
-- `.state/bundles/` — portable project snapshots, preserved
+- `start.md` files — structural manifests, protected in all scopes
+- `_`-prefixed items — invisible by convention, always skipped
 
 ## Scoped to Child Project
 
 When targeting a child project (`purge <project>`), only that project's `.state/` and `.claude/` are cleaned. The parent's state is untouched. State gravity applies — the purge targets the project's own paths, not the parent's.
+
+### Nested Children (Groups)
+
+`purge <project>` only reaches direct children of `^`. Children nested inside groups (e.g., `Services/MyProject/`) must be purged from a session rooted at the group level, where `^` = the group. This is consistent with state gravity — each group owns its children.
 
 ## Execution
 
@@ -57,6 +63,6 @@ python .codex/explicit/purge/purge.py [default|all|<project>] --project-root ^ [
 ```
 
 1. Determine scope: default, all, or child project.
-2. If `purge all`, warn that `.state/memory/` and `.state/work/` will be wiped and get explicit confirmation.
+2. If `purge all`, warn that `.state/memory/`, `work/`, `plans/`, and `bundles/` will be wiped and get explicit confirmation.
 3. Run `purge.py` with appropriate flags (`--dry-run` to preview, `--confirm` to skip interactive prompt).
 4. Report what was removed.
