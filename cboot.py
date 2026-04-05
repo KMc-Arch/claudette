@@ -10,6 +10,7 @@ Usage:
     python cboot.py --resume   # pass args through to claude
 """
 
+import copy
 import importlib.util
 import json
 import os
@@ -425,10 +426,10 @@ def assemble_settings(report):
         settings["plansDirectory"] = codex_settings["plansDirectory"]
 
     if "permissions" in codex_settings:
-        settings["permissions"] = codex_settings["permissions"]
+        settings["permissions"] = copy.deepcopy(codex_settings["permissions"])
 
     # Pass through any remaining codex keys not specially handled above
-    _handled_codex_keys = {"$comment", "plansDirectory", "permissions", "modules"}
+    _handled_codex_keys = {"$comment", "plansDirectory", "permissions", "modules", "hooks"}
     for key, value in codex_settings.items():
         if key not in _handled_codex_keys and key not in settings:
             settings[key] = value

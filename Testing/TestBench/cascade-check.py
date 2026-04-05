@@ -102,6 +102,8 @@ def run_checks(c):
             sl = parent["statusLine"]
             if sl.get("type") == "command" and sl.get("command"):
                 cmd_path = Path(sl["command"])
+                if not cmd_path.is_absolute():
+                    cmd_path = c.root / cmd_path
                 if cmd_path.exists():
                     c.ok("CA06", "statusLine: module resolved, command path exists")
                 else:
@@ -148,6 +150,8 @@ def run_checks(c):
             child_sl = child["statusLine"]
             if child_sl.get("type") == "command" and child_sl.get("command"):
                 cmd_path = Path(child_sl["command"])
+                if not cmd_path.is_absolute():
+                    cmd_path = c.root / cmd_path
                 if cmd_path.exists():
                     c.ok("CA10", "statusLine: parent -> child, command path exists")
                 else:
@@ -199,7 +203,10 @@ def run_checks(c):
                     for prefix in ("bash ", "python "):
                         if cmd.startswith(prefix):
                             path_str = cmd[len(prefix):].strip('"')
-                            if not Path(path_str).exists():
+                            check_path = Path(path_str)
+                            if not check_path.is_absolute():
+                                check_path = c.root / check_path
+                            if not check_path.exists():
                                 broken.append(f"{event}: {path_str}")
                             break
         if broken:

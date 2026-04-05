@@ -11,7 +11,7 @@ Destructive test for purge correctness. Populates dummy content, runs purge (sta
 ## Usage
 
 ```
-python Metaclawd/TestBench/.codex/explicit/test-purge/test-purge.py [populate|standard|all]
+python Testing/TestBench/.codex/explicit/test-purge/test-purge.py [populate|standard|all]
 ```
 
 - `populate` — create dummy files in all purgeable locations (resets to known state)

@@ -86,7 +86,7 @@ def _rewrite_hooks(hooks, parent_root):
     for event, matchers in hooks.items():
         rewritten[event] = []
         for matcher_block in matchers:
-            new_block = {"matcher": matcher_block["matcher"], "hooks": []}
+            new_block = {**matcher_block, "hooks": []}
             for hook in matcher_block["hooks"]:
                 new_hook = dict(hook)
                 if "command" in new_hook:

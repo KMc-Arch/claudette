@@ -5,9 +5,9 @@ Populates dummy content, runs purge, verifies correctness.
 Designed to be run from the apex root.
 
 Usage:
-    python Metaclawd/TestBench/.codex/explicit/test-purge/test-purge.py populate
-    python Metaclawd/TestBench/.codex/explicit/test-purge/test-purge.py standard
-    python Metaclawd/TestBench/.codex/explicit/test-purge/test-purge.py all
+    python Testing/TestBench/.codex/explicit/test-purge/test-purge.py populate
+    python Testing/TestBench/.codex/explicit/test-purge/test-purge.py standard
+    python Testing/TestBench/.codex/explicit/test-purge/test-purge.py all
 """
 
 from __future__ import annotations
@@ -19,7 +19,7 @@ from pathlib import Path
 
 # TestBench root: up 4 levels from .codex/explicit/test-purge/test-purge.py
 TESTBENCH = Path(__file__).resolve().parents[3]
-# Apex root: up from Metaclawd/TestBench/
+# Apex root: up from Testing/TestBench/
 APEX = TESTBENCH.parents[1]
 PURGE_SCRIPT = APEX / ".codex" / "explicit" / "purge" / "purge.py"
 
