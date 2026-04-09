@@ -102,7 +102,8 @@ def _rewrite_hooks(hooks, parent_root):
 def _merge_child_codex_settings(child_settings, child_codex_settings):
     """Merge child .codex/settings.json over propagated parent settings.
 
-    permissions.allow is additive (child entries appended, deduped).
+    permissions.allow and permissions.deny are additive (child entries appended, deduped).
+    A child can make deny stricter but never weaker.
     All other keys: child overrides parent (innermost wins).
     """
     for key, value in child_codex_settings.items():
@@ -114,7 +115,13 @@ def _merge_child_codex_settings(child_settings, child_codex_settings):
             merged = list(dict.fromkeys(parent_allow + child_allow))
             child_settings["permissions"]["allow"] = merged
             for pkey, pval in value.items():
-                if pkey != "allow":
+                if pkey == "allow":
+                    continue  # already handled above
+                elif pkey == "deny":
+                    parent_deny = child_settings["permissions"].get("deny", [])
+                    merged_deny = list(dict.fromkeys(parent_deny + pval))
+                    child_settings["permissions"]["deny"] = merged_deny
+                else:
                     child_settings["permissions"][pkey] = pval
         else:
             child_settings[key] = copy.deepcopy(value)
@@ -262,7 +269,21 @@ def _propagate_one(child, parent_settings, parent_prefs, parent_root, report):
 
     if local_existing.get("autoMemoryDirectory") != correct_mem_path:
         local_existing["autoMemoryDirectory"] = correct_mem_path
-        settings_local.write_text(json.dumps(local_existing, indent=4) + "\n")
+
+    # -- settings.local.json: propagate parent local permissions --
+    parent_local_file = parent_root / ".claude" / "settings.local.json"
+    if parent_local_file.exists():
+        try:
+            parent_local = json.loads(parent_local_file.read_text(encoding="utf-8"))
+            parent_local_allow = parent_local.get("permissions", {}).get("allow", [])
+            if parent_local_allow:
+                child_local_allow = local_existing.get("permissions", {}).get("allow", [])
+                merged_allow = list(dict.fromkeys(parent_local_allow + child_local_allow))
+                local_existing.setdefault("permissions", {})["allow"] = merged_allow
+        except (json.JSONDecodeError, ValueError):
+            pass
+
+    settings_local.write_text(json.dumps(local_existing, indent=4) + "\n")
 
     # -- prefs-resolved.json --
     if parent_prefs:

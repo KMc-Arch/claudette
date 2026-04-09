@@ -14,6 +14,16 @@
       "Bash(command:git rev-parse*)",
       "Bash(command:ls *)",
       "Bash(command:mkdir -p *)"
+    ],
+    "deny": [
+      "Bash(command:git push*)",
+      "Bash(command:git remote add*)",
+      "Bash(command:git remote set-url*)",
+      "Bash(command:git remote remove*)",
+      "Bash(command:gh pr*)",
+      "Bash(command:gh issue*)",
+      "Bash(command:gh api*)",
+      "Bash(command:gh release*)"
     ]
   },
   "modules": {

@@ -459,6 +459,7 @@ def assemble_settings(report):
                 "hooks": [
                     {"type": "command", "command": hook_cmd("visibility-guard.sh")},
                     {"type": "command", "command": hook_cmd("api-guard.sh")},
+                    {"type": "command", "command": hook_cmd("remote-guard.sh")},
                 ]
             },
             {
