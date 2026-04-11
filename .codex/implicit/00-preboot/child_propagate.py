@@ -3,11 +3,12 @@
 
 Recursively discovers all root: true descendants (children, groups, nested
 children within groups) and materializes their .claude/settings.json with
-hooks pointing to the apex root's hook scripts via absolute paths.
+hooks pointing to the apex root's hook scripts via absolute paths, and
+replicates skill shims so /commands are available in child sessions.
 
 Called by cboot.py after parent materialization is complete. Reads the parent's
-generated .claude/settings.json and .state/prefs-resolved.json, derives
-versions for each discovered root, and writes to each one.
+generated .claude/settings.json, .claude/skills/, and .state/prefs-resolved.json,
+derives versions for each discovered root, and writes to each one.
 """
 
 import argparse
@@ -43,7 +44,7 @@ def discover_roots(root):
 def _has_root_true(claude_md):
     """Check if CLAUDE.md declares root: true in frontmatter."""
     try:
-        text = claude_md.read_text(encoding="utf-8")
+        text = claude_md.read_text(encoding="utf-8-sig")
         if not text.startswith("---"):
             return False
         end = text.find("---", 3)
@@ -94,6 +95,46 @@ def _rewrite_hooks(hooks, parent_root):
                 new_block["hooks"].append(new_hook)
             rewritten[event].append(new_block)
     return rewritten
+
+
+# ── Skill shim propagation ─────────────────────────────────────────
+
+
+def _collect_parent_shims(parent_root):
+    """Read all SKILL.md shims from the parent's .claude/skills/.
+
+    Returns a dict of {skill_name: shim_content} with paths rewritten
+    to absolute so they resolve from any child working directory.
+    """
+    skills_dir = parent_root / ".claude" / "skills"
+    if not skills_dir.is_dir():
+        return {}
+
+    codex_rel = ".codex/explicit"
+    codex_abs = (parent_root / codex_rel).as_posix()
+    shims = {}
+    for skill_dir in sorted(skills_dir.iterdir()):
+        skill_md = skill_dir / "SKILL.md"
+        if not skill_md.is_file():
+            continue
+        content = skill_md.read_text(encoding="utf-8")
+        # Rewrite relative codex path to absolute
+        content = content.replace(
+            f"Read and follow {codex_rel}/",
+            f"Read and follow {codex_abs}/",
+        )
+        shims[skill_dir.name] = content
+    return shims
+
+
+def _write_child_shims(child, shims):
+    """Write skill shims into a child's .claude/skills/, preserving child-local shims."""
+    skills_dir = child / ".claude" / "skills"
+    skills_dir.mkdir(parents=True, exist_ok=True)
+    for name, content in shims.items():
+        shim_dir = skills_dir / name
+        shim_dir.mkdir(parents=True, exist_ok=True)
+        (shim_dir / "SKILL.md").write_text(content)
 
 
 # ── Child codex settings merging ────────────────────────────────────
@@ -185,20 +226,22 @@ def propagate(root, report):
         except (json.JSONDecodeError, ValueError):
             pass
 
+    parent_shims = _collect_parent_shims(root)
+
     roots = discover_roots(root)
     if not roots:
         report.ok("Root propagation: no root: true descendants found")
         return
 
     for r in roots:
-        _propagate_one(r, parent_settings, parent_prefs, root, report)
+        _propagate_one(r, parent_settings, parent_prefs, parent_shims, root, report)
 
     names = ", ".join(r.name for r in roots)
     report.ok(f"Root propagation: {len(roots)} roots ({names})")
 
 
-def _propagate_one(child, parent_settings, parent_prefs, parent_root, report):
-    """Materialize .claude/settings.json and prefs-resolved.json for one child."""
+def _propagate_one(child, parent_settings, parent_prefs, parent_shims, parent_root, report):
+    """Materialize .claude/settings.json, skill shims, and prefs-resolved.json for one child."""
     claude_dir = child / ".claude"
     claude_dir.mkdir(parents=True, exist_ok=True)
 
@@ -275,15 +318,27 @@ def _propagate_one(child, parent_settings, parent_prefs, parent_root, report):
     if parent_local_file.exists():
         try:
             parent_local = json.loads(parent_local_file.read_text(encoding="utf-8"))
-            parent_local_allow = parent_local.get("permissions", {}).get("allow", [])
+            parent_local_perms = parent_local.get("permissions", {})
+            parent_local_allow = parent_local_perms.get("allow", [])
+            parent_local_deny = parent_local_perms.get("deny", [])
+            if parent_local_allow or parent_local_deny:
+                local_existing.setdefault("permissions", {})
             if parent_local_allow:
-                child_local_allow = local_existing.get("permissions", {}).get("allow", [])
+                child_local_allow = local_existing["permissions"].get("allow", [])
                 merged_allow = list(dict.fromkeys(parent_local_allow + child_local_allow))
-                local_existing.setdefault("permissions", {})["allow"] = merged_allow
+                local_existing["permissions"]["allow"] = merged_allow
+            if parent_local_deny:
+                child_local_deny = local_existing["permissions"].get("deny", [])
+                merged_deny = list(dict.fromkeys(parent_local_deny + child_local_deny))
+                local_existing["permissions"]["deny"] = merged_deny
         except (json.JSONDecodeError, ValueError):
             pass
 
     settings_local.write_text(json.dumps(local_existing, indent=4) + "\n")
+
+    # -- skill shims --
+    if parent_shims:
+        _write_child_shims(child, parent_shims)
 
     # -- prefs-resolved.json --
     if parent_prefs:
