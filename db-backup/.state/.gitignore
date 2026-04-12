@@ -1,0 +1,13 @@
+# ── .state/.gitignore ──
+# Track structure (start.md manifests), ignore accumulation.
+# State is instance-specific — only the skeleton travels with the framework.
+
+# Ignore everything
+*
+
+# Keep directory tree
+!*/
+
+# Keep manifests and this gitignore
+!start.md
+!.gitignore

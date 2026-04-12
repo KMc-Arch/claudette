@@ -24,6 +24,10 @@
 !/Testing/
 !/Testing/**
 
+# ── db-backup child project (git-tracked) ──
+!/db-backup/
+!/db-backup/**
+
 # ── Generated (never track) ──
 .claude/
 
