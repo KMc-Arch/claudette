@@ -121,7 +121,9 @@ fi
 CONFIGURED_RESOLVED=$(realpath -m "$CONFIGURED" 2>/dev/null || echo "$CONFIGURED")
 EXPECTED_RESOLVED=$(realpath -m "$EXPECTED_DIR" 2>/dev/null || echo "$EXPECTED_DIR")
 
-if [ "$CONFIGURED_RESOLVED" != "$EXPECTED_RESOLVED" ]; then
+# Case-insensitive compare: WSL2 /mnt/ is case-insensitive (NTFS) but
+# $CLAUDE_PROJECT_DIR may lowercase the path vs. what's in settings.local.json.
+if [ "${CONFIGURED_RESOLVED,,}" != "${EXPECTED_RESOLVED,,}" ]; then
     cat <<EOF
 ╔══════════════════════════════════════════════════════════════════╗
 ║  ⚠  AUTO-MEMORY PATH STALE — STATE LEAKAGE LIKELY  ⚠          ║
