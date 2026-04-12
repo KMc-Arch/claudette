@@ -298,7 +298,8 @@ def generate_skill_shims(report):
             (shim_dir / "SKILL.md").write_text(
                 f"---\nname: {entry.name}\n---\n"
                 f"{desc_line}\n"
-                f"Read and follow .codex/explicit/{entry.name}/start.md\n"
+                f"Read and follow .codex/explicit/{entry.name}/start.md\n",
+                encoding="utf-8",
             )
             count += 1
 
@@ -605,6 +606,10 @@ def check_hook_coverage(report):
 # ── Main ─────────────────────────────────────────────────────────────
 
 def main():
+    # Ensure stdout can handle Unicode (box-drawing, em dashes, etc.)
+    if hasattr(sys.stdout, "reconfigure"):
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+
     report = BootReport()
 
     # Pre-flight

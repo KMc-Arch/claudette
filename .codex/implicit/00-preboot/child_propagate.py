@@ -134,7 +134,7 @@ def _write_child_shims(child, shims):
     for name, content in shims.items():
         shim_dir = skills_dir / name
         shim_dir.mkdir(parents=True, exist_ok=True)
-        (shim_dir / "SKILL.md").write_text(content)
+        (shim_dir / "SKILL.md").write_text(content, encoding="utf-8")
 
 
 # ── Child codex settings merging ────────────────────────────────────
