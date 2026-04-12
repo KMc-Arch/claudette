@@ -4,5 +4,9 @@ _*
 Thumbs.db
 desktop.ini
 .env*
+!.env.example
 *.key
 *.pem
+
+# Backup artifacts (must never reach git)
+backups/
