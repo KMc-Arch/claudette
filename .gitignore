@@ -26,6 +26,7 @@
 
 # ── Generated (never track) ──
 .claude/
+**/prefs-resolved.json
 
 # ── Underscore-prefixed (invisible by convention, never track) ──
 _*/
