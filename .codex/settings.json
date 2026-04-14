@@ -13,9 +13,7 @@
       "Bash(git show:*)",
       "Bash(git rev-parse:*)",
       "Bash(ls:*)",
-      "Bash(mkdir -p:*)",
-      "mcp__majel__ask",
-      "mcp__majel__check"
+      "Bash(mkdir -p:*)"
     ],
     "deny": [
       "Bash(git push:*)",
