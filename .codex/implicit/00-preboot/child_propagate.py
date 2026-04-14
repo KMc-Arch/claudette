@@ -209,7 +209,7 @@ def _merge_child_prefs(parent_prefs, child_prefs_file):
 # ── Broken permission-rule healing ─────────────────────────────────
 
 
-def _heal_broken_perm_rules(settings_local_file, label, report):
+def _heal_broken_perm_rules(settings_local_file):
     """Rewrite legacy Bash(command:<prefix>*) rules to canonical Bash(<prefix>:*).
 
     The legacy form is a silent no-op in Claude Code — the colon inside the
@@ -218,20 +218,17 @@ def _heal_broken_perm_rules(settings_local_file, label, report):
     This pass auto-heals drift on every boot so hand-edits can't re-introduce
     the broken form. Dedupes while preserving first-occurrence order.
 
-    Args:
-        settings_local_file: Path to the .claude/settings.local.json to heal.
-        label: Short string used in the log line (e.g. child name or "parent").
-        report: BootReport instance; logs only when rewrites > 0.
+    Returns the number of rules rewritten (0 if file missing, unreadable, or clean).
     """
     if not settings_local_file.exists():
-        return
+        return 0
     try:
         data = json.loads(settings_local_file.read_text(encoding="utf-8"))
     except (json.JSONDecodeError, ValueError, OSError):
-        return
+        return 0
     perms = data.get("permissions")
     if not isinstance(perms, dict):
-        return
+        return 0
 
     rewritten = 0
     for key in ("allow", "deny"):
@@ -251,7 +248,7 @@ def _heal_broken_perm_rules(settings_local_file, label, report):
 
     if rewritten > 0:
         settings_local_file.write_text(json.dumps(data, indent=4) + "\n")
-        report.ok(f"Local perms healed ({label}): {rewritten} broken rules rewritten")
+    return rewritten
 
 
 # ── Propagation ─────────────────────────────────────────────────────
@@ -286,22 +283,36 @@ def propagate(root, report):
 
     # Heal parent's own settings.local.json before propagating to children,
     # so broken rules never get merged into child allow/deny lists.
-    _heal_broken_perm_rules(root / ".claude" / "settings.local.json", "parent", report)
+    heal_rules = _heal_broken_perm_rules(root / ".claude" / "settings.local.json")
+    heal_projects = 1 if heal_rules > 0 else 0
+    scanned = 1
 
     roots = discover_roots(root)
     if not roots:
         report.ok("Root propagation: no root: true descendants found")
-        return
+    else:
+        for r in roots:
+            child_rules = _propagate_one(r, parent_settings, parent_prefs, parent_shims, root, report)
+            scanned += 1
+            if child_rules > 0:
+                heal_rules += child_rules
+                heal_projects += 1
+        names = ", ".join(r.name for r in roots)
+        report.ok(f"Root propagation: {len(roots)} roots ({names})")
 
-    for r in roots:
-        _propagate_one(r, parent_settings, parent_prefs, parent_shims, root, report)
-
-    names = ", ".join(r.name for r in roots)
-    report.ok(f"Root propagation: {len(roots)} roots ({names})")
+    project_word = "project" if scanned == 1 else "projects"
+    if heal_rules == 0:
+        report.ok(f"Local perms heal: no broken Bash rules ({scanned} {project_word} scanned)")
+    else:
+        report.ok(f"Local perms heal: fixed {heal_rules} broken Bash rules in {heal_projects} of {scanned} {project_word}")
 
 
 def _propagate_one(child, parent_settings, parent_prefs, parent_shims, parent_root, report):
-    """Materialize .claude/settings.json, skill shims, and prefs-resolved.json for one child."""
+    """Materialize .claude/settings.json, skill shims, and prefs-resolved.json for one child.
+
+    Returns the number of broken Bash permission rules healed in this child's
+    settings.local.json (0 if clean or file absent).
+    """
     claude_dir = child / ".claude"
     claude_dir.mkdir(parents=True, exist_ok=True)
 
@@ -431,7 +442,7 @@ def _propagate_one(child, parent_settings, parent_prefs, parent_shims, parent_ro
     # Heal any legacy Bash(command:<prefix>*) rules that drifted in (either
     # from the parent's local perms just merged above, or from hand-edits to
     # the child's own settings.local.json).
-    _heal_broken_perm_rules(settings_local, child.name, report)
+    return _heal_broken_perm_rules(settings_local)
 
 
 # ── Standalone execution ────────────────────────────────────────────
