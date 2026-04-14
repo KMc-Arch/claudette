@@ -237,6 +237,12 @@ Condition: Two checks, both must pass:
 2. **Negative:** Run `bash -c "ls ~/.claude/projects/*/memory/*.md 2>/dev/null"` and check if any returned files belong to THIS project (match the project path slug or leaf folder name). If memory files exist in the default external location for this project, `[FAIL]` with the external path — auto-memory is leaking. If no match, this check passes.
 Overall: PASS requires positive check pass + negative check pass. WARN if positive is uncertain but negative passes. FAIL if negative check finds leakage.
 
+**T48a** — No broken `Bash(command:...)` permission syntax anywhere
+Condition: Glob for all `settings.json` and `settings.local.json` files under `^/` (include `.codex/`, `.claude/`, and every child project's `.codex/` and `.claude/`). For each file, read it and check whether the literal string `Bash(command:` appears. The legacy form `Bash(command:xxx*)` matches nothing — the colon is treated as a literal character — so any rule in this form is dead weight (allow lists don't auto-approve; deny lists don't block). Canonical form is `Bash(xxx:*)`. See `.state/memory/feedback_permission_syntax.md`.
+- **PASS** if zero files contain `Bash(command:`.
+- **FAIL** if any file contains it — list each offending file and the count of occurrences.
+Skip `_`-prefixed paths (visibility-guard territory). Skip `.state/`, `.templates/`, audit snapshots, and other non-live copies — only scan live `.codex/` and `.claude/` settings under project roots.
+
 ---
 
 ### Category J: Cross-Reference Integrity

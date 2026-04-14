@@ -14,8 +14,16 @@ derives versions for each discovered root, and writes to each one.
 import argparse
 import copy
 import json
+import re
 import sys
 from pathlib import Path
+
+
+# Matches the broken/legacy Claude Code permission form Bash(command:<prefix>*).
+# The canonical form is Bash(<prefix>:*). The legacy form is non-functional
+# because the colon inside the parentheses is treated literally, so the rule
+# matches nothing. See https://code.claude.com/docs/en/permissions.md.
+_BROKEN_BASH_RULE = re.compile(r"^Bash\(command:(.+?)\s*\*\)$")
 
 
 # ── Discovery ───────────────────────────────────────────────────────
@@ -198,6 +206,54 @@ def _merge_child_prefs(parent_prefs, child_prefs_file):
     return resolved
 
 
+# ── Broken permission-rule healing ─────────────────────────────────
+
+
+def _heal_broken_perm_rules(settings_local_file, label, report):
+    """Rewrite legacy Bash(command:<prefix>*) rules to canonical Bash(<prefix>:*).
+
+    The legacy form is a silent no-op in Claude Code — the colon inside the
+    parentheses is treated literally, so rules like `Bash(command:git add*)`
+    never match anything and users wonder why their allowlist isn't working.
+    This pass auto-heals drift on every boot so hand-edits can't re-introduce
+    the broken form. Dedupes while preserving first-occurrence order.
+
+    Args:
+        settings_local_file: Path to the .claude/settings.local.json to heal.
+        label: Short string used in the log line (e.g. child name or "parent").
+        report: BootReport instance; logs only when rewrites > 0.
+    """
+    if not settings_local_file.exists():
+        return
+    try:
+        data = json.loads(settings_local_file.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, ValueError, OSError):
+        return
+    perms = data.get("permissions")
+    if not isinstance(perms, dict):
+        return
+
+    rewritten = 0
+    for key in ("allow", "deny"):
+        rules = perms.get(key)
+        if not isinstance(rules, list):
+            continue
+        new_rules = []
+        for rule in rules:
+            if isinstance(rule, str):
+                m = _BROKEN_BASH_RULE.match(rule)
+                if m:
+                    rule = f"Bash({m.group(1).rstrip()}:*)"
+                    rewritten += 1
+            new_rules.append(rule)
+        # Dedupe, preserving first-occurrence order
+        perms[key] = list(dict.fromkeys(new_rules))
+
+    if rewritten > 0:
+        settings_local_file.write_text(json.dumps(data, indent=4) + "\n")
+        report.ok(f"Local perms healed ({label}): {rewritten} broken rules rewritten")
+
+
 # ── Propagation ─────────────────────────────────────────────────────
 
 
@@ -227,6 +283,10 @@ def propagate(root, report):
             pass
 
     parent_shims = _collect_parent_shims(root)
+
+    # Heal parent's own settings.local.json before propagating to children,
+    # so broken rules never get merged into child allow/deny lists.
+    _heal_broken_perm_rules(root / ".claude" / "settings.local.json", "parent", report)
 
     roots = discover_roots(root)
     if not roots:
@@ -367,6 +427,11 @@ def _propagate_one(child, parent_settings, parent_prefs, parent_shims, parent_ro
     if existing.get("autoMemoryDirectory") != correct_path:
         existing["autoMemoryDirectory"] = correct_path
         settings_local.write_text(json.dumps(existing, indent=4) + "\n")
+
+    # Heal any legacy Bash(command:<prefix>*) rules that drifted in (either
+    # from the parent's local perms just merged above, or from hand-edits to
+    # the child's own settings.local.json).
+    _heal_broken_perm_rules(settings_local, child.name, report)
 
 
 # ── Standalone execution ────────────────────────────────────────────

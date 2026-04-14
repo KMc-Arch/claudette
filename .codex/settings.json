@@ -6,24 +6,24 @@
       "Read",
       "Glob",
       "Grep",
-      "Bash(command:git status*)",
-      "Bash(command:git log*)",
-      "Bash(command:git diff*)",
-      "Bash(command:git branch*)",
-      "Bash(command:git show*)",
-      "Bash(command:git rev-parse*)",
-      "Bash(command:ls *)",
-      "Bash(command:mkdir -p *)"
+      "Bash(git status:*)",
+      "Bash(git log:*)",
+      "Bash(git diff:*)",
+      "Bash(git branch:*)",
+      "Bash(git show:*)",
+      "Bash(git rev-parse:*)",
+      "Bash(ls:*)",
+      "Bash(mkdir -p:*)"
     ],
     "deny": [
-      "Bash(command:git push*)",
-      "Bash(command:git remote add*)",
-      "Bash(command:git remote set-url*)",
-      "Bash(command:git remote remove*)",
-      "Bash(command:gh pr*)",
-      "Bash(command:gh issue*)",
-      "Bash(command:gh api*)",
-      "Bash(command:gh release*)"
+      "Bash(git push:*)",
+      "Bash(git remote add:*)",
+      "Bash(git remote set-url:*)",
+      "Bash(git remote remove:*)",
+      "Bash(gh pr:*)",
+      "Bash(gh issue:*)",
+      "Bash(gh api:*)",
+      "Bash(gh release:*)"
     ]
   },
   "modules": {
