@@ -78,7 +78,7 @@ Each test: what you DO, then what you OBSERVE. Tests marked SCRIPT can be pre-ch
 6. OBSERVE: key gone from both
 
 **CF-2: Dummy permission round-trip**
-1. From parent: add `"Bash(command:echo test*)"` to `permissions.allow` in `.codex/settings.json`
+1. From parent: add `"Bash(echo test:*)"` to `permissions.allow` in `.codex/settings.json`
 2. Run cboot
 3. OBSERVE: permission present in parent and child settings
 4. Open TestBench session, run `echo test123`
