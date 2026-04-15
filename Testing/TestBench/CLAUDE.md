@@ -1,8 +1,8 @@
 ---
 root: true
+name: TestBench
 codex: ^/^/.codex
 ---
-
 # TestBench
 
 Disposable child project that IS the governance framework's test suite. Ships with the platform (git-tracked). When you open a session here, you are inside the test — the framework tests itself from a real child context.

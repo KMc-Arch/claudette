@@ -1,5 +1,5 @@
 ---
-version: 2
+version: 3
 short-desc: "Dispatch to Majel; async reply via background subagent"
 isolation: inline
 reads:
@@ -26,16 +26,20 @@ Whitespace-only or empty content is an error — refuse and prompt the user for 
 
 2. **Check for pending clarification.** If `.state/majel/pending-clarification.json` exists, prior dispatch is awaiting an answer (see Clarification loop).
 
-3. **Announce dispatch immediately** to the user, before spawning:
+3. **Resolve caller context.** Determine two values from your loaded context:
+   - `caller_root`: the absolute path of your `^` (the nearest `root: true` ancestor — known from CLAUDE.md loading at boot).
+   - `caller_name`: the value of the `name:` field in `^/CLAUDE.md`'s frontmatter. If `name:` is absent or empty, fall back to the basename of `caller_root`.
+
+4. **Announce dispatch immediately** to the user, before spawning:
 
    `Dispatched to Majel. Reply will surface when ready.`
 
-4. **Spawn one background subagent** via the Agent tool:
+5. **Spawn one background subagent** via the Agent tool:
    - `subagent_type: general-purpose`
    - `run_in_background: true`
-   - Prompt: use the template below, substituting only `<DIRECTIVE>` and `<CONTINUES_UUID>` (empty for a fresh dispatch).
+   - Prompt: use the template below, substituting `<DIRECTIVE>`, `<CONTINUES_UUID>` (empty for a fresh dispatch), `<CALLER_ROOT>`, and `<CALLER_NAME>`.
 
-5. **On subagent completion**, parse its return and surface Majel's reply. If `CONTINUES` is a non-empty UUID, trigger the clarification loop.
+6. **On subagent completion**, parse its return and surface Majel's reply. If `CONTINUES` is a non-empty UUID, trigger the clarification loop.
 
 ## Subagent prompt template
 
@@ -52,7 +56,11 @@ Paste this template verbatim into the subagent's prompt with substitutions in pl
 >
 > **Steps:**
 > 1. Load MCP schemas: `ToolSearch` with query `select:mcp__majel__ask,mcp__majel__check`.
-> 2. Call `mcp__majel__ask` with `content` set to the exact string between BEGIN DIRECTIVE and END DIRECTIVE below. If `<CONTINUES_UUID>` is a non-empty UUID, also pass `continues: <CONTINUES_UUID>`.
+> 2. Call `mcp__majel__ask` with:
+>    - `content`: the exact string between BEGIN DIRECTIVE and END DIRECTIVE below.
+>    - `caller_root`: `<CALLER_ROOT>` (verbatim, always include).
+>    - `caller_name`: `<CALLER_NAME>` (verbatim, always include).
+>    - `continues`: `<CONTINUES_UUID>` — only if it is a non-empty UUID; omit the field otherwise.
 > 3. If the response contains an `error` field instead of `request_id`, return `STATUS: error` with the error text and stop.
 > 4. Capture `request_id`. Poll `mcp__majel__check(request_id)` every 30 seconds.
 > 5. Loop until `status` is `answered`, `abandoned`, or `unknown`, OR until **8 minutes** have elapsed.
@@ -73,6 +81,8 @@ Paste this template verbatim into the subagent's prompt with substitutions in pl
 > === BEGIN DIRECTIVE ===
 > <DIRECTIVE>
 > === END DIRECTIVE ===
+
+**On `caller_root` / `caller_name`:** Majel's server currently treats these as optional and falls back to inference when absent. Claudette always fills them from the caller's resolved `^` — this is the enforcement point. As all callers go through `/majel`, coverage becomes universal and Majel can eventually hard-require the fields.
 
 ## Surfacing the reply
 
