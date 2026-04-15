@@ -1,36 +1,82 @@
 #!/usr/bin/env bash
-# H-3.9: PreToolUse (Write|Edit) — enforce CLAUDE.md immutability
-# Blocks writes to the root CLAUDE.md (design constraint #2).
+# H-3.9: PreToolUse (Write|Edit) — enforce apex CLAUDE.md immutability.
+#
+# Blocks Write operations to the apex CLAUDE.md entirely. Permits Edit
+# operations only when the change is confined to the frontmatter block
+# (between opening and closing `---` fences). Body evolution must happen
+# in start.md files downstream.
 
 INPUT=$(cat)
+export CLAUDE_HOOK_INPUT="$INPUT"
 
-FILE_PATH=$(echo "$INPUT" | grep -oE '"file_path"\s*:\s*"[^"]*"' | grep -oE '"[^"]*"$' | tr -d '"')
+python3 - "$CLAUDE_PROJECT_DIR" <<'PY'
+import json
+import os
+import re
+import sys
 
-if [ -z "$FILE_PATH" ]; then
-    exit 0
-fi
+project_dir = sys.argv[1]
 
-# Normalize backslashes to forward slashes (bash parameter expansion, not sed)
-FILE_PATH="${FILE_PATH//\\//}"
+try:
+    data = json.loads(os.environ["CLAUDE_HOOK_INPUT"])
+except (json.JSONDecodeError, KeyError):
+    sys.exit(0)
 
-# Resolve to absolute if relative
-if [[ "$FILE_PATH" != /* ]] && [[ ! "$FILE_PATH" =~ ^[A-Za-z]:/ ]]; then
-    FILE_PATH="$CLAUDE_PROJECT_DIR/$FILE_PATH"
-fi
+tool_name = data.get("tool_name", "")
+tool_input = data.get("tool_input", {})
+file_path = tool_input.get("file_path", "")
+if not file_path:
+    sys.exit(0)
 
-# Canonicalize both paths to POSIX format for comparison
-if command -v cygpath &>/dev/null; then
-    FILE_PATH=$(cygpath -u "$FILE_PATH" 2>/dev/null || echo "$FILE_PATH")
-    ROOT_CLAUDE=$(cygpath -u "$CLAUDE_PROJECT_DIR/CLAUDE.md" 2>/dev/null || echo "$CLAUDE_PROJECT_DIR/CLAUDE.md")
-else
-    ROOT_CLAUDE="$CLAUDE_PROJECT_DIR/CLAUDE.md"
-fi
+# Canonicalize to POSIX absolute path for comparison
+file_path = file_path.replace("\\", "/")
+if not os.path.isabs(file_path):
+    file_path = os.path.join(project_dir, file_path)
+file_path = os.path.normpath(file_path)
 
-if [ "$FILE_PATH" = "$ROOT_CLAUDE" ]; then
-    echo "BLOCKED: CLAUDE.md is immutable (design constraint #2)." >&2
-    echo "  CLAUDE.md is a bootstrap pointer — it never grows." >&2
-    echo "  All evolution happens in start.md files downstream." >&2
-    exit 2
-fi
+apex = os.path.normpath(os.path.join(project_dir, "CLAUDE.md"))
+if file_path != apex:
+    sys.exit(0)  # Not the apex — no constraint
 
-exit 0
+# Write operations always blocked — a full rewrite would clobber the body.
+if tool_name != "Edit":
+    print("BLOCKED: apex CLAUDE.md is immutable (design constraint #2).", file=sys.stderr)
+    print("  CLAUDE.md is a bootstrap pointer — it never grows.", file=sys.stderr)
+    print("  Body evolves through start.md files downstream.", file=sys.stderr)
+    print("  Frontmatter-only edits are permitted via the Edit tool.", file=sys.stderr)
+    sys.exit(2)
+
+old_string = tool_input.get("old_string", "")
+new_string = tool_input.get("new_string", "")
+
+try:
+    with open(file_path, encoding="utf-8") as f:
+        content = f.read()
+except OSError:
+    sys.exit(0)  # Let the tool raise the real error
+
+# Locate frontmatter: `---\n ... \n---\n`
+m = re.match(r"^---\n(.*?\n)?---\n", content, re.DOTALL)
+if not m:
+    print("BLOCKED: apex CLAUDE.md has no parseable frontmatter; edit denied.", file=sys.stderr)
+    sys.exit(2)
+
+fm_end = m.end()
+
+# Require old_string to be entirely within the frontmatter block.
+old_idx = content.find(old_string)
+if old_idx < 0:
+    sys.exit(0)  # Edit tool will fail on its own with a clearer error
+if old_idx + len(old_string) > fm_end:
+    print("BLOCKED: apex CLAUDE.md edits must be confined to frontmatter.", file=sys.stderr)
+    print("  Body is immutable — evolve via start.md files downstream.", file=sys.stderr)
+    sys.exit(2)
+
+# Verify the post-edit file still has a valid frontmatter block.
+new_content = content[:old_idx] + new_string + content[old_idx + len(old_string):]
+if not re.match(r"^---\n(.*?\n)?---\n", new_content, re.DOTALL):
+    print("BLOCKED: apex CLAUDE.md edit would break frontmatter fences.", file=sys.stderr)
+    sys.exit(2)
+
+sys.exit(0)
+PY

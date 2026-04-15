@@ -51,3 +51,38 @@ All `.state/` operations within a child project target the child's `.state/` by 
 ## Bundle
 
 On `bundle`, the child gains its own `.codex/` (inlined from `^/^/.codex`), its CLAUDE.md becomes `apex-root: true`, `^/^` references coalesce to `^`, and `codex: ^/^/.codex` becomes `codex: .codex`.
+
+## Naming Convention
+
+The `name:` frontmatter field is **user-authoritative** — the creator chooses it and the command trusts it verbatim (digits, casing, punctuation preserved as given). The folder name is **derived** from `name:`.
+
+### Folder derivation (applied in order)
+
+1. Transliterate non-ASCII characters to ASCII (`unicodedata` NFKD fold — good for accented Latin; exotic scripts may need richer transliteration later).
+2. Lowercase.
+3. Strip a trailing ` Group` suffix. Groups are emergent; the folder doesn't carry the `Group` marker — only the `name:` does.
+4. Replace ` ` with `-`.
+5. Strip characters outside `[a-z0-9-]`.
+6. Collapse consecutive hyphens; strip leading/trailing hyphens.
+
+### Groups
+
+A root is a **group** when it contains one or more nested roots. A group's `name:` ends with ` Group`. Maintained by convention: when `new-project` scaffolds inside an existing root whose own name doesn't end with ` Group`, it flags — non-blockingly — that the parent should be renamed. The user performs the rename manually.
+
+### Collision handling
+
+Folder-name collisions are resolved by numeric suffix:
+- Check case-insensitively whether the derived folder collides with an existing sibling (safe on case-insensitive filesystems like NTFS).
+- If no collision, use the derived name as-is.
+- If any sibling matches `<base><N>` (where `N` is one or more trailing digits), use `max(N) + 1`.
+- Otherwise, use `2`.
+
+The numeric suffix lives **only in the folder name**, never in the `name:` field. Apply the same transliteration to existing siblings during collision detection so accented-name collisions are caught.
+
+### Name changes
+
+If `name:` changes after creation (e.g., a leaf becomes a group and gains ` Group`), **flag the user to update Majel accordingly** — Majel may have recorded the prior name. The user decides whether to migrate.
+
+### Apex
+
+The apex CLAUDE.md declares `name: Claudette`. Its folder name is the installation path and is not governed by these derivation rules.

@@ -1,5 +1,6 @@
 ---
 apex-root: true
+name: Claudette
 ---
 
 Every folder has a `start.md`. Read it first — before anything else in that folder.
