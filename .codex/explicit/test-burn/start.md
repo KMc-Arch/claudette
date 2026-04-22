@@ -152,13 +152,47 @@ Condition: none of these files exist
 
 ---
 
+### Phase 7: Hook Behavioral Tests
+
+These tests exercise the PreToolUse guards directly by piping synthetic JSON payloads to the hook scripts and inspecting exit codes + stderr. They close the gap left by test-safe T16, which only verifies registration, not enforcement.
+
+Each test sets `CLAUDE_PROJECT_DIR` to a fixture root and pipes a synthetic tool-use JSON to the hook via stdin. Run from `^/`.
+
+Fixture root for these tests: `CLAUDE_PROJECT_DIR=^/test-burn-child` (exists from Phase 1 if B17 has not yet run; if Phase 7 runs after B17, recreate a throwaway dir or use `^/` itself as root and write targets outside of it).
+
+**B19** — containment-guard blocks Windows `C:\` absolute path outside root
+Action: `CLAUDE_PROJECT_DIR=<root>; echo '{"tool_input":{"file_path":"C:\\Users\\nobody\\foo.txt"}}' | bash .codex/implicit/01-infrastructural/01b-materialization/hooks/containment-guard.sh`
+Condition: exit code 2, stderr contains "BLOCKED"
+
+**B20** — containment-guard blocks Windows `C:/` absolute path outside root
+Action: same hook, payload `{"tool_input":{"file_path":"C:/Users/nobody/foo.txt"}}`
+Condition: exit code 2, stderr contains "BLOCKED"
+
+**B21** — containment-guard blocks Unix absolute path outside root
+Action: same hook, payload `{"tool_input":{"file_path":"/etc/passwd"}}`
+Condition: exit code 2, stderr contains "BLOCKED"
+
+**B22** — containment-guard allows path inside root
+Action: same hook, payload with `file_path` pointing to a file inside `CLAUDE_PROJECT_DIR`
+Condition: exit code 0, no stderr
+
+**B23** — gravity-guard blocks `.state/` write outside root
+Action: `echo '{"tool_input":{"file_path":"C:/some/parent/.state/foo.md"}}' | bash .codex/implicit/01-infrastructural/01b-materialization/hooks/gravity-guard.sh` (with `CLAUDE_PROJECT_DIR` set to a different path that is NOT a parent of the target)
+Condition: exit code 2, stderr contains "State gravity violation"
+
+**B24** — gravity-guard allows `.state/` write inside root
+Action: same hook, `file_path` pointing into `$CLAUDE_PROJECT_DIR/.state/`
+Condition: exit code 0, no stderr
+
+---
+
 ## Summary
 
 Print final results:
 
 ```
 ═══════════════════════════════════════
-  test-burn: 23/23 passed
+  test-burn: 29/29 passed
 ═══════════════════════════════════════
 ```
 
