@@ -30,7 +30,7 @@ HOOKS_DIR = ROOT / HOOKS_REL
 
 PREBOOT_DIR = CODEX / "implicit" / "00-preboot"
 
-PYTHON_EXE = shutil.which("python") or shutil.which("python3") or "python"
+PYTHON_EXE = Path(shutil.which("python") or shutil.which("python3") or "python").as_posix()
 
 
 # ── Utilities ────────────────────────────────────────────────────────
@@ -54,7 +54,8 @@ def now_stamp():
 def hook_cmd(script_name, interpreter="bash"):
     """Return the hook command string for a script in the hooks dir."""
     abs_path = (HOOKS_DIR / script_name).as_posix()
-    return f'{interpreter} "{abs_path}"'
+    interp = interpreter if interpreter in ("bash", "python", "python3") else f'"{interpreter}"'
+    return f'{interp} "{abs_path}"'
 
 
 class BootReport:
