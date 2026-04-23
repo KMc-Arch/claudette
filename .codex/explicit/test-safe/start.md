@@ -243,6 +243,17 @@ Condition: Glob for all `settings.json` and `settings.local.json` files under `^
 - **FAIL** if any file contains it — list each offending file and the count of occurrences.
 Skip `_`-prefixed paths (visibility-guard territory). Skip `.state/`, `.templates/`, audit snapshots, and other non-live copies — only scan live `.codex/` and `.claude/` settings under project roots.
 
+**T48b** — All `.claude/settings.json` hook commands resolve to existing files
+Condition: Glob `**/.claude/settings.json` under `^/`. Skip `_`-prefixed paths and `_archive/`. For each file, parse as JSON. For every command string in `hooks` (walk all events × matchers × hooks) and in `statusLine.command`:
+1. Tokenize the command respecting shell quoting (use `shlex.split` in posix mode) — extract the interpreter (first token) and script argument (second token, if present).
+2. **Malformed-shape check:** reject any command containing two stacked drive letters (regex `[A-Za-z]:[\\/].*[A-Za-z]:[\\/]` appearing outside of normal interpreter+script pairing — i.e., one token should have at most one drive letter). Catches the `C:/root/"C:/interpreter"` class of bug.
+3. **Interpreter check:** if absolute (starts with `/` or matches `^[A-Za-z]:[\\/]`), verify it exists on disk. If a bare name (`bash`, `python`, `python3`), verify `shutil.which` resolves it.
+4. **Script check:** if a script argument is present and absolute, verify it exists on disk.
+- **PASS** if every command in every file tokenizes cleanly and all referenced paths exist.
+- **FAIL** with `<file>: <hook_event>: <command>` for each offender, plus the specific failure reason (malformed / interpreter missing / script missing).
+
+Catches the hook-propagation regression class directly: had T48b existed, the 26-child breakage from the boot-inject.py migration would have been caught at audit time instead of session-start time. Also guards against the predicted `$CLAUDE_PROJECT_DIR` env-var regression (a malformed path in settings.json would fail check #2 or #4).
+
 ---
 
 ### Category J: Cross-Reference Integrity
