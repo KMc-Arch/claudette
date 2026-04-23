@@ -10,7 +10,7 @@ Boot-time hook registration. These scripts implement structural enforcement of g
 
 | Script | Hook Event | Matcher | Purpose |
 |---|---|---|---|
-| `boot-inject.sh` | SessionStart | (all) | Generate skill shims, inject boot chain + command index + warning relay mandate + trace header + attestation trigger |
+| `boot-inject.py` | SessionStart | (all) | Inject hierarchy-aware boot chain + command index + warning relay mandate into Claude's context (replaces legacy `boot-inject.sh`) |
 | `prefs-staleness-check.sh` | SessionStart | (all) | Warn if prefs-resolved.json is stale |
 | `memory-redirect-check.sh` | SessionStart | (all) | Warn if autoMemoryDirectory is misconfigured (6 failure modes checked) |
 | `visibility-guard.sh` | PreToolUse | Read\|Glob\|Grep\|Bash\|Write\|Edit | Block access to `_`-prefixed paths |

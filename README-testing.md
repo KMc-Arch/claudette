@@ -56,7 +56,7 @@ Feeds mock tool-call JSON to each hook script via stdin and validates exit codes
 | api-guard.sh | AG01-AG05 | Blocks pip install anthropic, import anthropic, curl to api.anthropic.com |
 | audit-immutability-guard.sh | AI01-AI03 | Blocks edits to existing audit findings, allows decisions.md and non-audit writes |
 | claude-md-immutability-guard.sh | CM01-CM03 | Blocks root CLAUDE.md edits, allows child CLAUDE.md and other files |
-| boot-inject.sh | BI01-BI03 | Outputs boot sequence with command index |
+| boot-inject.py | BI01-BI03 | Outputs boot instructions with command index |
 | prefs-staleness-check.sh | PS01-PS04 | Detects missing prefs-resolved.json, no false warnings when fresh |
 | memory-redirect-check.sh | MR01-MR04 | Warns when auto-memory not configured, silent when correct |
 | codex-edit-notify.sh | CE01-CE06 | Notifies on .py/.sh edits in codex, silent on .md and non-codex files |
