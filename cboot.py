@@ -30,7 +30,11 @@ HOOKS_DIR = ROOT / HOOKS_REL
 
 PREBOOT_DIR = CODEX / "implicit" / "00-preboot"
 
-PYTHON_EXE = Path(shutil.which("python") or shutil.which("python3") or "python").as_posix()
+_python = shutil.which("python") or shutil.which("python3")
+if not _python:
+    sys.stderr.write("cboot: no python interpreter on PATH (tried 'python', 'python3')\n")
+    sys.exit(1)
+PYTHON_EXE = Path(_python).as_posix()
 
 
 # ── Utilities ────────────────────────────────────────────────────────

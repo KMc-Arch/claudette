@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 
 # Ensure jq is on PATH
 if ! command -v jq &>/dev/null; then
