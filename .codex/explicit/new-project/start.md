@@ -4,7 +4,7 @@ short-desc: Scaffold a new child project from template
 runtime: python
 reads:
   - "^/.codex/specs/child-project.md"
-  - "^/.templates/child/"
+  - "^/^/.templates/child/"
 writes:
   - "^/<folder>/"
 ---
@@ -27,7 +27,7 @@ Runs `bootstrap-child.py` which:
 
 1. Derives the folder name from `<name>` (transliterate → lowercase → strip trailing ` Group` → space-to-hyphen → cleanup).
 2. Resolves folder collisions with a numeric suffix (case-insensitive check, `max(N)+1` over existing versioned siblings).
-3. Copies the `^/.templates/child/` tree into the resolved folder.
+3. Copies the apex `^/^/.templates/child/` tree into the resolved folder. Template is always resolved from the apex (`apex-root: true` ancestor), not from `--project-root`, so nested children work.
 4. Fills the empty `name:` field in the copied CLAUDE.md with the user-provided name verbatim.
 5. Flags — non-blockingly — if the parent is a root whose own `name:` doesn't already end with ` Group`, prompting a parent rename.
 

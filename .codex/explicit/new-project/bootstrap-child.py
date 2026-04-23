@@ -116,6 +116,21 @@ def fill_name_in_claude_md(target: Path, name: str) -> None:
     claude_md.write_text(new_text, encoding="utf-8")
 
 
+def find_apex(start: Path) -> Path | None:
+    """Walk up from `start` looking for a CLAUDE.md with `apex-root: true`.
+
+    Returns the directory containing the apex CLAUDE.md, or None if not found.
+    """
+    for candidate in [start, *start.parents]:
+        claude_md = candidate / "CLAUDE.md"
+        if not claude_md.exists():
+            continue
+        _, kv, _ = read_frontmatter(claude_md)
+        if kv.get("apex-root", "").lower() == "true":
+            return candidate
+    return None
+
+
 def parent_is_root_without_group(parent: Path) -> tuple[bool, str | None]:
     """Return (should_flag, current_parent_name).
 
@@ -161,15 +176,21 @@ def main() -> int:
         print(f"  Error: {e}")
         return 1
 
-    template_dir = parent / ".templates" / "child"
+    apex = find_apex(parent)
+    if apex is None:
+        print(f"  Error: Could not find apex-root ancestor of {parent}")
+        return 1
+    template_dir = apex / ".templates" / "child"
     if not template_dir.exists():
         print(f"  Error: Child template not found at {template_dir}")
         return 1
 
     target, suffix = resolve_folder_path(parent, folder_base)
 
-    # Copy template tree
-    shutil.copytree(template_dir, target)
+    # Copy template tree. Use copy_function=shutil.copy (not copy2) to skip
+    # metadata preservation — copystat fails on v9fs (WSL mounts) with EPERM,
+    # which aborts copytree even though file contents copy fine.
+    shutil.copytree(template_dir, target, copy_function=shutil.copy)
 
     # Fill name: in CLAUDE.md
     fill_name_in_claude_md(target, name)
