@@ -12,11 +12,19 @@ INPUT=$(cat)
 CMD=$(echo "$INPUT" | grep -oP '"command"\s*:\s*"\K[^"]+' || true)
 [ -z "$CMD" ] && exit 0
 
+# Resolve Python interpreter: python first (Windows convention + Linux alias),
+# python3 as fallback (Unix PEP 394 canonical). See backlog BL-PY-INTERP.
+PY=$(command -v python || command -v python3)
+
 case "$CMD" in
     git\ push*)
         # Use Python for robust argument parsing — avoids bash edge cases
         # with flags, refspecs, and branch names containing special chars.
-        echo "$CMD" | python3 -c '
+        if [ -z "$PY" ]; then
+            echo "WARN: remote-guard: no python interpreter — push argument parsing skipped." >&2
+            exit 0
+        fi
+        echo "$CMD" | "$PY" -c '
 import subprocess, sys
 
 cmd = input().strip()

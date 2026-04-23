@@ -14,7 +14,7 @@ fi
 FILE_PATH="${FILE_PATH//\\//}"
 
 # Resolve to absolute if relative
-if [[ "$FILE_PATH" != /* ]] && [[ ! "$FILE_PATH" =~ ^[A-Za-z]:/ ]]; then
+if [[ "$FILE_PATH" != /* ]] && [[ ! "$FILE_PATH" =~ ^[A-Za-z]:[\\/] ]]; then
     FILE_PATH="$CLAUDE_PROJECT_DIR/$FILE_PATH"
 fi
 

@@ -30,7 +30,11 @@ HOOKS_DIR = ROOT / HOOKS_REL
 
 PREBOOT_DIR = CODEX / "implicit" / "00-preboot"
 
-PYTHON_EXE = Path(shutil.which("python") or shutil.which("python3") or "python").as_posix()
+_python = shutil.which("python") or shutil.which("python3")
+if not _python:
+    sys.stderr.write("cboot: no python interpreter on PATH (tried 'python', 'python3')\n")
+    sys.exit(1)
+PYTHON_EXE = Path(_python).as_posix()
 
 
 # ── Utilities ────────────────────────────────────────────────────────
@@ -656,11 +660,20 @@ def main():
     print(report.to_terminal())
 
     if report.errors:
-        print("  Bootstrap completed with errors. Launching Claude Code anyway.")
+        print("  Bootstrap completed with errors.")
+        print()
+
+    # --materialize-only: run bootstrap without launching claude. Used to
+    # regenerate .claude/settings.json (apex + all children) after changing
+    # hook registrations or child-propagation logic.
+    if "--materialize-only" in sys.argv:
+        sys.exit(1 if report.errors else 0)
+
+    if report.errors:
+        print("  Launching Claude Code anyway.")
         print()
 
     # Launch Claude Code (shutil.which resolves .cmd on Windows)
-    import shutil
     claude_cmd = shutil.which("claude")
     if not claude_cmd:
         print("  Error: 'claude' command not found. Is Claude Code installed?")

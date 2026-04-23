@@ -74,18 +74,19 @@ def _has_root_true(claude_md):
 def _rewrite_command(cmd, parent_root):
     """Rewrite a hook/statusline command to use absolute parent path.
 
-    Handles 'bash <path>', 'python <path>' commands, and bare relative paths.
-    Absolute paths are left unchanged.
+    Handles bare-prefix 'bash <path>' / 'python <path>' / 'python3 <path>'
+    with a relative script path. Any other shape — including commands whose
+    interpreter is itself a quoted absolute path like '"C:/.../python.EXE"
+    "C:/.../hook.py"' baked in by cboot.hook_cmd() — passes through
+    unchanged, since apex settings already carry fully absolute paths.
     """
-    for prefix in ("bash ", "python "):
+    for prefix in ("bash ", "python ", "python3 "):
         if cmd.startswith(prefix):
             script_path = cmd[len(prefix):].strip('"')
             if Path(script_path).is_absolute():
                 return cmd
             abs_path = (parent_root / script_path).as_posix()
             return f'{prefix}"{abs_path}"'
-    if not Path(cmd).is_absolute():
-        return (parent_root / cmd).as_posix()
     return cmd
 
 
