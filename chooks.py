@@ -162,30 +162,37 @@ class HookTestRunner:
 
 
 # ── Tool-call JSON helpers ───────────────────────────────────────────
+#
+# Match Claude Code's real hook input shape: tool arguments are nested
+# under "tool_input", not flat at the top level. Bash-based guards that
+# grep the raw blob for "file_path" tolerate either shape, but strictly-
+# parsing Python guards (claude-md-immutability-guard) require the real
+# nested form to evaluate correctly.
 
-def make_tool_json(**kwargs) -> str:
-    return json.dumps(kwargs)
+
+def make_tool_json(tool_name: str, **tool_input) -> str:
+    return json.dumps({"tool_name": tool_name, "tool_input": tool_input})
 
 
 def read_tool(file_path: str) -> str:
-    return make_tool_json(tool_name="Read", file_path=file_path)
+    return make_tool_json("Read", file_path=file_path)
 
 
 def write_tool(file_path: str) -> str:
-    return make_tool_json(tool_name="Write", file_path=file_path)
+    return make_tool_json("Write", file_path=file_path)
 
 
 def bash_tool(command: str) -> str:
-    return make_tool_json(tool_name="Bash", command=command)
+    return make_tool_json("Bash", command=command)
 
 
 def grep_tool(pattern: str, path: str = "", glob: str = "") -> str:
-    d = {"tool_name": "Grep", "pattern": pattern}
+    tool_input = {"pattern": pattern}
     if path:
-        d["path"] = path
+        tool_input["path"] = path
     if glob:
-        d["glob"] = glob
-    return d if isinstance(d, str) else json.dumps(d)
+        tool_input["glob"] = glob
+    return make_tool_json("Grep", **tool_input)
 
 
 # ── Hook tests ───────────────────────────────────────────────────────
@@ -437,14 +444,14 @@ def test_memory_redirect_correct_path(t: HookTestRunner):
 @register_test("codex-edit-notify.sh")
 def test_codex_edit_notifies_on_py(t: HookTestRunner):
     code, out, err = t.run_hook("codex-edit-notify.sh",
-                                 make_tool_json(file_path=".codex/explicit/scrub/scrub.py"))
+                                 make_tool_json("Edit", file_path=".codex/explicit/scrub/scrub.py"))
     t.assert_exit("CE01", "Exits 0", code, 0, err)
     t.assert_stdout_contains("CE02", "Notifies about codex executable edit", out, "CODEX EXECUTABLE EDITED")
 
 @register_test("codex-edit-notify.sh")
 def test_codex_edit_silent_on_md(t: HookTestRunner):
     code, out, err = t.run_hook("codex-edit-notify.sh",
-                                 make_tool_json(file_path=".codex/explicit/scrub/start.md"))
+                                 make_tool_json("Edit", file_path=".codex/explicit/scrub/start.md"))
     t.assert_exit("CE03", "Exits 0 for .md file", code, 0, err)
     if "CODEX EXECUTABLE EDITED" not in out:
         t.ok("CE04", "No notification for non-executable codex file")
@@ -454,7 +461,7 @@ def test_codex_edit_silent_on_md(t: HookTestRunner):
 @register_test("codex-edit-notify.sh")
 def test_codex_edit_silent_on_non_codex(t: HookTestRunner):
     code, out, err = t.run_hook("codex-edit-notify.sh",
-                                 make_tool_json(file_path=".state/memory/user.md"))
+                                 make_tool_json("Edit", file_path=".state/memory/user.md"))
     t.assert_exit("CE05", "Exits 0 for non-codex file", code, 0, err)
     if "CODEX EXECUTABLE EDITED" not in out:
         t.ok("CE06", "No notification for non-codex file")
