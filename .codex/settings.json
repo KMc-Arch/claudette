@@ -2,6 +2,9 @@
   "$comment": "Codex-authoritative Claude Code settings. Materialized to .claude/settings.json at boot by codex-register.",
   "plansDirectory": ".state/plans",
   "effortLevel": "xhigh",
+  "env": {
+    "CLAUDE_CODE_NO_FLICKER": "1"
+  },
   "permissions": {
     "allow": [
       "Read",
