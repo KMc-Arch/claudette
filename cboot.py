@@ -656,11 +656,20 @@ def main():
     print(report.to_terminal())
 
     if report.errors:
-        print("  Bootstrap completed with errors. Launching Claude Code anyway.")
+        print("  Bootstrap completed with errors.")
+        print()
+
+    # --materialize-only: run bootstrap without launching claude. Used to
+    # regenerate .claude/settings.json (apex + all children) after changing
+    # hook registrations or child-propagation logic.
+    if "--materialize-only" in sys.argv:
+        sys.exit(1 if report.errors else 0)
+
+    if report.errors:
+        print("  Launching Claude Code anyway.")
         print()
 
     # Launch Claude Code (shutil.which resolves .cmd on Windows)
-    import shutil
     claude_cmd = shutil.which("claude")
     if not claude_cmd:
         print("  Error: 'claude' command not found. Is Claude Code installed?")
