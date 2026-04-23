@@ -9,7 +9,15 @@
 INPUT=$(cat)
 export CLAUDE_HOOK_INPUT="$INPUT"
 
-python3 - "$CLAUDE_PROJECT_DIR" <<'PY'
+# Resolve Python interpreter: python first (Windows convention + Linux alias),
+# python3 as fallback (Unix PEP 394 canonical). See backlog BL-PY-INTERP.
+PY=$(command -v python || command -v python3)
+if [ -z "$PY" ]; then
+    echo "WARN: claude-md-immutability-guard: no python interpreter found — guard inactive." >&2
+    exit 0
+fi
+
+"$PY" - "$CLAUDE_PROJECT_DIR" <<'PY'
 import json
 import os
 import re
