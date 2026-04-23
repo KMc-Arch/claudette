@@ -100,7 +100,7 @@ Condition: both files exist
 
 **T13** — All 13 hook scripts exist
 Condition: these files exist in `.codex/implicit/01-infrastructural/01b-materialization/hooks/`:
-`boot-inject.sh`, `prefs-staleness-check.sh`, `memory-redirect-check.sh`, `visibility-guard.sh`, `containment-guard.sh`, `gravity-guard.sh`, `api-guard.sh`, `audit-immutability-guard.sh`, `claude-md-immutability-guard.sh`, `codex-edit-notify.sh`, `trace-logger.sh`, `session-close.sh`, `subagent-conformance.sh`
+`boot-inject.py`, `prefs-staleness-check.sh`, `memory-redirect-check.sh`, `visibility-guard.sh`, `containment-guard.sh`, `gravity-guard.sh`, `api-guard.sh`, `audit-immutability-guard.sh`, `claude-md-immutability-guard.sh`, `codex-edit-notify.sh`, `trace-logger.sh`, `session-close.sh`, `subagent-conformance.sh`
 
 **T14** — All 13 hooks are registered in `.claude/settings.json`
 Condition: read `.claude/settings.json`, for each script filename from T13, verify the filename appears in a `"command"` value somewhere in the hooks section

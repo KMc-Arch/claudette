@@ -14,6 +14,7 @@ import copy
 import importlib.util
 import json
 import os
+import shutil
 import subprocess
 import sys
 from datetime import datetime, timezone
@@ -28,6 +29,8 @@ HOOKS_REL = ".codex/implicit/01-infrastructural/01b-materialization/hooks"
 HOOKS_DIR = ROOT / HOOKS_REL
 
 PREBOOT_DIR = CODEX / "implicit" / "00-preboot"
+
+PYTHON_EXE = shutil.which("python") or shutil.which("python3") or "python"
 
 
 # ── Utilities ────────────────────────────────────────────────────────
@@ -443,7 +446,7 @@ def assemble_settings(report):
         "SessionStart": [{
             "matcher": "",
             "hooks": [
-                {"type": "command", "command": hook_cmd("boot-inject.py", "python")},
+                {"type": "command", "command": hook_cmd("boot-inject.py", PYTHON_EXE)},
                 {"type": "command", "command": hook_cmd("prefs-staleness-check.sh")},
                 {"type": "command", "command": hook_cmd("memory-redirect-check.sh")},
             ]

@@ -6,7 +6,7 @@ and stdout/stderr. Pure Python + subprocess, no LLM, runs in seconds.
 Requires Python 3.9+.
 
 Designed for bidirectional coverage verification with cboot.py:
-- HOOK_SCRIPTS: canonical list of all hook .sh files
+- HOOK_SCRIPTS: canonical list of all hook scripts (.sh and .py)
 - TEST_REGISTRY: maps hook name -> list of test functions
 - At the end: verifies every hook has tests and every test has a hook.
 
@@ -20,21 +20,45 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import shutil
 import subprocess
 import sys
 import tempfile
 from pathlib import Path
 
+sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+
 ROOT = Path(__file__).resolve().parent
 HOOKS_REL = ".codex/implicit/01-infrastructural/01b-materialization/hooks"
 HOOKS_DIR = ROOT / HOOKS_REL
+
+
+def resolve_bash() -> str:
+    shell = os.environ.get("SHELL", "")
+    if shell and "bash" in Path(shell).name.lower() and Path(shell).exists():
+        return shell
+    for p in (r"C:\Program Files\Git\bin\bash.exe",
+              r"C:\Program Files\Git\usr\bin\bash.exe",
+              "/usr/bin/bash", "/bin/bash"):
+        if Path(p).exists():
+            return p
+    found = shutil.which("bash")
+    if found and "system32" not in found.lower():
+        return found
+    raise RuntimeError(
+        "No usable bash found. Install Git for Windows or WSL+distro, "
+        "or set $SHELL to a working bash."
+    )
+
+
+BASH_PATH = resolve_bash()
 
 # ── Canonical hook list (must match cboot.py and hooks/start.md) ─────
 
 HOOK_SCRIPTS = [
     "api-guard.sh",
     "audit-immutability-guard.sh",
-    "boot-inject.sh",
+    "boot-inject.py",
     "claude-md-immutability-guard.sh",
     "codex-edit-notify.sh",
     "containment-guard.sh",
@@ -81,8 +105,9 @@ class HookTestRunner:
         if env_overrides:
             env.update(env_overrides)
 
+        interpreter = sys.executable if script.suffix == ".py" else BASH_PATH
         result = subprocess.run(
-            ["bash", str(script)],
+            [interpreter, str(script)],
             input=stdin_data,
             capture_output=True,
             text=True,
@@ -322,13 +347,13 @@ def test_claude_md_allows_child_claude_md(t: HookTestRunner):
     t.assert_exit("CM03", "Allows write to child project CLAUDE.md", code, 0, err)
 
 
-# -- boot-inject.sh --
+# -- boot-inject.py --
 
-@register_test("boot-inject.sh")
+@register_test("boot-inject.py")
 def test_boot_inject_outputs_boot_sequence(t: HookTestRunner):
-    code, out, err = t.run_hook("boot-inject.sh")
+    code, out, err = t.run_hook("boot-inject.py")
     t.assert_exit("BI01", "Exits 0", code, 0, err)
-    t.assert_stdout_contains("BI02", "Output contains BOOT SEQUENCE", out, "BOOT SEQUENCE")
+    t.assert_stdout_contains("BI02", "Output contains BOOT INSTRUCTIONS", out, "BOOT INSTRUCTIONS")
     t.assert_stdout_contains("BI03", "Output contains command index", out, "Available explicit commands")
 
 

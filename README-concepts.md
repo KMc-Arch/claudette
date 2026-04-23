@@ -112,7 +112,7 @@ Additional hooks handle operational concerns:
 
 | Hook | Purpose | Trigger |
 |------|---------|---------|
-| `boot-inject.sh` | Injects boot sequence instructions at session start | SessionStart |
+| `boot-inject.py` | Injects hierarchy-aware boot sequence instructions at session start | SessionStart |
 | `prefs-staleness-check.sh` | Warns if resolved preferences are stale | SessionStart |
 | `memory-redirect-check.sh` | Warns if auto-memory is not configured | SessionStart |
 | `codex-edit-notify.sh` | Notifies when a codex executable is modified | PostToolUse (Write, Edit) |

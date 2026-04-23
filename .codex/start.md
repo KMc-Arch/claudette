@@ -14,7 +14,7 @@ The codex is the shareable behavior layer of a claudette2 instance. Everything p
 |---|---|---|
 | Python | 3.10 | Runtime union type syntax (`X \| Y`) in `sqlite.py`; `Path.is_relative_to()` requires 3.9+ |
 | Claude Code | — | Required runtime host |
-| bash | — | Hook scripts, statusline |
+| bash | — | Hook scripts, statusline. Real bash (Git for Windows, mingw, Cygwin, or WSL+distro). The Windows `System32\bash.exe` WSL shim without an installed distro does not satisfy this. |
 
 ---
 

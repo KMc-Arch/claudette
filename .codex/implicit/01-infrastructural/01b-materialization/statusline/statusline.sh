@@ -237,6 +237,7 @@ if [[ -n "$effort" ]]; then
         low)    effort_label=" ${C_GRAY}⚡lo" ;;
         medium) effort_label=" ${C_GRAY}⚡md" ;;
         high)   effort_label=" ${C_GRAY}⚡hi" ;;
+        xhigh)  effort_label=" ${C_GRAY}⚡xh" ;;
         max)    effort_label=" ${C_GRAY}⚡mx" ;;
     esac
 fi

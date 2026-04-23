@@ -47,7 +47,7 @@ Reads `.codex/settings.json`, resolves module references in the `modules` map, a
 
 If this module fails, shims can be written manually. The failure mode is missing registrations (obvious — slash commands don't work), not wrong registrations (silent — wrong behavior). The system degrades to manual setup, not to corruption.
 
-**Current status:** Step 1 of the walk algorithm (explicit -> skill shims) is handled by `boot-inject.sh` as a bash fallback. The shims are generated at every SessionStart, ensuring they always exist even without the full Python implementation. Steps 2-4 are deferred until modules declare `isolation: subagent` or `trigger: "cron ..."`.
+**Current status:** Step 1 of the walk algorithm (explicit -> skill shims) is handled by `cboot.py` pre-launch. `boot-inject.py` (SessionStart hook) handles context injection only. Steps 2-4 are deferred until modules declare `isolation: subagent` or `trigger: "cron ..."`.
 
 ## Walk Algorithm
 
