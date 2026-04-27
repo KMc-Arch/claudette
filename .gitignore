@@ -8,6 +8,7 @@
 # ── Root-level framework files ──
 !/*.py
 !/*.md
+!/*.ps1
 !/.gitignore
 
 # ── Framework directories (fully tracked) ──
