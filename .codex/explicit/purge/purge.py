@@ -21,6 +21,10 @@ from pathlib import Path
 
 NEVER_PURGE = {".codex", ".state/tests/audits"}
 
+# Boot reports are useful recent history, not pure noise: keep the newest N
+# instead of wiping the whole tests/boot/ directory.
+BOOT_REPORTS_KEEP = 5
+
 
 def _is_protected(path: Path, root: Path) -> bool:
     """Return True if path falls inside a never-purge zone or is a start.md manifest."""
@@ -125,6 +129,20 @@ class Purger:
             shutil.rmtree(path)
             self.removed.append(f"  removed dir:  {label}")
 
+    def prune_dir_keep_recent(self, path: Path, pattern: str, keep: int) -> None:
+        """Remove files matching pattern in path, retaining the newest `keep`.
+
+        Sorting is by filename — callers rely on ISO-timestamped names so
+        lexical order equals chronological order. The directory itself is
+        left in place. `keep <= 0` removes everything matched.
+        """
+        if not path.is_dir():
+            return
+        files = sorted(p for p in path.glob(pattern) if p.is_file())
+        to_remove = files[:-keep] if keep > 0 else files
+        for f in to_remove:
+            self.remove_file(f)
+
     def report(self) -> None:
         if self.removed:
             for line in self.removed:
@@ -174,6 +192,10 @@ def _purge_state_transient(purger: Purger, state_dir: Path) -> None:
             if item.name == "start.md":
                 continue
             if _is_underscore_prefixed(item):
+                continue
+            if item.name == "boot" and item.is_dir():
+                # Keep recent boot reports rather than wiping the dir.
+                purger.prune_dir_keep_recent(item, "*-bootstrap.md", BOOT_REPORTS_KEEP)
                 continue
             if item.is_dir():
                 purger.remove_dir(item)
