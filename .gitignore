@@ -10,6 +10,7 @@
 !/*.md
 !/*.ps1
 !/.gitignore
+!/cboot
 
 # ── Framework directories (fully tracked) ──
 !/.codex/
