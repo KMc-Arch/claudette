@@ -6,16 +6,8 @@ bootstrap report to .state/tests/boot/, prints it to terminal, then
 launches Claude Code.
 
 Usage:
-    python cboot.py                       # full apex boot, then launch claude
-    python cboot.py --resume              # pass args through to claude
-    python cboot.py --materialize-only    # regenerate apex + all children, no launch
-    python cboot.py --project PATH        # re-materialize ONE child only, no launch
-    python cboot.py --project PATH --launch   # ...then launch claude in that child
-
---project re-materializes the apex's own inputs (prefs, settings, skill shims),
-then propagates to the single target descendant — without touching its siblings.
-PATH may be relative to the apex root or absolute; it must be a root: true
-descendant of this apex.
+    python cboot.py            # boot with default args
+    python cboot.py --resume   # pass args through to claude
 """
 
 import copy
@@ -619,153 +611,12 @@ def check_hook_coverage(report):
         report.warn("Hook coverage: chooks.py not found, skipping coverage check")
 
 
-# ── Per-project refresh ──────────────────────────────────────────────
-
-def materialize_apex_inputs(report):
-    """Re-materialize the apex-local artifacts that child propagation consumes.
-
-    These are the inputs every child derives from: scaffolded state dirs, skill
-    shims, resolved prefs, and the generated .claude/settings.json. Cheap,
-    idempotent, no child propagation, no launch. Used by both full boot (via
-    main) and single-project refresh (Option B — always-fresh globals).
-    """
-    scaffold(report)
-    generate_skill_shims(report)
-    resolve_preferences(report)
-    assemble_settings(report)
-
-
-def refresh_project(target_arg, report):
-    """Re-materialize a single root: true descendant without touching siblings.
-
-    Recomputes apex inputs first, then runs the existing per-child materializer
-    for just the target. Does not launch Claude.
-
-    Returns (ok: bool, target: Path | None).
-    """
-    if not preflight(report):
-        return False, None
-
-    # -- Resolve target (relative to apex root, or absolute) --
-    target = Path(target_arg)
-    if not target.is_absolute():
-        target = ROOT / target_arg
-    target = target.resolve()
-
-    # -- Validate: real dir, strict descendant of apex, root: true project --
-    if not target.is_dir():
-        report.fail(f"Refresh: target not found ({target_arg})", "not a directory")
-        return False, None
-    if target == ROOT or ROOT not in target.parents:
-        report.fail(f"Refresh: target outside apex ({target_arg})",
-                    f"must be a descendant of {ROOT}")
-        return False, None
-
-    child_propagate = _load_module(PREBOOT_DIR / "child_propagate.py")
-    claude_md = target / "CLAUDE.md"
-    if not claude_md.exists() or not child_propagate._has_root_true(claude_md):
-        report.fail(f"Refresh: not a root: true project ({target_arg})",
-                    "target CLAUDE.md missing or lacks root: true in frontmatter")
-        return False, None
-
-    # -- Recompute apex inputs (Option B: always-correct globals) --
-    materialize_apex_inputs(report)
-
-    # -- Load apex outputs as propagation inputs --
-    parent_settings = json.loads((CLAUDE / "settings.json").read_text(encoding="utf-8"))
-    parent_prefs = {}
-    prefs_file = STATE / "prefs-resolved.json"
-    if prefs_file.exists():
-        try:
-            parent_prefs = json.loads(prefs_file.read_text(encoding="utf-8"))
-        except (json.JSONDecodeError, ValueError):
-            pass
-    parent_shims = child_propagate._collect_parent_shims(ROOT)
-
-    # -- Materialize the single target --
-    child_propagate._propagate_one(target, parent_settings, parent_prefs,
-                                   parent_shims, ROOT, report)
-    report.ok(f"Refresh: materialized '{target.name}' ({target.relative_to(ROOT)}) — siblings untouched")
-
-    # -- Trace marker --
-    try:
-        traces_dir = STATE / "traces"
-        traces_dir.mkdir(parents=True, exist_ok=True)
-        trace_file = traces_dir / f"{datetime.now(timezone.utc).strftime('%Y-%m-%d')}.trace"
-        with open(trace_file, "a") as f:
-            f.write(f"[{now_iso()}] CONTEXT: project-refresh, target={target}\n")
-    except OSError:
-        pass
-
-    return True, target
-
-
 # ── Main ─────────────────────────────────────────────────────────────
-
-def _extract_project_arg(argv):
-    """Pull --project/-p (takes a value) and --launch out of argv.
-
-    Returns (target | None, launch: bool, remaining_argv). Remaining args are
-    passed through to claude when --launch is set.
-    """
-    target = None
-    launch = False
-    remaining = []
-    i = 0
-    while i < len(argv):
-        a = argv[i]
-        if a in ("--project", "-p"):
-            target = argv[i + 1] if i + 1 < len(argv) else ""
-            i += 2 if i + 1 < len(argv) else 1
-            continue
-        if a.startswith("--project="):
-            target = a.split("=", 1)[1]
-            i += 1
-            continue
-        if a == "--launch":
-            launch = True
-            i += 1
-            continue
-        remaining.append(a)
-        i += 1
-    return target, launch, remaining
-
 
 def main():
     # Ensure stdout can handle Unicode (box-drawing, em dashes, etc.)
     if hasattr(sys.stdout, "reconfigure"):
         sys.stdout.reconfigure(encoding="utf-8", errors="replace")
-
-    # --project PATH: re-materialize a single child only (no sibling propagation).
-    project_target, launch_after, passthrough = _extract_project_arg(sys.argv[1:])
-    if project_target is not None:
-        report = BootReport()
-        ok, target = refresh_project(project_target, report)
-
-        report_dir = STATE / "tests" / "boot"
-        report_dir.mkdir(parents=True, exist_ok=True)
-        label = target.name if target else "INVALID"
-        report_file = report_dir / f"{now_stamp()}-refresh-{label}.md"
-        report.ok(f"Report: written to {report_file.relative_to(ROOT)}")
-        report_file.write_text(report.to_markdown())
-        print(report.to_terminal())
-
-        if not ok:
-            print("  Project refresh ABORTED.")
-            print()
-            sys.exit(1)
-
-        if launch_after:
-            claude_cmd = shutil.which("claude")
-            if not claude_cmd:
-                print("  Error: 'claude' command not found. Is Claude Code installed?")
-                sys.exit(1)
-            try:
-                result = subprocess.run([claude_cmd, *passthrough], cwd=target)
-                sys.exit(result.returncode)
-            except KeyboardInterrupt:
-                sys.exit(0)
-        sys.exit(0)
 
     report = BootReport()
 
