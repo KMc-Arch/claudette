@@ -1,5 +1,5 @@
 ---
-version: 3
+version: 4
 short-desc: "Clean transient state; purge all is DESTRUCTIVE (requires confirmation)"
 runtime: python
 reads:
@@ -26,7 +26,7 @@ Removes transient state that accumulates during sessions:
 - `.claude/` files (`.jsonl`, `.md`) — preserves `settings*.json` and `_`-prefixed items
 - `.claude/skills/` and `.claude/agents/` (generated shims — regenerated at next boot)
 - `.state/prefs-resolved.json` (regenerated at next boot)
-- `.state/tests/` transient outputs (boot, compliance logs — NOT audits)
+- `.state/tests/` transient outputs (compliance logs etc. — NOT audits). Boot reports in `.state/tests/boot/` are pruned to the 5 most recent rather than wiped.
 - `.state/traces/` session traces
 - `.state/pauses/` session context snapshots
 - User-level `~/.claude/projects/<hash>/` footprint (external auto-memory)
