@@ -5,6 +5,10 @@ runtime: python
 reads:
   - "^/.codex/specs/child-project.md"
   - "^/^/.templates/child/"
+  - "^/^/.claude/settings.json"
+  - "^/^/.claude/settings.local.json"
+  - "^/^/.claude/skills/"
+  - "^/^/.state/prefs-resolved.json"
 writes:
   - "^/<folder>/"
 ---
@@ -30,6 +34,7 @@ Runs `bootstrap-child.py` which:
 3. Copies the apex `^/^/.templates/child/` tree into the resolved folder. Template is always resolved from the apex (`apex-root: true` ancestor), not from `--project-root`, so nested children work.
 4. Fills the empty `name:` field in the copied CLAUDE.md with the user-provided name verbatim.
 5. Flags — non-blockingly — if the parent is a root whose own `name:` doesn't already end with ` Group`, prompting a parent rename.
+6. Materializes the new child via the shared per-child path (`child_propagate.propagate_one`) — writes its `.claude/settings.json`, `.claude/settings.local.json` (autoMemoryDirectory + perms), skill shims, and `.state/prefs-resolved.json`, derived from the apex's settings (incl. hand-maintained local perms in `settings.local.json`), skill shims, and resolved prefs — so the child boots standalone without waiting for a full apex boot. This is the same engine used by full boot and `cboot --project`; nothing about per-child materialization is duplicated here. If the apex context is absent (apex never booted), it warns — run `cboot --project <folder>` later.
 
 Folder structure (see `.codex/specs/child-project.md` for contents):
 

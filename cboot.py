@@ -671,20 +671,13 @@ def refresh_project(target_arg, report):
     # -- Recompute apex inputs (Option B: always-correct globals) --
     materialize_apex_inputs(report)
 
-    # -- Load apex outputs as propagation inputs --
-    parent_settings = json.loads((CLAUDE / "settings.json").read_text(encoding="utf-8"))
-    parent_prefs = {}
-    prefs_file = STATE / "prefs-resolved.json"
-    if prefs_file.exists():
-        try:
-            parent_prefs = json.loads(prefs_file.read_text(encoding="utf-8"))
-        except (json.JSONDecodeError, ValueError):
-            pass
-    parent_shims = child_propagate._collect_parent_shims(ROOT)
-
-    # -- Materialize the single target --
-    child_propagate._propagate_one(target, parent_settings, parent_prefs,
-                                   parent_shims, ROOT, report)
+    # -- Materialize the single target via the shared per-child path --
+    # propagate_one returns None (not 0) when the apex context is unavailable —
+    # treat that as a hard failure, not a silent success.
+    if child_propagate.propagate_one(ROOT, target, report) is None:
+        report.fail(f"Refresh: '{target.name}' not materialized",
+                    "apex .claude/settings.json missing or invalid — run a full boot first")
+        return False, None
     report.ok(f"Refresh: materialized '{target.name}' ({target.relative_to(ROOT)}) — siblings untouched")
 
     # -- Trace marker --

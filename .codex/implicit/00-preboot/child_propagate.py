@@ -255,6 +255,53 @@ def _heal_broken_perm_rules(settings_local_file):
 # ── Propagation ─────────────────────────────────────────────────────
 
 
+def load_parent_context(root):
+    """Load the inputs every child derives from: the generated .claude/settings.json,
+    resolved prefs, and skill shims. Single source for both full-tree propagation
+    and single-target materialization.
+
+    Returns (parent_settings | None, parent_prefs, parent_shims). parent_settings
+    is None if the apex .claude/settings.json is missing or unparseable.
+    """
+    settings_file = root / ".claude" / "settings.json"
+    parent_settings = None
+    if settings_file.exists():
+        try:
+            parent_settings = json.loads(settings_file.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, ValueError):
+            parent_settings = None
+
+    parent_prefs = {}
+    prefs_file = root / ".state" / "prefs-resolved.json"
+    if prefs_file.exists():
+        try:
+            parent_prefs = json.loads(prefs_file.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, ValueError):
+            pass
+
+    parent_shims = _collect_parent_shims(root)
+    return parent_settings, parent_prefs, parent_shims
+
+
+def propagate_one(root, target, report):
+    """Materialize a single child `target` from apex `root`'s generated outputs.
+
+    The one per-child entry point shared by full-tree propagation (`propagate`),
+    single-project refresh (`cboot.py --project`), and `new-project`. Heals the
+    target's OWN local perms (via `_propagate_one`); does not touch siblings or
+    the parent's local perms (those are full-boot concerns).
+
+    Returns the number of broken Bash rules healed in the target, or None if the
+    apex context is unavailable (nothing was materialized — caller must treat
+    this as a failure, not a clean run).
+    """
+    parent_settings, parent_prefs, parent_shims = load_parent_context(root)
+    if parent_settings is None:
+        report.warn(f"Materialize '{target.name}': apex .claude/settings.json missing/invalid, skipping")
+        return None
+    return _propagate_one(target, parent_settings, parent_prefs, parent_shims, root, report)
+
+
 def propagate(root, report):
     """Discover child projects and materialize their settings and prefs.
 
@@ -265,22 +312,10 @@ def propagate(root, report):
         root: Parent project root (Path).
         report: BootReport instance for logging.
     """
-    parent_settings_file = root / ".claude" / "settings.json"
-    if not parent_settings_file.exists():
-        report.warn("Child propagation: parent .claude/settings.json not found, skipping")
+    parent_settings, parent_prefs, parent_shims = load_parent_context(root)
+    if parent_settings is None:
+        report.warn("Child propagation: parent .claude/settings.json missing or invalid, skipping")
         return
-
-    parent_settings = json.loads(parent_settings_file.read_text(encoding="utf-8"))
-
-    parent_prefs_file = root / ".state" / "prefs-resolved.json"
-    parent_prefs = {}
-    if parent_prefs_file.exists():
-        try:
-            parent_prefs = json.loads(parent_prefs_file.read_text(encoding="utf-8"))
-        except (json.JSONDecodeError, ValueError):
-            pass
-
-    parent_shims = _collect_parent_shims(root)
 
     # Heal parent's own settings.local.json before propagating to children,
     # so broken rules never get merged into child allow/deny lists.

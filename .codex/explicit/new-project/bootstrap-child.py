@@ -13,12 +13,41 @@ Usage:
 """
 
 import argparse
-import json
+import errno
+import importlib.util
 import re
 import shutil
 import sys
 import unicodedata
 from pathlib import Path
+
+
+def _load_module(path):
+    """Load a Python module from an arbitrary filesystem path."""
+    spec = importlib.util.spec_from_file_location(path.stem, path)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+def copy_tree_tolerant(src: Path, dst: Path) -> None:
+    """Recursively copy file *contents* from src to dst, tolerating EPERM on
+    metadata ops (chmod/copystat). Required on v9fs mounts (WSL), where stat
+    operations raise EPERM even though file contents copy fine. shutil.copytree
+    can't be used: it runs copystat on every directory, which aborts the copy.
+    """
+    dst.mkdir(parents=True, exist_ok=True)
+    for item in sorted(src.iterdir()):
+        d = dst / item.name
+        if item.is_dir():
+            copy_tree_tolerant(item, d)
+        else:
+            shutil.copyfile(item, d)  # contents only — no mode/stat copy
+    try:
+        shutil.copystat(src, dst)  # best-effort metadata
+    except OSError as e:
+        if e.errno != errno.EPERM:
+            raise
 
 
 def derive_folder_name(name: str) -> str:
@@ -187,21 +216,17 @@ def main() -> int:
 
     target, suffix = resolve_folder_path(parent, folder_base)
 
-    # Copy template tree. Use copy_function=shutil.copy (not copy2) to skip
-    # metadata preservation — copystat fails on v9fs (WSL mounts) with EPERM,
-    # which aborts copytree even though file contents copy fine.
-    shutil.copytree(template_dir, target, copy_function=shutil.copy)
+    # Copy template tree. copy_tree_tolerant copies contents but swallows EPERM
+    # on metadata ops (chmod/copystat), which v9fs (WSL mounts) raise and which
+    # would otherwise abort the whole copy.
+    copy_tree_tolerant(template_dir, target)
 
     # Fill name: in CLAUDE.md
     fill_name_in_claude_md(target, name)
 
-    # Generate .claude/settings.local.json with correct absolute memory path
-    claude_dir = target / ".claude"
-    claude_dir.mkdir(parents=True, exist_ok=True)
-    memory_path = str(target / ".state" / "memory").replace("\\", "/")
-    (claude_dir / "settings.local.json").write_text(
-        json.dumps({"autoMemoryDirectory": memory_path}, indent=4) + "\n"
-    )
+    # Note: .claude/settings.local.json (autoMemoryDirectory + perms), settings.json,
+    # skill shims, and prefs-resolved.json are all created by the materialization
+    # step below — the single shared per-child path — not hand-written here.
 
     # Report
     created = list(target.rglob("*"))
@@ -223,6 +248,28 @@ def main() -> int:
         print(f"  [FLAG] Parent '{parent_name or parent.name}' is now a group "
               f"(contains this new root). Consider renaming its name: to "
               f"'{parent_name or parent.name} Group'. Non-blocking.")
+
+    # Materialize the child (settings.json, settings.local.json, skill shims,
+    # prefs-resolved.json) via the single shared per-child path — the same engine
+    # full boot and `cboot --project` use. Reads the apex's already-generated
+    # outputs; if they're absent (apex never booted), it warns and the child can
+    # be materialized later with `cboot --project <folder>`.
+    print("\n  Materializing child (settings, perms, shims, resolved prefs)...")
+    child_propagate = _load_module(apex / ".codex" / "implicit" / "00-preboot" / "child_propagate.py")
+    mat_report = child_propagate._CliReport()
+    # cboot resolves a relative --project against the APEX, not the parent, so the
+    # recovery hint must be apex-relative (these differ for nested projects).
+    recover_target = target.relative_to(apex)
+    try:
+        if child_propagate.propagate_one(apex, target, mat_report) is None:
+            print(f"  [WARN] Child not materialized (apex not booted yet?). "
+                  f"Run: cboot --project {recover_target}")
+    except OSError as e:
+        # _propagate_one writes with write_text (no EPERM tolerance); on v9fs a
+        # metadata-triggered write can fail. Scaffold is already valid — recover
+        # by materializing later rather than aborting with a traceback.
+        print(f"  [WARN] Materialization failed ({e}). "
+              f"Scaffold is intact — run: cboot --project {recover_target}")
 
     print()
     return 0
