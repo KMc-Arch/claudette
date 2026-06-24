@@ -26,6 +26,10 @@
 !/Testing/
 !/Testing/**
 
+# ── Transient scratch (track only the charter, ignore contents) ──
+!/.tmp/
+!/.tmp/start.md
+
 # ── Generated (never track) ──
 .claude/
 **/prefs-resolved.json

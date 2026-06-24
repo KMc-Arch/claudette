@@ -1,13 +1,15 @@
 ---
-version: 4
+version: 5
 short-desc: "Clean transient state; purge all is DESTRUCTIVE (requires confirmation)"
 runtime: python
 reads:
   - "^/.state/"
   - "^/.claude/"
+  - "^/.tmp/"
 writes:
   - "^/.state/"
   - "^/.claude/"
+  - "^/.tmp/"
 ---
 
 # purge
@@ -29,7 +31,10 @@ Removes transient state that accumulates during sessions:
 - `.state/tests/` transient outputs (compliance logs etc. — NOT audits). Boot reports in `.state/tests/boot/` are pruned to the 5 most recent rather than wiped.
 - `.state/traces/` session traces
 - `.state/pauses/` session context snapshots
+- `.tmp/sandbox/` contents (disposable test/sandbox rigs)
 - User-level `~/.claude/projects/<hash>/` footprint (external auto-memory)
+
+Also **reports** (never removes) transient-looking files found *outside* `.tmp/` at the project root — straggler detection for the transient-gravity convention.
 
 ## `purge all`
 
@@ -38,6 +43,7 @@ Everything in default scope, plus:
 - `.state/work/` files (backlog, platform notes, architecture debt)
 - `.state/plans/` implementation plans
 - `.state/bundles/` portable project snapshots
+- Loose top-level `.tmp/` files (I/O buffers), skipping any modified within the last 12h so live buffers are not clobbered
 
 **This is destructive.** Requires CONFIRMED HOLD — single user confirmation before execution.
 
@@ -45,8 +51,9 @@ Everything in default scope, plus:
 
 - `.codex/` — the framework definition, never cleaned by purge
 - `.state/tests/audits/` — immutable records, never deleted by automated processes
-- `start.md` files — structural manifests, protected in all scopes
+- `start.md` files — structural manifests, protected in all scopes (includes `.tmp/start.md`)
 - `_`-prefixed items — invisible by convention, always skipped
+- `.tmp/` files modified within the last 12h — kept by the freshness guard (loose-buffer sweep only)
 
 ## Scoped to Child Project
 
