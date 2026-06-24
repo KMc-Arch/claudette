@@ -1,5 +1,7 @@
 _*
 .claude/
+.tmp/*
+!.tmp/start.md
 .DS_Store
 Thumbs.db
 desktop.ini

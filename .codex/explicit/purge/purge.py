@@ -15,8 +15,10 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import fnmatch
 import shutil
 import sys
+import time
 from pathlib import Path
 
 NEVER_PURGE = {".codex", ".state/tests/audits"}
@@ -24,6 +26,15 @@ NEVER_PURGE = {".codex", ".state/tests/audits"}
 # Boot reports are useful recent history, not pure noise: keep the newest N
 # instead of wiping the whole tests/boot/ directory.
 BOOT_REPORTS_KEEP = 5
+
+# .tmp/ transient scratch: sandbox rigs are cleared in default scope; loose
+# top-level buffers only under `purge all`, and only if older than this window,
+# so a buffer a live git/gh operation is mid-using is never clobbered.
+TMP_LOOSE_FRESHNESS_HOURS = 12
+
+# Filenames that look like throwaway scratch when found OUTSIDE .tmp/. Reported,
+# never deleted — surfaces transient-gravity violations without acting on them.
+TMP_STRAGGLER_PATTERNS = ("*msg.txt", "*-prbody.md", "*.bak", "*.orig", "*.rej")
 
 
 def _is_protected(path: Path, root: Path) -> bool:
@@ -235,9 +246,64 @@ def _purge_state_high_value(purger: Purger, state_dir: Path) -> None:
                     purger.remove_file(item)
 
 
+def _purge_tmp_sandbox(purger: Purger, tmp_dir: Path) -> None:
+    """Default scope: clear disposable rigs under .tmp/sandbox/."""
+    sandbox = tmp_dir / "sandbox"
+    if not sandbox.is_dir():
+        return
+    for item in sandbox.iterdir():
+        if item.name == "start.md" or _is_underscore_prefixed(item):
+            continue
+        if item.is_dir():
+            purger.remove_dir(item)
+        else:
+            purger.remove_file(item)
+
+
+def _purge_tmp_loose(purger: Purger, tmp_dir: Path) -> None:
+    """`all` scope: remove loose top-level .tmp/ files older than the freshness window.
+
+    sandbox/ is handled separately; subdirectories are left alone. Recently modified
+    files are kept so a buffer a live git/gh command is mid-using is never clobbered.
+    """
+    if not tmp_dir.is_dir():
+        return
+    cutoff = time.time() - TMP_LOOSE_FRESHNESS_HOURS * 3600
+    for item in tmp_dir.iterdir():
+        if item.name == "start.md" or _is_underscore_prefixed(item):
+            continue
+        if not item.is_file():
+            continue
+        try:
+            if item.stat().st_mtime > cutoff:
+                purger.skipped.append(
+                    f"  FRESH (kept <{TMP_LOOSE_FRESHNESS_HOURS}h): {purger._label(item)}")
+                continue
+        except OSError:
+            pass
+        purger.remove_file(item)
+
+
+def _detect_tmp_stragglers(purger: Purger, project_root: Path, tmp_dir: Path) -> None:
+    """Report transient-looking files at the project root found OUTSIDE .tmp/.
+
+    Report-only: never deletes. Surfaces violations of transient-gravity so scratch
+    that landed outside .tmp/ is visible rather than silently missed.
+    """
+    for item in project_root.iterdir():
+        if item == tmp_dir or item.is_dir() or _is_underscore_prefixed(item):
+            continue
+        if any(fnmatch.fnmatch(item.name, pat) for pat in TMP_STRAGGLER_PATTERNS):
+            purger.skipped.append(
+                f"  STRAGGLER (outside .tmp/, not removed): {purger._label(item)}")
+
+
 def purge_default(purger: Purger, project_root: Path) -> None:
     _purge_claude_dir(purger, project_root / ".claude")
     _purge_state_transient(purger, project_root / ".state")
+    tmp_dir = project_root / ".tmp"
+    _purge_tmp_sandbox(purger, tmp_dir)
+    _detect_tmp_stragglers(purger, project_root, tmp_dir)
     footprint = _find_project_footprint(project_root)
     if footprint:
         purger.remove_dir_external(footprint)
@@ -246,6 +312,7 @@ def purge_default(purger: Purger, project_root: Path) -> None:
 def purge_all(purger: Purger, project_root: Path) -> None:
     purge_default(purger, project_root)
     _purge_state_high_value(purger, project_root / ".state")
+    _purge_tmp_loose(purger, project_root / ".tmp")
 
 
 def purge_child(purger: Purger, project_root: Path, child_name: str) -> None:
@@ -260,6 +327,9 @@ def purge_child(purger: Purger, project_root: Path, child_name: str) -> None:
     child_purger = Purger(child_root, dry_run=purger.dry_run)
     _purge_claude_dir(child_purger, child_root / ".claude")
     _purge_state_transient(child_purger, child_root / ".state")
+    child_tmp = child_root / ".tmp"
+    _purge_tmp_sandbox(child_purger, child_tmp)
+    _detect_tmp_stragglers(child_purger, child_root, child_tmp)
     purger.removed.extend(child_purger.removed)
     purger.skipped.extend(child_purger.skipped)
 

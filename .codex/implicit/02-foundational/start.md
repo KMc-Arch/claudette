@@ -1,5 +1,5 @@
 ---
-version: 1
+version: 2
 ---
 
 # 02 — Foundational
@@ -12,3 +12,4 @@ Core rules loaded during boot after 01-infrastructural. These are behavioral dir
 |---|---|
 | `identity-isolation.md` | Cross-project context separation |
 | `state-gravity.md` | State operations default to nearest `root: true` |
+| `transient-gravity.md` | Scratch/transient artifacts default to nearest `^/.tmp/` |
