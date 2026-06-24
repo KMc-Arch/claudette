@@ -26,18 +26,24 @@ python Testing/TestBench/.codex/explicit/test-purge/test-purge.py [populate|stan
 - `.state/tests/boot/` reports
 - `.state/traces/` session traces
 - `.state/pauses/` session snapshots
+- `.tmp/sandbox/` contents (disposable rigs)
 
 ### Purge-all should additionally remove:
 - `.state/memory/` files (except `start.md`)
 - `.state/work/` files (except `start.md`)
 - `.state/plans/` files (except `start.md`)
 - `.state/bundles/` contents
+- Loose `.tmp/` buffers older than the freshness window (12h)
 
 ### Must survive both:
 - `.state/tests/audits/` — immutable
-- All `start.md` files — structural manifests
+- All `start.md` files — structural manifests (including `.tmp/start.md`)
 - `CLAUDE.md` — project identity
 - `.codex/` — framework (including this test)
+- Loose `.tmp/` buffers modified within the freshness window (kept by `purge all`)
+
+### Must be reported but NOT removed:
+- Scratch-looking files found *outside* `.tmp/` (straggler detection) — purge surfaces them in its output but never deletes them.
 
 ## Location
 
