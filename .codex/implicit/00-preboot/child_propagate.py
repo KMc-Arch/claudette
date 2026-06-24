@@ -457,24 +457,6 @@ def _propagate_one(child, parent_settings, parent_prefs, parent_shims, parent_ro
         prefs_output.parent.mkdir(parents=True, exist_ok=True)
         prefs_output.write_text(json.dumps(merged, indent=4) + "\n")
 
-    # -- autoMemoryDirectory in settings.local.json --
-    memory_dir = child / ".state" / "memory"
-    memory_dir.mkdir(parents=True, exist_ok=True)
-    correct_path = str(memory_dir).replace("\\", "/")
-
-    settings_local = claude_dir / "settings.local.json"
-    existing = {}
-    if settings_local.exists():
-        try:
-            existing = json.loads(settings_local.read_text(encoding="utf-8"))
-        except (json.JSONDecodeError, ValueError):
-            report.warn(f"Auto-memory ({child.name}): settings.local.json was malformed, resetting")
-            existing = {}
-
-    if existing.get("autoMemoryDirectory") != correct_path:
-        existing["autoMemoryDirectory"] = correct_path
-        settings_local.write_text(json.dumps(existing, indent=4) + "\n")
-
     # Heal any legacy Bash(command:<prefix>*) rules that drifted in (either
     # from the parent's local perms just merged above, or from hand-edits to
     # the child's own settings.local.json).
