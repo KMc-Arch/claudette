@@ -90,6 +90,9 @@ class Purger:
         self.dry_run = dry_run
         self.removed: list[str] = []
         self.skipped: list[str] = []
+        # .tmp/ loose-buffer freshness window (hours). Overridable per-invocation
+        # via --tmp-freshness-hours; 0 disables the guard.
+        self.tmp_freshness_hours = TMP_LOOSE_FRESHNESS_HOURS
 
     def _label(self, path: Path) -> str:
         try:
@@ -268,7 +271,8 @@ def _purge_tmp_loose(purger: Purger, tmp_dir: Path) -> None:
     """
     if not tmp_dir.is_dir():
         return
-    cutoff = time.time() - TMP_LOOSE_FRESHNESS_HOURS * 3600
+    hours = purger.tmp_freshness_hours
+    cutoff = time.time() - hours * 3600
     for item in tmp_dir.iterdir():
         if item.name == "start.md" or _is_underscore_prefixed(item):
             continue
@@ -277,7 +281,7 @@ def _purge_tmp_loose(purger: Purger, tmp_dir: Path) -> None:
         try:
             if item.stat().st_mtime > cutoff:
                 purger.skipped.append(
-                    f"  FRESH (kept <{TMP_LOOSE_FRESHNESS_HOURS}h): {purger._label(item)}")
+                    f"  FRESH (kept <{hours:g}h): {purger._label(item)}")
                 continue
         except OSError:
             pass
@@ -345,7 +349,17 @@ def main(argv: list[str] | None = None) -> None:
                         help="List what would be deleted without deleting.")
     parser.add_argument("--confirm", action="store_true",
                         help='Skip confirmation prompt for "all" scope.')
+    parser.add_argument("--tmp-freshness-hours", type=float, default=None,
+                        help="Override the .tmp/ loose-buffer freshness window (hours) for "
+                             "'purge all'. 0 disables the guard (removes all loose buffers). "
+                             "Default: 12.")
     args = parser.parse_args(argv)
+
+    if args.tmp_freshness_hours is not None:
+        h = args.tmp_freshness_hours
+        if h != h or h in (float("inf"), float("-inf")) or h < 0:  # NaN / inf / negative
+            print("error: --tmp-freshness-hours must be a finite value >= 0", file=sys.stderr)
+            sys.exit(1)
 
     project_root = args.project_root.resolve()
     if not project_root.is_dir():
@@ -375,6 +389,8 @@ def main(argv: list[str] | None = None) -> None:
         print(f"[{mode}] scope: {scope} in {project_root}")
 
     purger = Purger(project_root, dry_run=args.dry_run)
+    if args.tmp_freshness_hours is not None:
+        purger.tmp_freshness_hours = args.tmp_freshness_hours
 
     if is_all:
         purge_all(purger, project_root)

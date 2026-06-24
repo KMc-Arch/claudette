@@ -1,5 +1,5 @@
 ---
-version: 5
+version: 6
 short-desc: "Clean transient state; purge all is DESTRUCTIVE (requires confirmation)"
 runtime: python
 reads:
@@ -66,8 +66,10 @@ When targeting a child project (`purge <project>`), only that project's `.state/
 ## Execution
 
 ```
-python .codex/explicit/purge/purge.py [default|all|<project>] --project-root ^ [--dry-run] [--confirm]
+python .codex/explicit/purge/purge.py [default|all|<project>] --project-root ^ [--dry-run] [--confirm] [--tmp-freshness-hours N]
 ```
+
+`--tmp-freshness-hours N` overrides the `.tmp/` loose-buffer freshness window for `purge all` (default 12; `0` disables the guard and removes all loose buffers; negative/non-finite values are rejected).
 
 1. Determine scope: default, all, or child project.
 2. If `purge all`, warn that `.state/memory/`, `work/`, `plans/`, and `bundles/` will be wiped and get explicit confirmation.
