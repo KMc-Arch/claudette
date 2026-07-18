@@ -248,6 +248,24 @@ def test_containment_allows_relative_inside(t: HookTestRunner):
     code, out, err = t.run_hook("containment-guard.sh", write_tool(".state/memory/test.md"))
     t.assert_exit("CG04", "Allows relative path (resolves inside ^)", code, 0, err)
 
+@register_test("containment-guard.sh")
+def test_containment_blocks_symlink_escape(t: HookTestRunner):
+    # A symlink inside the root pointing OUT must not be a write-escape hatch.
+    # Requires symlink-resolving normalization (realpath -m, not -ms).
+    import tempfile, shutil
+    sandbox = Path(tempfile.mkdtemp(prefix="cg-sym-")).resolve()
+    outside = Path(tempfile.mkdtemp(prefix="cg-out-")).resolve()
+    try:
+        link = sandbox / "escape"
+        os.symlink(outside, link)
+        target = str(link / "evil.txt")  # lexically under sandbox, physically in outside
+        code, out, err = t.run_hook("containment-guard.sh", write_tool(target),
+                                    env_overrides={"CLAUDE_PROJECT_DIR": str(sandbox)})
+        t.assert_exit("CG05", "Blocks write through a symlink escaping the root", code, 2, err)
+    finally:
+        shutil.rmtree(sandbox, ignore_errors=True)
+        shutil.rmtree(outside, ignore_errors=True)
+
 
 # -- gravity-guard.sh --
 
