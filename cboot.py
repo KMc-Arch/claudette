@@ -10,12 +10,26 @@ Usage:
     python cboot.py --resume              # pass args through to claude
     python cboot.py --materialize-only    # regenerate apex + all children, no launch
     python cboot.py --project PATH        # re-materialize ONE child only, no launch
-    python cboot.py --project PATH --launch   # ...then launch claude in that child
+    python cboot.py --project PATH --launch             # ...then launch claude in that child
+    python cboot.py --project PATH --exec "PROMPT"      # headless HARD-ROOTED worker; prints a JSON envelope
+    python cboot.py --project PATH --exec-file FILE     # ...prompt read from FILE (preferred for untrusted content)
+    python cboot.py --project PATH --exec -             # ...prompt read from stdin
+    python cboot.py --project PATH --switch             # print the --launch command for a switch (does NOT launch)
 
 --project re-materializes the apex's own inputs (prefs, settings, skill shims),
 then propagates to the single target descendant — without touching its siblings.
 PATH may be relative to the apex root or absolute; it must be a root: true
 descendant of this apex.
+
+--exec runs `claude -p "PROMPT" --output-format json` with cwd=PATH and
+CLAUDE_PROJECT_DIR=PATH, so the child's guards fence there — a real hard-root, not
+a soft reroot. For untrusted prompts, prefer --exec-file FILE (or --exec -): the
+prompt is read from a file/stdin so its bytes never sit on a shell command line.
+stdout is JSON ONLY (a caller parses it); `session_id` is resumable, so pass
+`--resume <id>` through to continue a worker session (a bare, value-less --resume
+is dropped). --switch prints the interactive-launch command for a human to run; it
+never launches itself (a caller applying "if json parse, else handoff" treats that
+non-JSON line as the handoff). All lazily materialize the child if unbuilt.
 """
 
 import copy
@@ -37,6 +51,19 @@ HOOKS_REL = ".codex/implicit/01-infrastructural/01b-materialization/hooks"
 HOOKS_DIR = ROOT / HOOKS_REL
 
 PREBOOT_DIR = CODEX / "implicit" / "00-preboot"
+
+# Ceiling for a headless --exec worker, in seconds. Override via CBOOT_EXEC_TIMEOUT.
+# Guarded: a bad env value must not break every cboot mode at import time.
+try:
+    EXEC_TIMEOUT = int(os.environ.get("CBOOT_EXEC_TIMEOUT", "600"))
+except ValueError:
+    EXEC_TIMEOUT = 600
+
+# Passthrough flags allowed to reach the headless `claude -p` worker. Anything
+# else is dropped — a hard-rooted worker must never be handed a governance-
+# weakening flag (--settings, --dangerously-skip-permissions, --add-dir, …).
+# Both allowlisted flags take a value.
+_EXEC_PASSTHROUGH_ALLOW = ("--resume", "--model")
 
 _python = shutil.which("python") or shutil.which("python3")
 if not _python:
@@ -619,6 +646,135 @@ def check_hook_coverage(report):
         report.warn("Hook coverage: chooks.py not found, skipping coverage check")
 
 
+# ── Root inventory ───────────────────────────────────────────────────
+
+def _extract_root_name(claude_md: Path, fallback: str) -> str:
+    """Pull `name:` from a CLAUDE.md frontmatter; fall back to the dir name."""
+    try:
+        text = claude_md.read_text(encoding="utf-8-sig")
+        if text.startswith("---"):
+            end = text.find("---", 3)
+            if end != -1:
+                for line in text[3:end].splitlines():
+                    stripped = line.strip()
+                    if stripped.startswith("name:"):
+                        val = stripped.split(":", 1)[1].strip().strip('"').strip("'")
+                        if val:
+                            return val
+    except (OSError, UnicodeDecodeError):
+        pass
+    return fallback
+
+
+def build_root_inventory(report):
+    """Materialize .state/roots.db — the durable directory of every root: true
+    context under the apex, including the apex itself.
+
+    This is a DERIVED, REBUILDABLE CACHE, not a source of truth. The filesystem
+    walk (child_propagate.discover_roots) is authoritative; this DB is dropped and
+    rebuilt from scratch on every boot and is safe to delete — the next boot
+    regenerates it. It is gitignored via .state/.gitignore (accumulation is never
+    tracked).
+
+    Records, per root: name, absolute path, apex-relative path, nearest enclosing
+    root (containment parent), depth, whether it is the apex, and how many DIRECT
+    child roots it contains. All connections go through the house sqlite factory
+    (.codex/reactive/sqlite/sqlite.py) per the never-call-sqlite3.connect rule.
+    """
+    try:
+        import sqlite3  # for sqlite3.Error only; connection comes from the factory
+    except ImportError:
+        report.warn("Root inventory: sqlite3 unavailable, skipping")
+        return
+
+    child_propagate = _load_module(PREBOOT_DIR / "child_propagate.py")
+    sqlite_factory = _load_module(CODEX / "reactive" / "sqlite" / "sqlite.py")
+
+    # Apex is the ceiling row; discovered descendants follow. Resolve to absolute.
+    apex_abs = ROOT.resolve()
+    descendants = [d.resolve() for d in child_propagate.discover_roots(ROOT)]
+    all_roots = [apex_abs] + descendants
+    root_set = set(all_roots)
+
+    # Nearest enclosing root = first ancestor (nearest-first) that is itself a root.
+    parents = {}
+    child_counts = {p: 0 for p in all_roots}
+    for p in all_roots:
+        parent = None
+        if p != apex_abs:
+            for anc in p.parents:
+                if anc in root_set:
+                    parent = anc
+                    break
+        parents[p] = parent
+        if parent is not None:
+            child_counts[parent] += 1
+
+    def depth_of(p):
+        d, cur = 0, parents.get(p)
+        while cur is not None:
+            d += 1
+            cur = parents.get(cur)
+        return d
+
+    stamp = now_iso()
+    rows = []
+    for p in all_roots:
+        is_apex = p == apex_abs
+        rows.append({
+            "name": _extract_root_name(p / "CLAUDE.md", "apex" if is_apex else p.name),
+            "abs_path": p.as_posix(),
+            "rel_path": "." if is_apex else p.relative_to(apex_abs).as_posix(),
+            "parent_path": parents[p].as_posix() if parents[p] else None,
+            "depth": depth_of(p),
+            "is_apex": 1 if is_apex else 0,
+            "contains_roots": child_counts[p],
+            "generated_at": stamp,
+        })
+    rows.sort(key=lambda r: (r["depth"], r["rel_path"]))
+
+    db_path = STATE / "roots.db"
+    try:
+        conn = sqlite_factory.connect(str(db_path))
+        try:
+            conn.execute("DROP TABLE IF EXISTS roots")
+            conn.execute("DROP TABLE IF EXISTS meta")
+            conn.execute(
+                "CREATE TABLE roots ("
+                " id INTEGER PRIMARY KEY,"
+                " name TEXT NOT NULL,"
+                " abs_path TEXT NOT NULL UNIQUE,"
+                " rel_path TEXT NOT NULL,"
+                " parent_path TEXT,"           # nearest enclosing root's abs_path (NULL for apex)
+                " depth INTEGER NOT NULL,"      # 0 = apex, 1 = top-level child, ...
+                " is_apex INTEGER NOT NULL DEFAULT 0,"
+                " contains_roots INTEGER NOT NULL DEFAULT 0,"  # count of DIRECT child roots
+                " generated_at TEXT NOT NULL)"
+            )
+            conn.execute("CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT)")
+            conn.executemany(
+                "INSERT INTO roots (name, abs_path, rel_path, parent_path, depth,"
+                " is_apex, contains_roots, generated_at) VALUES (:name, :abs_path,"
+                " :rel_path, :parent_path, :depth, :is_apex, :contains_roots, :generated_at)",
+                rows,
+            )
+            conn.executemany(
+                "INSERT INTO meta (key, value) VALUES (?, ?)",
+                [("generated", stamp), ("apex_abs", apex_abs.as_posix()),
+                 ("root_count", str(len(rows)))],
+            )
+            conn.commit()
+        finally:
+            conn.close()
+    except sqlite3.Error as e:
+        report.warn("Root inventory: sqlite write failed", str(e))
+        return
+
+    n = len(descendants)
+    report.ok(f"Root inventory: {len(rows)} roots in .state/roots.db "
+              f"(apex + {n} descendant{'' if n == 1 else 's'})")
+
+
 # ── Per-project refresh ──────────────────────────────────────────────
 
 def materialize_apex_inputs(report):
@@ -693,16 +849,198 @@ def refresh_project(target_arg, report):
     return True, target
 
 
+# ── Headless worker modes (--exec / --switch) ────────────────────────
+
+def _resolve_target(target_arg):
+    """Resolve a --project value to a validated root: true descendant of the apex.
+
+    Returns (Path, None) on success or (None, error_message) on failure. Pure
+    validation — no materialization, no report. Shared by --exec and --switch.
+    """
+    target = Path(target_arg)
+    if not target.is_absolute():
+        target = ROOT / target_arg
+    target = target.resolve()
+    if not target.is_dir():
+        return None, f"target not found: {target_arg}"
+    if target == ROOT or ROOT not in target.parents:
+        return None, f"target outside apex: {target_arg}"
+    child_propagate = _load_module(PREBOOT_DIR / "child_propagate.py")
+    claude_md = target / "CLAUDE.md"
+    if not claude_md.exists() or not child_propagate._has_root_true(claude_md):
+        return None, f"not a root: true project: {target_arg}"
+    return target, None
+
+
+def _filter_exec_passthrough(passthrough):
+    """Keep only allowlisted flags (+ their values); drop everything else.
+
+    Returns (allowed, dropped). Guards a hard worker from being handed a
+    governance-weakening claude flag via passthrough (defense-in-depth even
+    once the caller quotes the prompt safely).
+    """
+    allowed, dropped = [], []
+    i = 0
+    while i < len(passthrough):
+        tok = passthrough[i]
+        flag = tok.split("=", 1)[0]
+        if flag in _EXEC_PASSTHROUGH_ALLOW:
+            has_inline_value = "=" in tok
+            has_next_value = i + 1 < len(passthrough) and not passthrough[i + 1].startswith("-")
+            if not has_inline_value and not has_next_value:
+                # Value-taking flag with no value: drop it. A bare `--resume`
+                # would silently resume an unrelated most-recent session.
+                dropped.append(tok)
+                i += 1
+                continue
+            allowed.append(tok)
+            if not has_inline_value:
+                allowed.append(passthrough[i + 1])
+                i += 2
+                continue
+            i += 1
+        else:
+            dropped.append(tok)
+            i += 1
+    return allowed, dropped
+
+
+def exec_in_project(target_arg, prompt, passthrough, prompt_file=None):
+    """Mode: hard. Headless hard-rooted worker.
+
+    Prompt source (checked in order): `prompt_file` (a path — read its contents,
+    the safe form for untrusted content since bytes never touch a shell command
+    line), then `prompt == "-"` (read stdin), else `prompt` as a literal string.
+
+    Runs `claude -p "<prompt>" --output-format json` with cwd=target AND
+    CLAUDE_PROJECT_DIR=target, so the child's containment/gravity guards fence at
+    the child — a real hard-root, not the soft in-process reroot a subagent gets.
+    Captures the result and prints a cboot envelope (session_id, result, cost) to
+    stdout. stdout is JSON ONLY (all diagnostics go to stderr) so a caller can
+    parse it unambiguously. Returns a process exit code (0 ok, 1 error).
+
+    The explicit CLAUDE_PROJECT_DIR is load-bearing: if the caller is a TTY-less
+    subagent, its environment already carries the apex's CLAUDE_PROJECT_DIR, and
+    the child would otherwise inherit it and fence at the WRONG root.
+    """
+    def emit_error(msg, root=None, **extra):
+        print(json.dumps({"kind": "error", "mode": "hard", "root": root,
+                          "is_error": True, "error": msg, **extra}, indent=2))
+        return 1
+
+    target, err = _resolve_target(target_arg)
+    if err is not None:
+        return emit_error(err)
+
+    try:
+        rel = target.relative_to(ROOT).as_posix()
+    except ValueError:
+        rel = target.as_posix()
+    root_info = {"name": _extract_root_name(target / "CLAUDE.md", target.name),
+                 "abs_path": target.as_posix(), "rel_path": rel}
+
+    # Resolve the prompt source. --exec-file (data written out-of-band, never shell-
+    # framed) is the safe form for untrusted content — see .codex/explicit/ask/start.md.
+    # --exec - reads stdin; --exec "literal" is the direct form.
+    if prompt_file is not None:
+        try:
+            prompt = Path(prompt_file).read_text(encoding="utf-8")
+        except OSError as e:
+            return emit_error(f"--exec-file unreadable: {prompt_file} ({e})", root_info)
+    elif prompt == "-":
+        if sys.stdin.isatty():
+            return emit_error("--exec - given but no prompt on stdin", root_info)
+        prompt = sys.stdin.read()
+    if not prompt or not prompt.strip():
+        return emit_error("empty prompt", root_info)
+
+    # Drop any passthrough flag not on the allowlist; report drops on stderr
+    # (stdout must stay pure JSON).
+    passthrough, dropped = _filter_exec_passthrough(passthrough)
+    if dropped:
+        sys.stderr.write(f"cboot --exec: dropped disallowed passthrough: {' '.join(dropped)}\n")
+
+    # Child governance (guards, hooks, autoMemory) comes from its propagated
+    # .claude/settings.json. Ensure it exists — lazily, only if missing, and
+    # WITHOUT re-materializing apex artifacts when the apex is already booted.
+    if not (target / ".claude" / "settings.json").exists():
+        rep = BootReport()
+        if not (CLAUDE / "settings.json").exists():
+            materialize_apex_inputs(rep)
+        child_propagate = _load_module(PREBOOT_DIR / "child_propagate.py")
+        if child_propagate.propagate_one(ROOT, target, rep) is None:
+            return emit_error("child not materialized — run a full `python cboot.py` boot first", root_info)
+        sys.stderr.write(f"cboot --exec: materialized '{root_info['name']}' (was unbuilt)\n")
+
+    claude_cmd = shutil.which("claude")
+    if not claude_cmd:
+        return emit_error("'claude' not found on PATH", root_info)
+
+    cmd = [claude_cmd, "-p", prompt, "--output-format", "json", *passthrough]
+    child_env = {**os.environ, "CLAUDE_PROJECT_DIR": str(target)}
+    try:
+        proc = subprocess.run(cmd, cwd=str(target), capture_output=True,
+                              text=True, timeout=EXEC_TIMEOUT, env=child_env)
+    except subprocess.TimeoutExpired:
+        return emit_error(f"headless claude timed out after {EXEC_TIMEOUT}s", root_info)
+    except OSError as e:
+        return emit_error(f"failed to spawn claude: {e}", root_info)
+
+    raw = (proc.stdout or "").strip()
+    try:
+        claude_json = json.loads(raw)
+    except (json.JSONDecodeError, ValueError):
+        return emit_error("headless claude produced no parseable JSON", root_info,
+                          exit_code=proc.returncode,
+                          stderr=(proc.stderr or "").strip()[:2000],
+                          stdout=raw[:2000])
+
+    envelope = {
+        "kind": "result",
+        "mode": "hard",
+        "root": root_info,
+        "session_id": claude_json.get("session_id"),
+        "result": claude_json.get("result"),
+        "is_error": bool(claude_json.get("is_error", False)),
+        "cost_usd": claude_json.get("total_cost_usd"),
+        "duration_ms": claude_json.get("duration_ms"),
+        "num_turns": claude_json.get("num_turns"),
+    }
+    print(json.dumps(envelope, indent=2))
+    return 1 if envelope["is_error"] else 0
+
+
+def switch_command(target_arg):
+    """Mode: switch. Print the interactive session-switch command for a child.
+
+    Does NOT launch — a TTY-less caller (e.g. a subagent) can't hand off a
+    terminal to an interactive claude. It prints the command for a human to run.
+    Non-JSON stdout by design: a caller applying "if json parse, else handoff"
+    treats this line as the handoff. Returns a process exit code.
+    """
+    target, err = _resolve_target(target_arg)
+    if err is not None:
+        sys.stderr.write(f"cboot --switch: {err}\n")
+        return 1
+    print(f'python cboot.py --project "{target.as_posix()}" --launch')
+    return 0
+
+
 # ── Main ─────────────────────────────────────────────────────────────
 
 def _extract_project_arg(argv):
-    """Pull --project/-p (takes a value) and --launch out of argv.
+    """Pull --project/-p, --launch, --exec, --exec-file (each takes a value), and
+    --switch from argv.
 
-    Returns (target | None, launch: bool, remaining_argv). Remaining args are
-    passed through to claude when --launch is set.
+    Returns (target | None, launch: bool, exec_prompt | None, exec_file | None,
+    switch: bool, remaining_argv). Remaining args pass through to claude — to
+    `--launch` for a session, or to `claude -p` for `--exec*` (e.g. `--resume <id>`).
     """
     target = None
     launch = False
+    exec_prompt = None
+    exec_file = None
+    switch = False
     remaining = []
     i = 0
     while i < len(argv):
@@ -715,13 +1053,33 @@ def _extract_project_arg(argv):
             target = a.split("=", 1)[1]
             i += 1
             continue
+        if a == "--exec-file":
+            exec_file = argv[i + 1] if i + 1 < len(argv) else ""
+            i += 2 if i + 1 < len(argv) else 1
+            continue
+        if a.startswith("--exec-file="):
+            exec_file = a.split("=", 1)[1]
+            i += 1
+            continue
+        if a == "--exec":
+            exec_prompt = argv[i + 1] if i + 1 < len(argv) else ""
+            i += 2 if i + 1 < len(argv) else 1
+            continue
+        if a.startswith("--exec="):
+            exec_prompt = a.split("=", 1)[1]
+            i += 1
+            continue
+        if a == "--switch":
+            switch = True
+            i += 1
+            continue
         if a == "--launch":
             launch = True
             i += 1
             continue
         remaining.append(a)
         i += 1
-    return target, launch, remaining
+    return target, launch, exec_prompt, exec_file, switch, remaining
 
 
 def main():
@@ -729,9 +1087,23 @@ def main():
     if hasattr(sys.stdout, "reconfigure"):
         sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 
-    # --project PATH: re-materialize a single child only (no sibling propagation).
-    project_target, launch_after, passthrough = _extract_project_arg(sys.argv[1:])
+    # --project PATH: single-child modes (no sibling propagation).
+    project_target, launch_after, exec_prompt, exec_file, switch_mode, passthrough = _extract_project_arg(sys.argv[1:])
+
+    # --exec*/--switch are worker modes; they require an explicit --project target.
+    # Without it, do NOT silently fall through to a full apex boot + interactive
+    # launch (which a headless caller would hang on).
+    if (exec_prompt is not None or exec_file is not None or switch_mode) and project_target is None:
+        sys.stderr.write("cboot: --exec/--exec-file/--switch require --project PATH\n")
+        sys.exit(2)
+
     if project_target is not None:
+        # Non-interactive worker modes emit machine output on stdout — no boot report.
+        if exec_prompt is not None or exec_file is not None:
+            sys.exit(exec_in_project(project_target, exec_prompt, passthrough, prompt_file=exec_file))
+        if switch_mode:
+            sys.exit(switch_command(project_target))
+        # Otherwise: re-materialize the single child (+ optional --launch).
         report = BootReport()
         ok, target = refresh_project(project_target, report)
 
@@ -754,7 +1126,11 @@ def main():
                 print("  Error: 'claude' command not found. Is Claude Code installed?")
                 sys.exit(1)
             try:
-                result = subprocess.run([claude_cmd, *passthrough], cwd=target)
+                # Explicit CLAUDE_PROJECT_DIR so a launch pasted into an
+                # apex-rooted shell still fences the child at the child.
+                result = subprocess.run(
+                    [claude_cmd, *passthrough], cwd=target,
+                    env={**os.environ, "CLAUDE_PROJECT_DIR": str(target)})
                 sys.exit(result.returncode)
             except KeyboardInterrupt:
                 sys.exit(0)
@@ -781,6 +1157,9 @@ def main():
     if preboot_script.exists():
         child_propagate = _load_module(preboot_script)
         child_propagate.propagate(ROOT, report)
+
+    # Root inventory — durable directory of all root: true contexts (rebuilt every boot)
+    build_root_inventory(report)
 
     configure_auto_memory(report)
     configure_git_hooks(report)

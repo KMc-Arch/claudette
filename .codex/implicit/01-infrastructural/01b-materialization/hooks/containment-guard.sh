@@ -23,8 +23,8 @@ if command -v cygpath &>/dev/null; then
 fi
 
 # Normalize path (resolve .. etc)
-FILE_PATH=$(realpath -ms "$FILE_PATH" 2>/dev/null || echo "$FILE_PATH")
-PROJECT_ROOT=$(realpath -ms "$CLAUDE_PROJECT_DIR" 2>/dev/null || echo "$CLAUDE_PROJECT_DIR")
+FILE_PATH=$(realpath -m "$FILE_PATH" 2>/dev/null || echo "$FILE_PATH")
+PROJECT_ROOT=$(realpath -m "$CLAUDE_PROJECT_DIR" 2>/dev/null || echo "$CLAUDE_PROJECT_DIR")
 
 # Check if path is within project root
 case "$FILE_PATH" in

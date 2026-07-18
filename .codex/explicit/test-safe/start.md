@@ -121,11 +121,11 @@ Condition: extract all `"command"` values from hooks section, for each that star
 
 ### Category D: Explicit Commands
 
-**T19** — All 11 explicit command folders exist
-Condition: these folders exist in `.codex/explicit/`: `audit`, `bundle`, `milestone`, `new-project`, `pause`, `purge`, `rebuild`, `scrub`, `test-safe`, `test-burn`, `unpause`
+**T19** — Every explicit command folder is registered as a skill shim
+Condition: enumerate the folders in `.codex/explicit/` (exclude the `start.md` file). For each folder `F`, `.claude/skills/F/SKILL.md` must exist. This is registration completeness — it replaces a brittle hardcoded folder list, so new commands (e.g. `ask`) are covered automatically. Core commands that must be present: `audit`, `bundle`, `milestone`, `new-project`, `pause`, `purge`, `rebuild`, `scrub`, `test-safe`, `test-burn`, `unpause`, `ask`.
 
 **T20** — Each explicit command folder has a `start.md`
-Condition: `start.md` exists in each folder from T19
+Condition: `start.md` exists in each folder enumerated in T19
 
 ---
 
@@ -306,6 +306,19 @@ Condition: same check
 
 **T60** — `new-project/start.md` `writes:` is not empty
 Condition: same check
+
+---
+
+### Category M: Worker Modes & `/ask`
+
+**T61** — `/ask` command is registered and current
+Condition: `.codex/explicit/ask/start.md` exists; its frontmatter declares `isolation: subagent` and a non-empty `short-desc`; and the shim `.claude/skills/ask/SKILL.md` exists.
+
+**T62** — `roots.db` schema (if present)
+Condition: SKIP if `.state/roots.db` is absent (it is a rebuildable cache). If present, open it via the sqlite factory (`.codex/reactive/sqlite/sqlite.py`) and verify the `roots` table has columns `name, abs_path, rel_path, parent_path, depth, is_apex, contains_roots` and exactly one row with `is_apex = 1`.
+
+**T63** — `/ask` hard mode is injection-safe
+Condition: in `ask/start.md`, the `hard` branch delivers `<request>` **out-of-band as a file** — written with the Write tool into `.tmp/` and run via `python cboot.py … --exec-file '<reqfile>'` — so the request bytes never appear on a shell command line. FAIL if the branch puts `<request>` into shell syntax in any form: a `--exec "<request>"` interpolation, or a heredoc (`--exec - <<'…'`) whose fixed delimiter is itself a public injection vector.
 
 ---
 
