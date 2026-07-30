@@ -1,14 +1,79 @@
-# Scrub patterns — one regex per line
+# Scrub patterns — one regex per line (Python `re` syntax)
 # Lines starting with # are comments
-# Matched against added lines (diff mode) or all lines (full mode)
 #
-# Add your own patterns below. Examples:
-#   First\s+Last              (real name)
-#   (?i)Users[/\\]username    (username in paths)
+# ── Scope warning ──────────────────────────────────────────────────────────
+# `scrub full` scans TRACKED files only (git ls-files). Under this repo's
+# inverted .gitignore that is the framework skeleton — a small fraction of the
+# tree. Credential files (.env and friends) are gitignored and therefore
+# invisible to `full` BY DESIGN.
 #
-# Common secrets patterns (recommended):
-(?i)(api[_-]?key|api[_-]?secret|access[_-]?token|auth[_-]?token|bearer)\s*[:=]\s*\S+
-(?i)(password|passwd|pwd)\s*[:=]\s*["']?\S+
-(?i)sk-[a-zA-Z0-9]{20,}
-(?i)ghp_[a-zA-Z0-9]{36,}
-(?i)-----BEGIN\s+(RSA\s+)?PRIVATE\sKEY-----
+# Any gate that asks "is it safe to copy this tree somewhere else" must use
+# path mode (`scrub .`), not `full`. On 2026-07-29 a `full` scan returned PASS
+# while four live .env files were mirrored into cloud storage.
+# ───────────────────────────────────────────────────────────────────────────
+#
+# ── Design notes ───────────────────────────────────────────────────────────
+# 1. Name-based patterns constrain the VALUE, not just the name. The value must
+#    be >=8 chars from a credential charset AND contain a digit AND not begin
+#    with a template sigil ($ < { % *). That single requirement rejects almost
+#    all ordinary code — `password: str`, `api_key=os.environ[...]`,
+#    `secret: None`, `PASSWORD=changeme`, `${{ secrets.X }}`, `'***REDACTED***'`
+#    — while still matching real credentials. Cost: a purely alphabetic
+#    passphrase is missed by the name patterns; the format patterns below cover
+#    provider tokens independently.
+# 2. `["']?` before the separator catches the JSON/XML form `"password": "..."`,
+#    which is where real secrets actually live in config files.
+# 3. Every repetition is bounded. An unbounded `[a-z0-9_]*` before a literal is
+#    O(n^2) — a single-line SQL hex blob took 59 s at 128 KB and ~1 hr at 1 MB.
+# 4. Escape hatch: put `scrub:allow` on a line to skip it. Without one, the only
+#    response to a false positive is `git push --no-verify`, which becomes habit
+#    and disables the gate for real secrets too.
+# ───────────────────────────────────────────────────────────────────────────
+
+# ── Credential names + constrained value ──
+(?i)(?<![a-z0-9])(api[_-]?(?:key|secret|token)|access[_-]?(?:key|token)|auth[_-]?token|secret[_-]?key|private[_-]?key|client[_-]?secret|app[_-]?secret|shared[_-]?secret|sharedaccesskey|account[_-]?key|sas[_-]?token|connection[_-]?string|conn[_-]?str|[a-z0-9]{0,40}_secret)["']?\s*[:=]\s*["']?(?![$<{%*])(?=[^\s"']{0,80}[0-9])[A-Za-z0-9+/=_.~@:%-]{8,}
+(?i)(?<![a-z0-9])(password|passwd|pwd|pass)["']?\s*[:=]\s*["']?(?![$<{%*])(?=[^\s"']{0,80}[0-9])[A-Za-z0-9+/=_.~@:%-]{8,}
+(?i)(?<![a-z0-9])(supabase[_-]?(?:key|secret[_-]?key)|anon[_-]?key|service[_-]?role(?:[_-]?key)?)["']?\s*[:=]\s*["']?(?![$<{%*])(?=[^\s"']{0,80}[0-9])[A-Za-z0-9+/=_.~@:%-]{8,}
+(?i)(?<![a-z0-9])(token|secret)["']?\s*[:=]\s*["']?(?![$<{%*])(?=[^\s"']{0,80}[0-9])[A-Za-z0-9+/=_.~@:%-]{8,}
+
+# ── Provider token formats (name-independent) ──
+# No (?i): the class already spans both cases, and case-folding `sk-` is what
+# made TASK-/RISK-/DISK- slugs block pushes. Lookbehind anchors the prefix.
+(?<![A-Za-z0-9])sk-[A-Za-z0-9_-]{20,}
+(?<![A-Za-z0-9])sk_(?:live|test)_[A-Za-z0-9]{20,}
+(?<![A-Za-z0-9])rk_live_[A-Za-z0-9]{20,}
+(?<![A-Za-z0-9])whsec_[A-Za-z0-9]{20,}
+(?<![A-Za-z0-9])gh[oprsu]_[A-Za-z0-9]{36,}
+(?<![A-Za-z0-9])github_pat_[0-9A-Za-z_]{22,}
+(?<![A-Za-z0-9])sb_(?:secret|publishable)_[A-Za-z0-9_-]{20,}
+(?<![A-Za-z0-9])npm_[A-Za-z0-9]{36}
+(?<![A-Za-z0-9])pypi-[A-Za-z0-9_-]{16,}
+(?<![A-Za-z0-9])hf_[A-Za-z0-9]{30,}
+(?<![A-Za-z0-9])SG\.[A-Za-z0-9_-]{16,}\.[A-Za-z0-9_-]{16,}
+(?<![A-Za-z0-9])GOCSPX-[A-Za-z0-9_-]{20,}
+(?<![A-Za-z0-9])AIza[0-9A-Za-z_-]{35}
+(?<![A-Za-z0-9])xox[abprs]-[0-9A-Za-z-]{10,}
+(?<![A-Za-z0-9])xapp-[0-9]-[A-Za-z0-9-]{10,}
+# AWS docs' canonical dud key is AKIAIOSFODNN7EXAMPLE — excluded so quoting it
+# in a doc or fixture does not block a push.
+AKIA(?!IOSFODNN7EXAMPLE)[0-9A-Z]{16}
+ASIA(?!IOSFODNN7EXAMPLE)[0-9A-Z]{16}
+# Azure AD / Entra client secret: three chars, then the literal Q~ marker.
+[A-Za-z0-9_~.-]{3}Q~[A-Za-z0-9_~.-]{30,}
+# Azure SAS signature in a URL query string.
+[?&]sig=[A-Za-z0-9%+/]{20,}
+
+# ── JWTs — catches Supabase legacy service_role keys regardless of variable name.
+# The current sb_secret_ format is NOT a JWT; it is covered above.
+eyJ[A-Za-z0-9_-]{10,}\.eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}
+
+# ── Connection URIs carrying an inline password ──
+# Generic scheme, with optional +driver so SQLAlchemy's postgresql+psycopg2://
+# and mssql+pyodbc:// forms are covered, and s-suffixed TLS variants too.
+(?i)(?<![a-z0-9])[a-z][a-z0-9]{2,}(?:\+[a-z0-9_]+)?://[^:/@\s]+:[^@\s]{3,}@
+
+# ── Private keys ──
+-----BEGIN (?:[A-Z0-9 ]{1,30} )?PRIVATE KEY(?: BLOCK)?-----
+---- BEGIN [A-Z0-9 ]{1,30}PRIVATE KEY ----
+PuTTY-User-Key-File-[0-9]
+(?<![A-Za-z0-9])b3BlbnNzaC1rZXktdjEA

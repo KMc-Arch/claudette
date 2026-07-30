@@ -587,20 +587,183 @@ def configure_auto_memory(report):
 
 # ── Git hooks path ──────────────────────────────────────────────────
 
-def configure_git_hooks(report):
-    """Set core.hooksPath if scrub pre-push hook exists."""
-    scrub_hooks = CODEX / "explicit" / "scrub" / "hooks"
-    if scrub_hooks.is_dir() and (scrub_hooks / "pre-push").exists():
+GIT_SCAN_SKIP = {"node_modules", "__pycache__"}
+
+
+def _discover_git_repos(root):
+    """Every git repo in the tree, apex first.
+
+    Discovered by `.git`, not by `root: true`: a repo need not be a context root
+    (oneoff/2026-microsoft-team-hack is a repo and is not one) and most context
+    roots are not repos. Dot-prefixed directories are pruned, which also excludes
+    vendored third-party clones under `.act/` and `.plugins/` -- those are not
+    ours to configure.
+    """
+    repos = []
+    if (root / ".git").exists():
+        repos.append(root)
+
+    def walk(directory):
         try:
-            subprocess.run(
-                ["git", "config", "core.hooksPath", str(scrub_hooks.relative_to(ROOT))],
-                cwd=ROOT, capture_output=True, check=True
-            )
-            report.ok("Git hooks: core.hooksPath set to scrub/hooks")
-        except (subprocess.CalledProcessError, FileNotFoundError):
-            report.warn("Git hooks: failed to set core.hooksPath")
-    else:
+            children = sorted(directory.iterdir())
+        except OSError:
+            return
+        for child in children:
+            if not child.is_dir():
+                continue
+            name = child.name
+            if name.startswith(".") or name.startswith("_") or name in GIT_SCAN_SKIP:
+                continue
+            if (child / ".git").exists():
+                repos.append(child)
+            walk(child)
+
+    walk(root)
+    return repos
+
+
+def _set_git_config_key(repo, section, subkey, value):
+    """Set a git config key, falling back to a direct .git/config edit.
+
+    `git config` writes through .git/config.lock and chmods it, which returns
+    EPERM on a drvfs/9p mount -- so on this platform the subprocess always fails
+    and the direct edit is the only path that works. Idempotent either way.
+
+    Returns (ok: bool, how: str).
+    """
+    key = f"{section}.{subkey}"
+    try:
+        subprocess.run(["git", "config", key, value],
+                       cwd=repo, capture_output=True, check=True)
+        return True, "git config"
+    except (subprocess.CalledProcessError, FileNotFoundError):
+        pass
+
+    config = repo / ".git" / "config"
+    if not config.is_file():
+        return False, "no .git/config"
+    try:
+        lines = config.read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return False, "unreadable .git/config"
+
+    header = f"[{section}]"
+    needle = subkey.lower() + "="
+    out, in_section, done = [], False, False
+
+    for line in lines:
+        stripped = line.strip()
+        if stripped.startswith("["):
+            # Leaving the target section without having written the key.
+            if in_section and not done:
+                out.append(f"\t{subkey} = {value}")
+                done = True
+            in_section = stripped.lower() == header.lower()
+        elif in_section and stripped.lower().replace(" ", "").startswith(needle):
+            out.append(f"\t{subkey} = {value}")
+            done = True
+            continue
+        out.append(line)
+
+    if not done:
+        if in_section:
+            out.append(f"\t{subkey} = {value}")
+        else:
+            out.extend([header, f"\t{subkey} = {value}"])
+
+    try:
+        config.write_text("\n".join(out) + "\n", encoding="utf-8")
+    except OSError as exc:
+        return False, f"write failed: {exc}"
+    return True, "direct .git/config edit"
+
+
+def configure_git_hooks(report):
+    """Point every git repo in the tree at the codex pre-push hook (BDRY-03).
+
+    Runs over all repos, not just the apex: the push boundary belongs to whichever
+    repo is being pushed, and the child projects are where most commits happen.
+    """
+    hooks_dir = CODEX / "explicit" / "scrub" / "hooks"
+    if not (hooks_dir.is_dir() and (hooks_dir / "pre-push").exists()):
         report.ok("Git hooks: no pre-push hook found, skipping")
+        return
+
+    repos = _discover_git_repos(ROOT)
+    already = wired = failed = 0
+    problems, displaced, unsafe = [], [], []
+
+    def read_key(repo):
+        return subprocess.run(
+            ["git", "config", "core.hooksPath"],
+            cwd=repo, capture_output=True, text=True, check=False,
+        ).stdout.strip()
+
+    for repo in repos:
+        label = "." if repo == ROOT else repo.relative_to(ROOT).as_posix()
+        # Relative, so the setting survives the tree moving to another mount.
+        want = Path(os.path.relpath(hooks_dir, repo)).as_posix()
+
+        # Can git operate here at all? A root-owned repo on a shared mount trips
+        # git's safe.directory protection, after which every read returns empty
+        # and every write is pointless -- the config file can be perfectly
+        # correct while git refuses to look at it.
+        probe = subprocess.run(["git", "rev-parse", "--git-dir"],
+                               cwd=repo, capture_output=True, text=True, check=False)
+        if probe.returncode != 0:
+            failed += 1
+            if "dubious ownership" in probe.stderr:
+                unsafe.append(str(repo))
+            else:
+                first = (probe.stderr.strip().splitlines() or ["unknown error"])[0]
+                problems.append(f"{label} ({first})")
+            continue
+
+        if read_key(repo) == want:
+            already += 1
+            continue
+
+        # core.hooksPath replaces the entire hooks directory -- surface anything
+        # it would hide rather than silently disabling it.
+        live = sorted(p.name for p in (repo / ".git" / "hooks").glob("*")
+                      if p.is_file() and not p.name.endswith(".sample"))
+        if live:
+            displaced.append(f"{label}: {', '.join(live)}")
+
+        ok, how = _set_git_config_key(repo, "core", "hooksPath", want)
+        if not ok:
+            failed += 1
+            problems.append(f"{label} ({how})")
+            continue
+
+        # Verify rather than assume. A value written but not readable back is not
+        # a wired hook, and reporting it as one is how a dead gate looks healthy.
+        confirmed = read_key(repo)
+        if confirmed == want:
+            wired += 1
+        else:
+            failed += 1
+            problems.append(f"{label} (written via {how}, but git reads "
+                            f"'{confirmed or 'unset'}')")
+
+    total = len(repos)
+    if failed:
+        detail = "; ".join(problems) if problems else ""
+        report.warn(f"Git hooks: pre-push active in {wired + already}/{total} repos, "
+                    f"{failed} unprotected{' -- ' + detail if detail else ''}")
+    else:
+        report.ok(f"Git hooks: pre-push active in {wired + already}/{total} repos "
+                  f"({wired} newly wired, {already} already set)")
+
+    if unsafe:
+        report.warn(
+            f"Git hooks: {len(unsafe)} repo(s) unusable by git (dubious ownership) -- "
+            "git cannot read or push them at all, so no gate applies. Remedy: "
+            + " ; ".join(f"git config --global --add safe.directory {p}" for p in unsafe)
+        )
+    if displaced:
+        report.warn("Git hooks: core.hooksPath now hides existing hooks -- "
+                    + "; ".join(displaced))
 
 
 # ── Trace session marker ────────────────────────────────────────────
