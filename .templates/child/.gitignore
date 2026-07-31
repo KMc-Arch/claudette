@@ -8,3 +8,7 @@ desktop.ini
 .env*
 *.key
 *.pem
+
+# scrub output: pre-push artifact, and a failing report embeds the matched
+# line verbatim -- never track it.
+**/.state/tests/explicit/scrub/

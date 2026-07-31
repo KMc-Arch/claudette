@@ -227,7 +227,8 @@ Each boundary should have at least two defense layers. Single-layer boundaries a
 
 | Boundary | Convention | Directive | Automation | Infrastructure |
 |---|---|---|---|---|
-| Push | — | scrub protocol | — (planned: pre-push hook, BDRY-03) | — |
+| Push | — | scrub protocol | `scrub/hooks/pre-push` (fail-closed, BDRY-03 done) | `core.hooksPath` |
+| Backup / copy-out | — | `/backup` protocol | `exclude_files` (credential class, `scrub-*.md`) | `.state/backup.json` |
 | Visibility | `_` naming | CLAUDE.md directive | `visibility-guard.sh` | `.gitignore` |
 | Access | — | ABSOLUTE HOLD | `api-guard.sh` (pattern-based) | — |
 | Session | — | persistence rules | `session-close.sh` | `.claude/` gitignored |

@@ -49,3 +49,8 @@ desktop.ini
 .env*
 *.key
 *.pem
+
+# ── Scrub output (pre-push artifact; reports embed matched lines verbatim) ──
+# Must follow the whitelist block above: last matching pattern wins, and
+# !/Testing/** and !/.templates/** would otherwise re-include these.
+**/.state/tests/explicit/scrub/

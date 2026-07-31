@@ -1,0 +1,171 @@
+#!/usr/bin/env bash
+#
+# pre-push -- block a push that introduces secret-shaped content.
+#
+# BDRY-03: the second defence layer on the Push boundary. The first layer is the
+# scrub protocol, invoked by hand; this makes it automatic.
+#
+# Wire it with:
+#     git config core.hooksPath .codex/explicit/scrub/hooks
+#
+# core.hooksPath replaces the ENTIRE hooks directory for the repo. Any other
+# hook must live in this folder too, or it silently stops running.
+#
+# Bypass deliberately with `git push --no-verify`.
+#
+# git invokes this with $1 = remote name, $2 = remote URL, and supplies one line
+# per ref on stdin:
+#     <local_ref> <local_sha> <remote_ref> <remote_sha>
+#
+# Scope note: this gate scans the DIFF of the commits being pushed. It cannot
+# see gitignored files -- they are untracked, so they never appear in a diff.
+# Credential files are therefore out of scope here by construction; keeping them
+# out of a copied tree is the /backup exclude_files layer, not this one.
+
+set -uo pipefail
+
+# All-zero OID marks a created or deleted ref. Length is object-format dependent
+# (40 hex for sha1, 64 for sha256), so match by content rather than a fixed
+# literal -- a hardcoded 40 would break every new-branch and deletion push in a
+# sha256 repo, blocking them all.
+is_zero_oid() {
+    case "$1" in
+        *[!0]*) return 1 ;;
+        "")     return 1 ;;
+        *)      return 0 ;;
+    esac
+}
+
+SCAN_TIMEOUT=120
+timeout_bin="$(command -v timeout || true)"
+
+remote_name="${1:-}"
+
+# Fail closed, not open. A bare repo or a GIT_DIR-only invocation has no
+# worktree, and the previous `|| exit 0` here silently passed the entire push
+# unscanned with no output at all.
+if ! repo_root="$(git rev-parse --show-toplevel 2>/dev/null)"; then
+    echo "pre-push: no work tree (bare repo or GIT_DIR-only invocation)." >&2
+    echo "pre-push: cannot scan, so refusing to pass. Override with --no-verify." >&2
+    exit 1
+fi
+
+# scrub.py normally lives in this repo's own codex. Walk up so a child project
+# inheriting the apex codex is covered too.
+find_scrub() {
+    local dir="$1"
+    local prev=""
+    # Terminate on the fixed point of dirname, not on "/". Under Git for Windows
+    # a toplevel looks like C:/Users/x, and dirname walks C: -> . -> . forever,
+    # hanging the push at 100% CPU.
+    while [ -n "$dir" ] && [ "$dir" != "$prev" ]; do
+        if [ -f "$dir/.codex/explicit/scrub/scrub.py" ]; then
+            printf '%s\n' "$dir/.codex/explicit/scrub/scrub.py"
+            return 0
+        fi
+        prev="$dir"
+        dir="$(dirname "$dir")"
+    done
+    return 1
+}
+
+# Fail closed. A gate that cannot run must not report success -- that is the
+# failure mode this hook exists to eliminate.
+scrub="$(find_scrub "$repo_root")" || {
+    echo "pre-push: scrub.py not found -- push boundary would be UNPROTECTED." >&2
+    echo "pre-push: refusing to pass silently. Override with --no-verify." >&2
+    exit 1
+}
+
+python_bin="$(command -v python3 || command -v python)" || {
+    echo "pre-push: no python interpreter -- cannot scan. Override with --no-verify." >&2
+    exit 1
+}
+
+status=0
+found=0
+errored=0
+
+while read -r local_ref local_sha remote_ref remote_sha; do
+    [ -z "${local_sha:-}" ] && continue
+    is_zero_oid "$local_sha" && continue      # branch deletion: nothing to scan
+
+    if is_zero_oid "$remote_sha"; then
+        # New ref on this remote. Scope the exclusion to THIS remote: bare
+        # `--not --remotes` subtracts everything reachable from any remote, so
+        # pushing an already-fetched branch onward to a second remote yielded an
+        # empty list, which the old code read as "nothing to scan" and skipped.
+        if git config --get "remote.${remote_name}.url" >/dev/null 2>&1; then
+            excl="--remotes=${remote_name}"
+        else
+            excl="--remotes"
+        fi
+
+        # A failed rev-list must not look like "nothing new". Command
+        # substitution propagates the exit status here, so check it.
+        if ! new_commits="$(git rev-list --topo-order "$local_sha" --not "$excl" 2>&1)"; then
+            echo "pre-push: rev-list failed for ${local_ref}: ${new_commits}" >&2
+            status=1
+            errored=1
+            continue
+        fi
+        [ -z "$new_commits" ] && continue     # genuinely nothing this remote lacks
+
+        # --topo-order guarantees the last line is the topologically earliest new
+        # commit. Plain reverse-chronological order does not, so a backdated or
+        # cherry-picked commit could yield a base that is itself unpushed, with
+        # its content excluded from the scan.
+        oldest_new="$(printf '%s\n' "$new_commits" | tail -1)"
+        if parent="$(git rev-parse --verify --quiet "${oldest_new}^" 2>/dev/null)"; then
+            spec="${parent}..${local_sha}"
+        else
+            # Root commit: no parent to diff against, so scan every reachable
+            # commit. Over-scanning is safe; under-scanning is not.
+            spec="$local_sha"
+        fi
+    else
+        spec="${remote_sha}..${local_sha}"
+    fi
+
+    # Distinguish "found something" (rc 1) from "could not scan" (rc 2+). Both
+    # block, but conflating them sends the reader hunting for a secret that is
+    # not there.
+    #
+    # stdin is redirected from /dev/null: the child would otherwise inherit the
+    # hook's stdin, which still holds the remaining ref lines, and any subprocess
+    # that read it would silently consume refs and skip scanning them.
+    #
+    # The timeout bounds a pathological scan. Exit 124 lands in the "could not
+    # scan" branch, which blocks -- a hook that appears hung is what trains
+    # people to reach for --no-verify.
+    if [ -n "$timeout_bin" ]; then
+        "$timeout_bin" "$SCAN_TIMEOUT" "$python_bin" "$scrub" range \
+            --rev-range "$spec" --project-root "$repo_root" </dev/null
+    else
+        "$python_bin" "$scrub" range \
+            --rev-range "$spec" --project-root "$repo_root" </dev/null
+    fi
+    rc=$?
+    if [ "$rc" -eq 1 ]; then
+        status=1
+        found=1
+    elif [ "$rc" -ne 0 ]; then
+        status=1
+        errored=1
+    fi
+done
+
+if [ "$status" -ne 0 ]; then
+    echo "" >&2
+    if [ "$found" -eq 1 ]; then
+        echo "pre-push: BLOCKED -- secret-shaped content in the commits being pushed." >&2
+        echo "pre-push: rewrite history to remove it, or override deliberately with:" >&2
+    else
+        echo "pre-push: BLOCKED -- the scan could not run (see the error above)." >&2
+        echo "pre-push: this is a fail-closed gate; it will not pass unverified." >&2
+        echo "pre-push: fix the cause, or override deliberately with:" >&2
+    fi
+    echo "pre-push:     git push --no-verify" >&2
+fi
+
+exit "$status"
