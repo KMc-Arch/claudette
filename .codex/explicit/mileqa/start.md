@@ -1,5 +1,5 @@
 ---
-version: 2
+version: 3
 short-desc: Pre-milestone holistic QA — iterative blind multi-agent fan-out, fix critical/high, repeat until clean
 isolation: inline
 reads:
@@ -27,7 +27,7 @@ If the scope is ambiguous, enumerate the candidate surfaces and ask the user to 
 
 ### Round structure (repeat per round)
 
-1. **Checkpoint commit.** If on `main`, create a feature branch first — named for the *work*, not the QA (`feature/<topic>`). Commit all pending in-scope work so every round starts from a committed, diffable, revertible state. Never commit on `main`.
+1. **Checkpoint commit.** If on `main`, create a feature branch first — named for the *work*, not the QA (`feature/<topic>`). If already on a branch, verify it is the *work's* feature branch (never `main`, never an unrelated branch). Commit all pending in-scope work so every round starts from a committed, diffable, revertible state; a clean tree makes the checkpoint a no-op — proceed. Never commit on `main`.
 2. **Fan out a blind QA panel.** Parallel, independent agents. Mandatory lenses every round:
    - **Cold readers** — no conversation context; read the artifacts cold and *summarize detailed functionality back*. Divergence between their reconstruction and the intended design = finding.
    - **Adversaries** — push every seam: edge inputs, path escapes, symlinks, malformed state, interrupts, guard/boundary bypasses, refutation of any claimed guarantee.
@@ -39,20 +39,21 @@ If the scope is ambiguous, enumerate the candidate surfaces and ask the user to 
    - Platform — 9p/drvfs, ugrep-not-GNU, WSL, chmod-EPERM hazards
    - Regression — green suites still green; adjacent modules unbroken
 
-   **Blindness rule:** panelists get artifact paths + a task, never the conversation narrative and never each other's findings.
+   **Blindness rule:** panelists get artifact paths + a task, never the conversation narrative and never each other's findings. Blindness is *orchestrator discipline* — this module is `inline`, so `reads:` declarations document rather than enforce; construct panel prompts accordingly, and never point a panelist at `^/.state/traces/` or the in-flight round reports.
 3. **Adversarially verify every finding** before triage — independent verifier per finding, prompted to refute (CONFIRMED / PLAUSIBLE / refuted). Refuted findings die here.
 4. **Triage** survivors: `critical | high | medium | low` (same vocabulary as the work entry schema).
-5. **Fix all critical + high in-round**, each fix proven by a test or direct demonstration. Medium/low: fix if trivial, else record in the session root's backlog with a deliberate-deferral note. Honor exclusions — never silently reintroduce cut scope.
+5. **Fix all critical + high in-round**, each fix proven by a test or direct demonstration. A confirmed critical/high may be classed a **residual** ONLY if it is (a) user-owned (a guarded artifact the agent cannot edit — deliver exact fix text), (b) explicitly deferred by user ruling, or (c) outside the subject (pre-existing — file it to the correct register with an owner). Everything else critical/high gets fixed in-round, **including round 3; no exit state waives this step.** Medium/low: fix if trivial, else record in the session root's backlog with a deliberate-deferral note. Honor exclusions — never silently reintroduce cut scope.
 6. **Commit the round's fixes** with a round-tagged message.
 
 ### Loop control
 
-- **Repeat up to 3 rounds**, or stop early when a *full* fan-out returns nothing above medium.
+- **Repeat up to 3 rounds**, or stop early when a round's complete rotated panel (mandatory lenses present) returns nothing above medium **after verification** — CLEAN is judged on verified survivors, not raw claims. Steps 5–6 still run on the closing round (trivial mediums, deferral notes, round commit).
 - Each round **rotates and expands** the panel — fresh lenses over identical reruns; any surface newly touched by fixes gets a fresh cold read next round.
+- **Closing coda:** if the final round's fixes touched the subject, run a small verification-only pass over that diff (per-fix verifiers or a mini-panel — not a full round) before declaring the exit state; the exit state describes the post-coda state. (First-run precedent: the post-round-3 validation cadre, which caught a CONFIRMED critical.)
 - Exit states:
-  - **CLEAN** — a pass with all findings ≤ medium. The milestone gate is open.
-  - **EXHAUSTED** — 3 rounds and critical/high still emerging. This is NOT a pass: report residuals and stop. **Report the severity trend across rounds with the verdict** — it changes what EXHAUSTED means (learned on the first run, 2026-08-01): a **monotonically narrowing** class (mainline defects → regressions-in-fixes → exotic-edge/pre-existing-adjacent) means the surface is converging and the verdict is "bounded residuals; point at the planned structural remedy if one exists." A **flat or widening** class is the true redesign signal — new mainline highs in round 3 mean the design itself is generating defects, and no round 4 will fix that.
-  - **ESCALATION** — a finding exceeds the subject's scope; route per the signal taxonomy and pause the loop for the user.
+  - **CLEAN** — a pass with all *verified* findings ≤ medium. The milestone gate is open.
+  - **EXHAUSTED** — 3 rounds and confirmed critical/high still emerging. This is NOT a pass, and **the milestone gate stays closed regardless of trajectory — only the user can open it** (their merge/ship decision, made on your report). Step 5 is never waived: round-3 criticals/highs still get fixed in-round, and only the step-5 residual classes (user-owned / user-deferred / out-of-subject) may remain open. **Report the defect-class trajectory across rounds with the verdict** (learned on the first run, 2026-08-01): a **monotonically narrowing** class (mainline design defects → regressions-in-fixes → exotic-edge/pre-existing-adjacent) means the surface is converging — report residuals as bounded and point at the planned structural remedy if one exists. A **flat or widening** class is the redesign signal — new mainline highs in round 3 mean the design itself is generating defects, and no round 4 will fix that.
+  - **ESCALATION** — a finding exceeds the subject's scope; route per the signal taxonomy (`^/.state/start.md`) and pause the loop for the user. On their ruling the loop resumes at the same round count.
 
 ## Tooling
 
