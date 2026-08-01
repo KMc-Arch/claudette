@@ -1,5 +1,6 @@
 ---
-version: 3
+version: 4
+runtime: python
 ---
 
 # hooks
@@ -10,13 +11,14 @@ Boot-time hook registration. These scripts implement structural enforcement of g
 
 | Script | Hook Event | Matcher | Purpose |
 |---|---|---|---|
-| `boot-inject.py` | SessionStart | (all) | Inject hierarchy-aware boot chain + command index + warning relay mandate into Claude's context (replaces legacy `boot-inject.sh`) |
+| `boot-inject.py` | SessionStart | (all) | Inject hierarchy-aware boot chain + command index + warning relay mandate into Claude's context (replaces legacy `boot-inject.sh`). Honors `<!-- boot:cut -->` in governance files (eager/lazy split); does NOT emit `state-abstract.md` (lazy-read mandate instead, 2026-08-01); size-gates its own payload (`CEILING_BYTES`, env `BOOT_INJECT_CEILING`) and degrades to a loud recovery stub instead of letting the harness spill silently |
 | `prefs-staleness-check.sh` | SessionStart | (all) | Warn if prefs-resolved.json is stale |
 | `memory-redirect-check.sh` | SessionStart | (all) | Warn if autoMemoryDirectory is misconfigured (6 failure modes checked) |
 | `visibility-guard.sh` | PreToolUse | Read\|Glob\|Grep\|Bash\|Write\|Edit | Block access to `_`-prefixed paths |
 | `containment-guard.sh` | PreToolUse | Write\|Edit | Block writes outside `^` |
 | `gravity-guard.sh` | PreToolUse | Write\|Edit | Block `.state/` writes outside `^` |
 | `api-guard.sh` | PreToolUse | Bash | Block Anthropic API/SDK invocations (ABSOLUTE HOLD) |
+| `remote-guard.sh` | PreToolUse | Bash | Block pushes to main/master, force-pushes, and direct GitHub API/issue/release access; feature-branch pushes and PR ops allowed (defense-in-depth behind `permissions.deny`) |
 | `audit-immutability-guard.sh` | PreToolUse | Write\|Edit | Block writes to existing audit folders (except `decisions.md`) |
 | `claude-md-immutability-guard.sh` | PreToolUse | Write\|Edit | Block writes to root CLAUDE.md |
 | `codex-edit-notify.sh` | PostToolUse | Write\|Edit | Notify when codex executables are edited |
@@ -34,5 +36,6 @@ PreToolUse hooks provide **structural enforcement** — they block violations be
 | Path containment | `containment-guard.sh` | Blocks writes outside `^` |
 | State gravity | `gravity-guard.sh` | Blocks `.state/` writes outside `^` |
 | Access (API) | `api-guard.sh` | Blocks Anthropic API/SDK invocations in Bash |
+| Push / remote | `remote-guard.sh` | Blocks main/master pushes, force-pushes, and GitHub API writes in Bash |
 | Audit immutability | `audit-immutability-guard.sh` | Blocks writes to existing audit run folders |
 | CLAUDE.md immutability | `claude-md-immutability-guard.sh` | Blocks writes to root CLAUDE.md |

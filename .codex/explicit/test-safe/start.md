@@ -1,6 +1,6 @@
 ---
 version: 2
-short-desc: Read-only structural validation (60 checks, safe anytime)
+short-desc: Read-only structural validation (66 checks, safe anytime)
 reads:
   - "^/.codex/"
   - "^/.state/"
@@ -36,7 +36,7 @@ Print results as they complete. Passing tests get one line. Failing tests get th
        [PASS] Negative: no leakage to default external location for this project
 
 ═══════════════════════════════════════
-  RESULTS: 57/60 passed, 1 failed, 1 warn, 1 skip
+  RESULTS: 63/66 passed, 1 failed, 1 warn, 1 skip
 ═══════════════════════════════════════
 ```
 
@@ -98,11 +98,11 @@ Condition: both files exist
 
 ### Category C: Hooks
 
-**T13** — All 13 hook scripts exist
+**T13** — All 14 hook scripts exist
 Condition: these files exist in `.codex/implicit/01-infrastructural/01b-materialization/hooks/`:
-`boot-inject.py`, `prefs-staleness-check.sh`, `memory-redirect-check.sh`, `visibility-guard.sh`, `containment-guard.sh`, `gravity-guard.sh`, `api-guard.sh`, `audit-immutability-guard.sh`, `claude-md-immutability-guard.sh`, `codex-edit-notify.sh`, `trace-logger.sh`, `session-close.sh`, `subagent-conformance.sh`
+`boot-inject.py`, `prefs-staleness-check.sh`, `memory-redirect-check.sh`, `visibility-guard.sh`, `containment-guard.sh`, `gravity-guard.sh`, `api-guard.sh`, `remote-guard.sh`, `audit-immutability-guard.sh`, `claude-md-immutability-guard.sh`, `codex-edit-notify.sh`, `trace-logger.sh`, `session-close.sh`, `subagent-conformance.sh`
 
-**T14** — All 13 hooks are registered in `.claude/settings.json`
+**T14** — All 14 hooks are registered in `.claude/settings.json`
 Condition: read `.claude/settings.json`, for each script filename from T13, verify the filename appears in a `"command"` value somewhere in the hooks section
 
 **T15** — `visibility-guard.sh` covers all 6 tool types
@@ -122,7 +122,7 @@ Condition: extract all `"command"` values from hooks section, for each that star
 ### Category D: Explicit Commands
 
 **T19** — Every explicit command folder is registered as a skill shim
-Condition: enumerate the folders in `.codex/explicit/` (exclude the `start.md` file). For each folder `F`, `.claude/skills/F/SKILL.md` must exist. This is registration completeness — it replaces a brittle hardcoded folder list, so new commands (e.g. `ask`) are covered automatically. Core commands that must be present: `audit`, `bundle`, `milestone`, `new-project`, `pause`, `purge`, `rebuild`, `scrub`, `test-safe`, `test-burn`, `unpause`, `ask`.
+Condition: enumerate the folders in `.codex/explicit/` (exclude the `start.md` file). For each folder `F`, `.claude/skills/F/SKILL.md` must exist. This is registration completeness — it replaces a brittle hardcoded folder list, so new commands (e.g. `ask`) are covered automatically. Core commands that must be present: `audit`, `bundle`, `mileqa`, `milestone`, `new-project`, `pause`, `purge`, `rebuild`, `scrub`, `test-safe`, `test-burn`, `unpause`, `ask`.
 
 **T20** — Each explicit command folder has a `start.md`
 Condition: `start.md` exists in each folder enumerated in T19

@@ -8,7 +8,7 @@ Claudette2 has a four-tier test system. The tiers are ordered from fastest and s
 |------|------|-----------|----------|-----------------|---------------|
 | 1 | `python ctest.py` | Terminal (no LLM) | Milliseconds | No | Bootstrap outputs are correct |
 | 2 | `python chooks.py` | Terminal (no LLM) | Seconds | Minimal (trace files) | Hook scripts behave correctly |
-| 3 | `test-safe` (in Claude) | Claude session | Minutes | No (log only) | 60 structural checks |
+| 3 | `test-safe` (in Claude) | Claude session | Minutes | No (log only) | 66 structural checks |
 | 4 | `test-burn` (in Claude) | Claude session | Minutes | Yes (temporary) | End-to-end functional tests |
 
 **Recommended order:** Run them in tier order. If tier 1 fails, do not proceed to tier 2. If tier 3 fails, fix issues before running tier 4.
@@ -22,7 +22,7 @@ python ctest.py --project-root /path/to/project
 
 Validates that `cboot.py` produced correct outputs. Pure Python, no network calls.
 
-**17 checks across 8 categories:**
+**21 checks (V01–V21) across 9 categories:**
 
 | ID Range | Category | What It Checks |
 |----------|----------|---------------|
@@ -34,6 +34,7 @@ Validates that `cboot.py` produced correct outputs. Pure Python, no network call
 | V14-V15 | Structure | Hook/command/module counts, start.md presence |
 | V16 | Critical files | CLAUDE.md, cboot.py, .codex/start.md, .state/start.md, .gitignore, child template |
 | V17 | Scripts | scrub.py, purge.py, bootstrap-child.py exist |
+| V18-V21 | Child propagation | Child settings.json present, child hook commands resolve (V19 also asserts `../`-relative form — see BL-19), child prefs-resolved.json + `_meta.project`, roots inventory |
 
 **Exit codes:** 0 = all pass, 1 = any failure.
 
@@ -76,7 +77,7 @@ Run from inside a Claude session:
 You: run test-safe
 ```
 
-60 read-only checks across 12 categories (A through L). See [README-commands.md](README-commands.md) for the category list. This is the most comprehensive structural check because it runs inside Claude's context and can verify things the external scripts cannot (like cross-reference integrity between documentation files).
+66 read-only checks across 13 categories (A through M). See [README-commands.md](README-commands.md) for the category list. This is the most comprehensive structural check because it runs inside Claude's context and can verify things the external scripts cannot (like cross-reference integrity between documentation files).
 
 **Output format:**
 ```
@@ -87,7 +88,7 @@ You: run test-safe
        Got: .state/memory (relative path)
 
 ===================================
-  RESULTS: 57/60 passed, 1 failed, 1 warn, 1 skip
+  RESULTS: 63/66 passed, 1 failed, 1 warn, 1 skip
 ===================================
 ```
 
@@ -101,7 +102,7 @@ Run from inside a Claude session:
 You: run test-burn
 ```
 
-17 tests across 6 phases. This test **modifies your instance** -- it creates a temporary child project, runs scrub and purge, then cleans up. Always run `test-safe` first. Run `python cboot.py` afterward to restore any generated artifacts that were removed during purge testing.
+30 steps (B01–B24 incl. lettered sub-steps) across 7 phases (Phase 7 = hook behavioral tests). This test **modifies your instance** -- it creates a temporary child project, runs scrub and purge, then cleans up. Always run `test-safe` first. Run `python cboot.py` afterward to restore any generated artifacts that were removed during purge testing.
 
 See [README-commands.md](README-commands.md) for the detailed phase breakdown.
 
@@ -128,7 +129,7 @@ See [README-commands.md](README-commands.md) for the detailed phase breakdown.
 
 | Failure | Likely Cause | Fix |
 |---------|-------------|-----|
-| Script not found | Hook script missing from hooks directory | Verify `.codex/implicit/01-infrastructural/01b-materialization/hooks/` contains all 13 .sh files |
+| Script not found | Hook script missing from hooks directory | Verify `.codex/implicit/01-infrastructural/01b-materialization/hooks/` contains all 14 hook scripts (13 `.sh` + `boot-inject.py`) |
 | Wrong exit code | Hook logic error or Bash compatibility issue | Read the hook script, check for platform-specific issues (Windows line endings, path separators) |
 | COV1 -- untested hooks | New hook added without tests | Add test functions in chooks.py with `@register_test("hook-name.sh")` |
 
@@ -139,7 +140,7 @@ See [README-commands.md](README-commands.md) for the detailed phase breakdown.
 | T13-T18 -- hook issues | Hooks not registered or paths broken | Run `python cboot.py` to regenerate settings.json |
 | T37-T38 -- prefs issues | prefs-resolved.json missing or stale | Run `python cboot.py` to regenerate |
 | T45-T47 -- auto-memory | settings.local.json not created | Run `python cboot.py`; if still failing, check PLAT-02 in `.state/work/platform.md` |
-| T48 -- memory leaking | Auto-memory writing to default location | Fix autoMemoryDirectory path, then run `purge all` to clean the external store (bare `purge` never touches `~/.claude/`) |
+| T48 -- memory leaking | Auto-memory writing to default location | Fix autoMemoryDirectory path. CAUTION: `purge all` cleans the external store but is the NUCLEAR tier — it also wipes local transcripts/pauses/traces (CONFIRMED HOLD). Prefer manually deleting the stray external memory files; reserve `purge all` for when a full reset is actually wanted |
 
 **test-burn failures:**
 
@@ -148,7 +149,8 @@ See [README-commands.md](README-commands.md) for the detailed phase breakdown.
 | Phase 1 (child project) | Template files missing or bootstrap-child.py broken | Check `.templates/child/` exists with CLAUDE.md |
 | Phase 2 (scrub) | scrub.py or patterns.txt missing | Verify `.codex/explicit/scrub/scrub.py` and `patterns.txt` exist |
 | Phase 4-5 (purge) | purge.py logic error | Check `.codex/explicit/purge/purge.py` |
-| Phase 6 (cleanup) | Artifacts not cleaned up | Manually check for and remove `test-burn-child/` and test files listed in B17 |
+| Phase 6 (cleanup) | Artifacts not cleaned up | Manually check for and remove `test-burn-child/` and the test files named in the cleanup phase of `.codex/explicit/test-burn/start.md` |
+| Phase 7 (hook tests) | Hook behavioral regression | Read the failing hook script; cross-check with `chooks.py` tier-2 results |
 
 ### After fixing
 

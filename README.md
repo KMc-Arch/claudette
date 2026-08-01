@@ -6,13 +6,13 @@ Claudette is a governance framework for Claude Code. It replaces hand-managed CL
 
 Claude Code ships hooks, CLAUDE.md hierarchy, skills, and commands -- but no pre-built governance. Claudette assembles these primitives into a tested system:
 
-**Structural enforcement.** 13 hook scripts execute at the tool-call level and block violations before Claude acts -- file containment, visibility guards, state gravity between parent/child projects, API access restrictions, audit immutability. Shell-level gates, not directives.
+**Structural enforcement.** 14 hook scripts execute at the tool-call level and block violations before Claude acts -- file containment, visibility guards, state gravity between parent/child projects, API access restrictions, audit immutability. Shell-level gates, not directives.
 
 **Persistent state.** Memory, work tracking (backlog, architecture debt, boundary gaps), session traces, and structured pause/unpause. All in `.state/`, persisted in your project across sessions.
 
 **Multi-project isolation.** Child projects inherit the parent's rules automatically, each as its own git repo with its own state. A gravity guard hook prevents child sessions from writing to parent state.
 
-**Self-testing.** 4-tier verification: `ctest.py` (bootstrap outputs), `chooks.py` (hook behavior via mock JSON), `test-safe` (60 structural checks inside a Claude session), `test-burn` (end-to-end command exercise).
+**Self-testing.** 4-tier verification: `ctest.py` (bootstrap outputs), `chooks.py` (hook behavior via mock JSON), `test-safe` (66 structural checks inside a Claude session), `test-burn` (end-to-end command exercise).
 
 ## Quick Start
 
@@ -35,8 +35,10 @@ Claude: I'll create a child project called "web-scraper"...
         Created web-scraper/ with CLAUDE.md, .state/, memory, and work tracking.
 
 You:    What commands do I have available?
-Claude: You have 10 built-in commands: audit, bundle, new-project, pause, purge,
-        rebuild, scrub, test-safe, test-burn, unpause. [describes each]
+Claude: You have 18 built-in commands: ask, audit, backup, break-glass,
+        break-glass-qa, bundle, checkWinTasks, mileqa, milestone, new-project,
+        pause, purge, rebuild, scrub, test-bench, test-burn, test-safe,
+        unpause. [describes each]
 
 You:    Let's pause here so I can pick this up tomorrow.
 Claude: [runs pause]
@@ -55,24 +57,32 @@ The next day, start a new session and say "unpause" -- Claude reads the pause fi
 | `.state/` | Memory, work tracking, test results, session traces | Structure only -- `start.md` manifests are tracked, accumulated content is not |
 | `.claude/` | Generated settings, skill shims, session files | No -- regenerated each boot |
 
-### 10 commands
+### 18 commands
 
 | Command | What It Does | Modifies State? |
 |---------|-------------|-----------------|
-| **test-safe** | 60 read-only structural checks. Safe to run anytime. | No (writes a log only) |
+| **test-safe** | 66 read-only structural checks. Safe to run anytime. | No (writes a log only) |
 | **test-burn** | DESTRUCTIVE end-to-end functional tests -- modifies instance state. | Yes |
+| **test-bench** | Run the TestBench cascade check; report human test reminders. | No |
 | **scrub** | Scan for secrets and PII before pushing code. | No |
 | **audit** | Run quality specs against a project. Dispatches sub-agents. | Writes findings |
+| **mileqa** | Pre-milestone holistic QA: blind multi-agent panels, fix critical/high, repeat until clean. | Yes (commits to a feature branch) |
+| **milestone** | Persist session knowledge to durable state. | Yes |
+| **ask** | Route a request to a subproject (soft/hard/switch). | Per request |
 | **new-project** | Scaffold a child project with standard structure. | Creates directory |
 | **pause** | Save session context for later resumption. | Writes pause files |
 | **unpause** | Restore a previously paused session. | No |
 | **purge** | Clean transient files. `purge all` is destructive (requires confirmation). | Yes |
 | **bundle** | Package a child project into a standalone copy. | Writes bundle |
 | **rebuild** | Restructure a project based on audit findings. Multi-phase, interactive. | Yes |
+| **backup** | Mirror the instance to its OneDrive backup target. | No (external mirror) |
+| **break-glass** | Spawn an isolated, contracted worker sub-session. | Per contract |
+| **break-glass-qa** | Independent QA review of a break-glass diff. | No |
+| **checkWinTasks** | Check and kick stale Windows scheduled tasks. | No (Windows side) |
 
 See [README-commands.md](README-commands.md) for detailed usage, parameters, and workflow examples.
 
-### 13 enforcement hooks
+### 14 enforcement hooks
 
 | Hook | What It Blocks |
 |------|---------------|
@@ -80,6 +90,7 @@ See [README-commands.md](README-commands.md) for detailed usage, parameters, and
 | `containment-guard` | Writing files outside the project root |
 | `gravity-guard` | Writing to `.state/` in a parent project |
 | `api-guard` | Bash commands referencing the Anthropic API |
+| `remote-guard` | Pushes to main/master, force-pushes, direct GitHub API access |
 | `audit-immutability-guard` | Modifying existing audit records |
 | `claude-md-immutability-guard` | Editing the root CLAUDE.md |
 | `boot-inject` | _(not a guard)_ Injects boot instructions at session start |
@@ -90,7 +101,7 @@ See [README-commands.md](README-commands.md) for detailed usage, parameters, and
 | `session-close` | _(not a guard)_ Prompts end-of-session governance tasks |
 | `subagent-conformance` | _(not a guard)_ Checks sub-agent output on completion |
 
-Every hook has behavioral tests in `chooks.py`. See [README-testing.md](README-testing.md).
+Hook behavior is tested in `chooks.py` — 13 of the 14 hooks are covered; `remote-guard.sh` tests are tracked in BL-24. See [README-testing.md](README-testing.md).
 
 ## Git Model
 

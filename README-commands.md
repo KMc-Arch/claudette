@@ -4,7 +4,7 @@ All commands can be invoked by name in conversation ("audit this project", "scru
 
 ## test-safe -- Structural Validation
 
-Read-only. 60 checks across 12 categories. Safe to run anytime, makes no changes (writes only a log file).
+Read-only. 66 checks across 13 categories. Safe to run anytime, makes no changes (writes only a log file).
 
 ```
 test-safe
@@ -12,9 +12,9 @@ test-safe
 
 **What it checks:**
 - Boot chain and structure (CLAUDE.md, codex, state)
-- All 13 hook scripts exist and are registered
+- All 14 hook scripts exist and are registered
 - Hook matcher coverage (visibility-guard covers all 6 tool types, etc.)
-- All 10 command folders exist with start.md manifests
+- All 18 command folders exist with start.md manifests
 - Reactive and reflexive modules present
 - State structure (memory, work, tests, traces files)
 - Preference system integrity (schema, cascade, resolved output)
@@ -42,7 +42,7 @@ test-burn
 5. Runs purge all and verifies memory files were also removed
 6. Deletes the test child project and verifies cleanup
 
-**17 steps across 6 phases.** Run `cboot.py` after test-burn to restore any generated artifacts that were purged.
+**30 steps (B01–B24 incl. lettered sub-steps) across 7 phases** — Phase 7 is hook behavioral tests. Run `cboot.py` after test-burn to restore any generated artifacts that were purged.
 
 ## scrub -- Secrets and PII Scanner
 
@@ -60,7 +60,7 @@ scrub <path>       # scan a specific file or directory
 
 **Output:** Report in `.state/tests/explicit/scrub/` with file, line number, and matched pattern. Exit 0 = clean, exit 1 = matches found.
 
-**Note on automated enforcement:** The scrub `start.md` describes a pre-push git hook for automated scanning. This hook script does not exist yet in the current version. Scrub is currently a manual protocol -- run it before pushing. Automated pre-push enforcement is planned for a future release.
+**Automated enforcement:** A fail-closed pre-push hook (`.codex/explicit/scrub/hooks/pre-push`) is wired into every repo via `core.hooksPath` by `cboot` (BDRY-03, done 2026-07-30). Pushes are blocked until a per-commit scrub of the pushed range passes; `scrub:allow` is the escape hatch. Running scrub manually before large pushes is still recommended to avoid gate surprises.
 
 ## audit -- Quality Verification
 
@@ -82,6 +82,26 @@ audit my-api architecture deep  # full invocation with depth
 | deep | Broad cross-referencing, coherence assessment, full analysis |
 
 **Output:** Findings written to `.state/tests/audits/YYYYMMDD-HHMM/`. Audit records are immutable -- the `audit-immutability-guard.sh` hook prevents modification after creation.
+
+## mileqa -- Pre-Milestone Holistic QA
+
+**Commits to a feature branch** (creates one if on main -- invoking mileqa authorizes its branch-local commits; it never pushes). Iterative multi-agent QA gate, typically run before `/milestone`.
+
+```
+mileqa
+mileqa <scope>
+```
+
+**What it does:**
+1. Checkpoint-commits pending work on the feature branch
+2. Fans out a blind QA panel -- cold readers (reconstruct functionality from the artifacts alone), adversaries (push every seam), plus lenses fit to the subject -- via multi-agent workflows
+3. Adversarially verifies every finding, then triages critical/high/medium/low
+4. Fixes all critical + high in-round with proving tests; backlogs deliberate deferrals
+5. Repeats with a rotated/expanded panel -- up to 3 rounds or until a full pass is all medium-or-less
+
+**Exit states:** CLEAN (milestone gate open), EXHAUSTED (3 rounds, still critical/high -- not a pass), ESCALATION (finding exceeds scope).
+
+**Output:** Per-round reports + summary in `.state/tests/mileqa/YYYYMMDD-HHMM/`; a commit at every checkpoint and round.
 
 ## new-project -- Child Project Scaffolding
 
@@ -234,7 +254,7 @@ audit my-api                 # baseline check
 ### Periodic health check
 
 ```
-test-safe                    # 60 structural checks
+test-safe                    # 66 structural checks
 ```
 
 ### Deep verification after changes

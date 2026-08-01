@@ -95,6 +95,8 @@ A single-confirmation gate. Claude states its intent and waits for you to say ye
 
 Logged or flagged but not gated. Claude is aware of the condition but does not stop to ask permission. Example: notification that a codex executable was edited.
 
+Unlike the two holds, NOTED gates nothing, so it is defined only here (lazy vocabulary) — deliberately not part of the boot-core eager set in the apex CLAUDE.md (decided 2026-08-01).
+
 ## Hook-Enforced Boundaries
 
 Most governance is directive-based -- Claude reads rules and follows them. For the highest-stakes boundaries, directives are backed by hooks that structurally block violations at the tool-call level, before Claude can act:
@@ -105,6 +107,7 @@ Most governance is directive-based -- Claude reads rules and follows them. For t
 | `containment-guard.sh` | Writing files outside the project root | Write, Edit |
 | `gravity-guard.sh` | Writing to `.state/` in a parent project (state leaking upward) | Write, Edit |
 | `api-guard.sh` | Bash commands that reference the Anthropic API | Bash |
+| `remote-guard.sh` | Pushes to main/master, force-pushes, direct GitHub API access | Bash |
 | `audit-immutability-guard.sh` | Modifying existing audit records | Write, Edit |
 | `claude-md-immutability-guard.sh` | Editing the root CLAUDE.md | Write, Edit |
 

@@ -48,14 +48,16 @@ if file_path != apex:
 
 # Write operations always blocked — a full rewrite would clobber the body.
 if tool_name != "Edit":
-    print("BLOCKED: apex CLAUDE.md is immutable (design constraint #2).", file=sys.stderr)
-    print("  CLAUDE.md is a bootstrap pointer — it never grows.", file=sys.stderr)
-    print("  Body evolves through start.md files downstream.", file=sys.stderr)
+    print("BLOCKED: apex CLAUDE.md is immutable to Claude (design constraint #2).", file=sys.stderr)
+    print("  The body (incl. the boot-core region) is user-maintained: hand-edited", file=sys.stderr)
+    print("  by the user, or cboot-materialized (BL-15) — never agent-edited.", file=sys.stderr)
+    print("  Other body content evolves through start.md files downstream.", file=sys.stderr)
     print("  Frontmatter-only edits are permitted via the Edit tool.", file=sys.stderr)
     sys.exit(2)
 
 old_string = tool_input.get("old_string", "")
 new_string = tool_input.get("new_string", "")
+replace_all = bool(tool_input.get("replace_all", False))
 
 try:
     with open(file_path, encoding="utf-8") as f:
@@ -72,16 +74,27 @@ if not m:
 fm_end = m.end()
 
 # Require old_string to be entirely within the frontmatter block.
+# replace_all touches EVERY occurrence, so every occurrence must qualify —
+# checking only the first would let body edits slip through.
 old_idx = content.find(old_string)
 if old_idx < 0:
     sys.exit(0)  # Edit tool will fail on its own with a clearer error
-if old_idx + len(old_string) > fm_end:
-    print("BLOCKED: apex CLAUDE.md edits must be confined to frontmatter.", file=sys.stderr)
-    print("  Body is immutable — evolve via start.md files downstream.", file=sys.stderr)
-    sys.exit(2)
-
-# Verify the post-edit file still has a valid frontmatter block.
-new_content = content[:old_idx] + new_string + content[old_idx + len(old_string):]
+if replace_all:
+    idx = old_idx
+    while idx >= 0:
+        if idx + len(old_string) > fm_end:
+            print("BLOCKED: apex CLAUDE.md edits must be confined to frontmatter.", file=sys.stderr)
+            print("  replace_all matches an occurrence in the body — body is immutable.", file=sys.stderr)
+            sys.exit(2)
+        idx = content.find(old_string, idx + 1)
+    new_content = content.replace(old_string, new_string)
+else:
+    if old_idx + len(old_string) > fm_end:
+        print("BLOCKED: apex CLAUDE.md edits must be confined to frontmatter.", file=sys.stderr)
+        print("  Body is immutable — evolve via start.md files downstream.", file=sys.stderr)
+        sys.exit(2)
+    # Verify the post-edit file still has a valid frontmatter block.
+    new_content = content[:old_idx] + new_string + content[old_idx + len(old_string):]
 if not re.match(r"^---\n(.*?\n)?---\n", new_content, re.DOTALL):
     print("BLOCKED: apex CLAUDE.md edit would break frontmatter fences.", file=sys.stderr)
     sys.exit(2)
