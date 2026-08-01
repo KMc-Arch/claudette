@@ -10,6 +10,7 @@ Usage:
 
 import argparse
 import json
+import shlex
 import sys
 from pathlib import Path
 
@@ -209,13 +210,20 @@ def check_settings_json(t, p):
     else:
         t.ok("V08", f"settings.json has {len(hook_commands)} hook registrations")
 
-    # Verify each hook path resolves
+    # Verify each hook path resolves. Hook commands are shell strings like
+    # `bash "/abs/path/x.sh"` — parse with shlex to strip quotes, and honor
+    # absolute paths (join to root only when the token is relative).
     broken = []
     for cmd in hook_commands:
-        if cmd.startswith("bash "):
-            script_path = p["root"] / cmd[5:]
-            if not script_path.is_file():
-                broken.append(cmd[5:])
+        if not cmd.startswith("bash "):
+            continue
+        try:
+            raw = shlex.split(cmd)[1]
+        except (ValueError, IndexError):
+            continue
+        script_path = Path(raw) if Path(raw).is_absolute() else p["root"] / raw
+        if not script_path.is_file():
+            broken.append(raw)
 
     if broken:
         t.fail("V09", "All hook paths resolve to existing files", f"Missing: {', '.join(broken)}")
@@ -298,6 +306,10 @@ def check_structure_counts(t, p):
     codex_dirs_missing_start = []
     for d in p["codex"].rglob("*"):
         if not d.is_dir():
+            continue
+        # Skip non-module dirs by convention: .-prefixed (internal, e.g. .archive)
+        # and _-prefixed (invisible, e.g. __pycache__) never carry a start.md manifest.
+        if any(part.startswith((".", "_")) for part in d.relative_to(p["codex"]).parts):
             continue
         # Skip runtime output pattern dirs
         if d.parent.name in {"pauses", "bundles", "boot", "compliance", "contract-conformance", "selftest", "scrub", "audits", "test-safe", "test-burn"}:
@@ -394,11 +406,14 @@ def check_child_propagation(t, p):
                     cmd = hook.get("command", "")
                     if not cmd.startswith("bash "):
                         continue
-                    script_rel = cmd[5:]
+                    try:
+                        script_rel = shlex.split(cmd)[1]
+                    except (ValueError, IndexError):
+                        continue
                     if not script_rel.startswith("../"):
                         bad_prefix.append(f"{child.name}:{script_rel}")
-                    # Resolve from child directory
-                    script_path = child / script_rel
+                    # Resolve: absolute paths as-is, otherwise from child directory.
+                    script_path = Path(script_rel) if Path(script_rel).is_absolute() else child / script_rel
                     if not script_path.resolve().is_file():
                         broken_paths.append(f"{child.name}:{script_rel}")
                         all_resolve = False

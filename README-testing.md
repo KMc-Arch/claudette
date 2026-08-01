@@ -139,7 +139,7 @@ See [README-commands.md](README-commands.md) for the detailed phase breakdown.
 | T13-T18 -- hook issues | Hooks not registered or paths broken | Run `python cboot.py` to regenerate settings.json |
 | T37-T38 -- prefs issues | prefs-resolved.json missing or stale | Run `python cboot.py` to regenerate |
 | T45-T47 -- auto-memory | settings.local.json not created | Run `python cboot.py`; if still failing, check PLAT-02 in `.state/work/platform.md` |
-| T48 -- memory leaking | Auto-memory writing to default location | Fix autoMemoryDirectory path, then run `purge` to clean external memory |
+| T48 -- memory leaking | Auto-memory writing to default location | Fix autoMemoryDirectory path, then run `purge all` to clean the external store (bare `purge` never touches `~/.claude/`) |
 
 **test-burn failures:**
 

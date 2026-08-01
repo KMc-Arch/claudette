@@ -20,4 +20,5 @@ N auto-increments for multiple pauses on the same day.
 
 - Created by `pause`, never modified after creation
 - Read by `unpause` to restore session context
-- Cleaned by `purge` (transient scope) and `purge all`
+- **Preserved** by bare `purge` (pauses are precious — they enable `/resume`); cleaned
+  only by `purge all`. The `start.md` here always survives.

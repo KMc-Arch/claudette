@@ -89,8 +89,8 @@ Condition: at least one report file exists
 Action: write `[2099-01-01T00:00:00Z] TEST: burn test marker` to `.state/traces/2099-01-01.trace`
 Condition: file exists after write
 
-**B09** — Create fake boot log
-Action: write `Test boot log` to `.state/tests/boot/2099-01-01T0000.log`
+**B09** — Create fake boot report
+Action: write `Test boot report` to `.state/tests/boot/2099-01-01-0000-bootstrap.md`
 Condition: file exists after write
 
 **B10** — Create fake session artifact
@@ -101,25 +101,36 @@ Condition: file exists after write
 Action: write a test memory file to `.state/memory/test-burn-memory.md` with proper frontmatter (type: project, name: burn test)
 Condition: file exists after write
 
+**B11b** — Create fake pause snapshot
+Action: write `# burn test pause` to `.state/pauses/2099-01-01-burn.md`
+Condition: file exists after write
+
 ---
 
 ### Phase 4: Purge Default (dry run first)
 
-**B12** — purge.py dry-run lists expected files
+**B12** — purge.py dry-run lists only SAFE state
 Action: Run `python .codex/explicit/purge/purge.py default --project-root ^ --dry-run`
-Condition: output contains "would remove" for the fake trace, boot log, and session artifact. Output does NOT contain "would remove" for memory files (default scope preserves memory).
+Condition: output contains "would remove" for the fake session artifact. Output does NOT contain "would remove" for the fake trace, the fake boot report, the fake memory file, or the fake pause — bare purge preserves precious state and keeps the newest keep-recent files (the 2099 trace/boot sort newest, so they are retained). ALSO confirm the dry-run deleted nothing: the fake session artifact `.claude/test-burn-session.jsonl` MUST still exist on disk afterward (a dry-run that prints "would remove" but actually unlinks would pass a text-only check — verify survival, not just output).
 
-**B13** — purge.py default actually removes transient files
+**B13** — purge.py default actually removes only SAFE state
 Action: Run `python .codex/explicit/purge/purge.py default --project-root ^`
-Condition: fake trace file gone, fake boot log gone, fake session artifact gone. Fake memory file STILL EXISTS (default scope preserves memory).
+Condition: fake session artifact gone. Fake trace, fake boot report, fake memory file, AND fake pause ALL STILL EXIST — default scope preserves precious state (transcripts, pauses, memory) and the newest keep-recent files.
 
 ---
 
 ### Phase 5: Purge All
 
-**B14** — purge.py all removes memory and work files
+> **Live-instance warning:** `purge all` is a nuclear reset run here against the
+> real apex (`^`). Besides the fixtures below it also removes this instance's
+> **transcripts** (`~/.claude/projects/<slug>/`) — real session history, including
+> the current session. Understand Phase 5 as destroying live session history, not
+> just the dummy fixtures. (Nuclear coverage against a disposable target lives in
+> `test-purge.py`, which runs on TestBench.)
+
+**B14** — purge.py all removes precious and high-value state
 Action: Run `python .codex/explicit/purge/purge.py all --project-root ^ --confirm`
-Condition: fake memory file is now gone. `.state/memory/` directory may still exist but `test-burn-memory.md` is deleted.
+Condition: fake memory file gone, fake pause gone, fake trace gone (keep-recent wiped), fake boot report gone. `.state/memory/` and `.state/pauses/` directories may still exist (their `start.md` survives) but the dummy files are deleted.
 
 **B15** — Never-purge items survived
 Action: check these paths still exist after purge all

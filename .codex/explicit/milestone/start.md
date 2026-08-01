@@ -1,5 +1,5 @@
 ---
-version: 1
+version: 2
 short-desc: Persist session knowledge to durable state
 reads:
   - "^/.state/"
@@ -26,7 +26,16 @@ A milestone says: "this session produced durable knowledge — write it to the r
 > Creating a milestone here means your next commit lands directly on main.
 > Want me to create a feature branch first so this work is isolated?
 
-Wait for the user's response before continuing. If they say yes, create an appropriately named branch before flushing. If they say no (or are already on a non-main branch), proceed normally.
+Wait for the user's response. If they say no (or you are already on a non-main branch), proceed normally.
+
+**A branch request IS a commit authorization.** If the user asks for a branch — as
+the milestone argument (`/milestone <branch>`) or in response to the prompt above —
+create the branch, run the flush, and then **commit the session's tracked work to
+it**. Do not stop at creating the branch and wait for a separate "commit" instruction:
+the branch request already gave it. (The `.state/` flush is gitignored, so the commit
+covers the tracked code/docs the session produced, not the memory/work writes.) Push
+still requires a separate, explicit request — a branch request authorizes the commit
+only.
 
 ## Procedure
 
@@ -86,6 +95,7 @@ After flushing, output a structured summary:
 - **Memory:** [count] files written/updated, state-abstract refreshed
 - **Work:** [count] items added/updated/resolved
 - **Plans:** [active plan names, or "none"]
+- **Committed:** [branch + short SHA if a branch was requested; else "no branch — not committed"]
 - **Skipped:** [any subdirectory where nothing needed flushing, and why]
 ```
 

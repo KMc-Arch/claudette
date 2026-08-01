@@ -221,6 +221,29 @@ A child project's local `.codex/` entry with the same path/name as a parent entr
 
 ---
 
+## Archiving
+
+When a codex module is superseded and rewritten net-new (rather than edited in
+place), the old version is archived — never deleted — for recoverability and
+clean diffing from a fresh session.
+
+**Standard:** `.codex/.archive/<category>/<name>-<YYYYMMDD>/`
+
+- Mirrors the taxonomy: an archived `explicit/purge` lands at
+  `.codex/.archive/explicit/purge-<date>/`.
+- Date-stamped (`YYYYMMDD`) so multiple archived generations sort chronologically.
+- `.`-prefixed (`.archive`) so it is **visible to Claude** and **git-tracked**
+  (unlike `_`-prefixed, which the visibility guard blocks and `.gitignore` drops),
+  yet **inert** to the loader and to `codex-register` — it lives outside the four
+  taxonomy categories, so it is never loaded and never registered as a command.
+- Archiving *out of* `explicit/` also ensures the superseded behavior is no longer
+  invokable — a deprecated command cannot be run by accident.
+
+Archives travel with the codex; prune stale generations when they no longer serve
+recovery or diffing.
+
+---
+
 ## System Boundaries
 
 Each boundary should have at least two defense layers. Single-layer boundaries are tracked in `.state/work/boundaries.md`.

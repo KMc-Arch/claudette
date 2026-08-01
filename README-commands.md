@@ -142,20 +142,32 @@ Lists the 3 most recent pauses, asks which to restore, reads the pause files, an
 ```
 purge              # clean transient artifacts (safe)
 purge <project>    # clean a child project's transient state
-purge all          # full reset including memory and work (requires confirmation)
+purge all          # nuclear reset: transcripts, memory, work, .tmp/ (requires confirmation)
 ```
 
-**Default scope** removes:
-- `.claude/` session files (`.jsonl`, `.md`) -- preserves settings
+**Default scope** (bare `purge`) removes:
+- `.claude/` session files (`.jsonl`, `.md`) -- preserves `settings*.json`
 - `.claude/skills/` and `.claude/agents/` (regenerated at next boot)
 - `.state/prefs-resolved.json` (regenerated at next boot)
-- `.state/tests/` transient outputs (not audits)
-- `.state/traces/` trace files (not start.md)
-- User-level `~/.claude/projects/<hash>/` footprint
+- `.state/tests/` transient outputs (not audits, not boot reports)
+- **keep-recent**, pruned to the newest 5: `.state/traces/` and `.state/tests/boot/`
 
-**`purge all`** additionally removes `.state/memory/` and `.state/work/` files. This is destructive and requires a Confirmed Hold (single confirmation).
+Bare purge KEEPS everything precious -- transcripts, pauses, memory, work, plans,
+bundles, and loose `.tmp/` buffers. Sandbox rigs and stray scratch files are
+reported, never deleted.
 
-**Never purged:** `.codex/`, CLAUDE.md, `.state/pauses/`, `.state/bundles/`, audit records, `start.md` manifests, `cboot.py`, `ctest.py`, `chooks.py`.
+**`purge all`** is a nuclear reset (destructive; Confirmed Hold -- single confirmation).
+Beyond the default scope it also removes:
+- the user-level transcript store `~/.claude/projects/<slug>/`
+- `.state/memory/`, `.state/work/`, `.state/plans/`, `.state/bundles/` contents
+- `.state/pauses/` contents
+- keep-recent dirs wiped entirely (not pruned)
+- the **entire `.tmp/`** -- loose buffers, `.tmp/sandbox/` rigs, and every subdir
+
+**Never purged (any scope):** `.codex/`, `CLAUDE.md`, audit records, `_`-prefixed
+items, and every `start.md` manifest -- so `.state/pauses/`, `.state/bundles/`, and
+the other `.state/` dirs always survive as empty shells even under `purge all`;
+`cboot.py`, `ctest.py`, `chooks.py`.
 
 ## bundle -- Package for Portability
 
