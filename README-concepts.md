@@ -95,6 +95,8 @@ A single-confirmation gate. Claude states its intent and waits for you to say ye
 
 Logged or flagged but not gated. Claude is aware of the condition but does not stop to ask permission. Example: notification that a codex executable was edited.
 
+Unlike the two holds, NOTED gates nothing, so it is defined only here (lazy vocabulary) — deliberately not part of the boot-core eager set in the apex CLAUDE.md (decided 2026-08-01).
+
 ## Hook-Enforced Boundaries
 
 Most governance is directive-based -- Claude reads rules and follows them. For the highest-stakes boundaries, directives are backed by hooks that structurally block violations at the tool-call level, before Claude can act:

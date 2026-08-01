@@ -42,7 +42,7 @@ test-burn
 5. Runs purge all and verifies memory files were also removed
 6. Deletes the test child project and verifies cleanup
 
-**17 steps across 6 phases.** Run `cboot.py` after test-burn to restore any generated artifacts that were purged.
+**24 steps (B01–B24) across 7 phases** — Phase 7 is hook behavioral tests. Run `cboot.py` after test-burn to restore any generated artifacts that were purged.
 
 ## scrub -- Secrets and PII Scanner
 
@@ -254,7 +254,7 @@ audit my-api                 # baseline check
 ### Periodic health check
 
 ```
-test-safe                    # 60 structural checks
+test-safe                    # 66 structural checks
 ```
 
 ### Deep verification after changes

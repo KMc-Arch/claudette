@@ -36,7 +36,7 @@ Print results as they complete. Passing tests get one line. Failing tests get th
        [PASS] Negative: no leakage to default external location for this project
 
 ═══════════════════════════════════════
-  RESULTS: 57/60 passed, 1 failed, 1 warn, 1 skip
+  RESULTS: 63/66 passed, 1 failed, 1 warn, 1 skip
 ═══════════════════════════════════════
 ```
 
@@ -98,11 +98,11 @@ Condition: both files exist
 
 ### Category C: Hooks
 
-**T13** — All 13 hook scripts exist
+**T13** — All 14 hook scripts exist
 Condition: these files exist in `.codex/implicit/01-infrastructural/01b-materialization/hooks/`:
-`boot-inject.py`, `prefs-staleness-check.sh`, `memory-redirect-check.sh`, `visibility-guard.sh`, `containment-guard.sh`, `gravity-guard.sh`, `api-guard.sh`, `audit-immutability-guard.sh`, `claude-md-immutability-guard.sh`, `codex-edit-notify.sh`, `trace-logger.sh`, `session-close.sh`, `subagent-conformance.sh`
+`boot-inject.py`, `prefs-staleness-check.sh`, `memory-redirect-check.sh`, `visibility-guard.sh`, `containment-guard.sh`, `gravity-guard.sh`, `api-guard.sh`, `remote-guard.sh`, `audit-immutability-guard.sh`, `claude-md-immutability-guard.sh`, `codex-edit-notify.sh`, `trace-logger.sh`, `session-close.sh`, `subagent-conformance.sh`
 
-**T14** — All 13 hooks are registered in `.claude/settings.json`
+**T14** — All 14 hooks are registered in `.claude/settings.json`
 Condition: read `.claude/settings.json`, for each script filename from T13, verify the filename appears in a `"command"` value somewhere in the hooks section
 
 **T15** — `visibility-guard.sh` covers all 6 tool types

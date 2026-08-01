@@ -215,24 +215,32 @@ def emit_file(buf, path, required=False):
     """
     if not path:
         return False
-    if not path.is_file():
+    # Warnings go through WARNINGS (not straight into buf) so they survive
+    # the inline/stub fork — the stub must hear about degraded files too.
+    try:
+        is_file = path.is_file()
+    except OSError as exc:  # e.g. EACCES on a parent dir — pathlib does not swallow it
+        WARNINGS.append(f"governance file {path.as_posix()} could not be probed ({type(exc).__name__}) — READ IT MANUALLY NOW.")
+        return False
+    if not is_file:
         if required:
-            print(f"⚠ WARNING: expected governance file {path.as_posix()} is missing — governance may be incomplete.", file=buf)
-            print(file=buf)
+            kind = "exists but is not a regular file" if path.exists() else "is missing"
+            WARNINGS.append(f"expected governance file {path.as_posix()} {kind} — governance may be incomplete.")
         return False
     try:
-        content = path.read_text(encoding="utf-8").rstrip()
+        content = path.read_text(encoding="utf-8").lstrip("﻿").rstrip()
     except (OSError, UnicodeDecodeError) as exc:
-        print(f"⚠ WARNING: governance file {path.as_posix()} exists but could not be loaded ({type(exc).__name__}) — READ IT MANUALLY NOW.", file=buf)
-        print(file=buf)
+        WARNINGS.append(f"governance file {path.as_posix()} exists but could not be loaded ({type(exc).__name__}) — READ IT MANUALLY NOW.")
         return False
     if not content:
-        print(f"⚠ WARNING: governance file {path.as_posix()} exists but is EMPTY — governance may be incomplete.", file=buf)
-        print(file=buf)
+        WARNINGS.append(f"governance file {path.as_posix()} exists but is EMPTY — governance may be incomplete.")
         return False
     m = BOOT_CUT_RE.search(content)
     if m:
         content = content[:m.start()].rstrip()
+        if not content:
+            WARNINGS.append(f"governance file {path.as_posix()} has no eager content above its boot:cut marker — read the full file.")
+            return False
         content += (
             f"\n\n(trimmed at boot:cut — reference sections load lazily;"
             f" full file: {path.as_posix()})"
@@ -297,7 +305,10 @@ def main():
     if user_path and emit_file(buf, user_path):
         sources.append(user_path)
 
-    # Resolution warnings must ride the payload — stderr never reaches the model
+    # Build the command index BEFORE flushing warnings — it can add one.
+    cmds = build_explicit_index(codex_dir) if codex_dir else []
+
+    # All warnings must ride the payload — stderr never reaches the model.
     for w in WARNINGS:
         print(f"⚠ WARNING: {w}", file=buf)
     if WARNINGS:
@@ -309,8 +320,6 @@ def main():
     # instructions below carry the read mandate instead.
 
     # -- Boot instructions --
-
-    cmds = build_explicit_index(codex_dir) if codex_dir else []
 
     print("=== BOOT INSTRUCTIONS ===", file=buf)
     print(file=buf)
@@ -370,4 +379,16 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except Exception as exc:  # a crashed hook is a total governance loss — degrade loudly instead
+        pd = os.environ.get("CLAUDE_PROJECT_DIR", os.getcwd())
+        print("=== BOOT-INJECT CRASHED — GOVERNANCE NOT LOADED ===")
+        print(f"⚠ WARNING: boot-inject.py raised {type(exc).__name__}: {exc}")
+        print("READ THESE FILES NOW, before any other action:")
+        print(f"  1. the codex start.md for this project — local .codex/start.md if present,")
+        print(f"     else the codex named by the 'codex:' ref in {pd}/CLAUDE.md")
+        print(f"  2. {pd}/.state/start.md")
+        print("WARNING RELAY: reproduce any other SessionStart hook warning (⚠ / BLOCKED /")
+        print("WARNING) verbatim to the user in your FIRST response. This is not optional.")
+        sys.exit(0)

@@ -24,10 +24,10 @@ Create a portable, self-contained copy of a child project by resolving all exter
 
 ## What Bundle Does
 
-1. Copy the full project tree into the output folder — excluding `.state/bundles/` (a bundle must never recursively copy prior bundles or its own in-progress output) and `.state/traces/`.
+1. Copy the full project tree into the output folder — excluding `.state/bundles/` (a bundle must never recursively copy prior bundles or its own in-progress output), `.state/traces/`, and `.claude/` (all per the Rules below).
 2. Copy `^/^/.codex/` into the bundled project's own `.codex/`.
 3. Update CLAUDE.md: `root: true` → `apex-root: true`.
-4. **Materialize the boot-core:** copy the apex `CLAUDE.md` region between `<!-- boot-core:begin` and `<!-- boot-core:end -->` (markers included) into the bundled project's CLAUDE.md, after its hand-authored content. A bundle leaves the ancestor walk, so this is the only delivery path for the region's three sections: Governance Primitives, Naming Conventions, and the Instance State read mandate. Skip (with a warning in the bundle report) only if the region is already present.
+4. **Materialize the boot-core:** copy the apex `CLAUDE.md` region between `<!-- boot-core:begin` and `<!-- boot-core:end -->` (markers included) into the bundled project's CLAUDE.md, after its hand-authored content. A bundle leaves the ancestor walk, so this is the only delivery path for the region's three sections: Governance Primitives, Naming Conventions, and the Instance State read mandate. Also carry over the apex CLAUDE.md's conditional injection-failure backstop line (the `=== BOOT INSTRUCTIONS ===` sentinel paragraph, which sits OUTSIDE the region) — the bundle runs its own copied boot-inject hook and deserves the same layer-2 recovery. Skip either copy (with a warning in the bundle report) only if already present.
 5. **Remove the `codex:` line** from the bundled CLAUDE.md entirely. An apex root with a local `.codex/` resolves it natively (that is `resolve_codex`'s no-ref path); any literal ref such as `codex: .codex` is unresolvable and triggers a governance WARNING at every session start of the bundle.
 6. Coalesce all `^/^` references in codex entries to `^`.
 7. Populate `.codex/prefs.json` from the resolved cascade at bundle time (flattened snapshot).
