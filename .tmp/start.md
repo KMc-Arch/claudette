@@ -17,4 +17,8 @@ Two genres live here:
 
 ## Lifecycle
 
-Purge-eligible: `purge` sweeps `.tmp/` contents — `sandbox/` in default scope, and loose buffers under `purge all` (with a freshness guard so recently-touched buffers are not clobbered). This `start.md` and any `_`-prefixed items are never removed.
+Purge-eligible, but only under `purge all`: the **bare** `purge` sweeps nothing in
+`.tmp/` — it merely **reports** `sandbox/` rigs (report-only, so live work is never
+clobbered). `purge all` clears the **entire** `.tmp/` — loose buffers, `sandbox/`
+rigs, and every subdir — with **no freshness guard** (explicit confirmation is its
+guard). This `start.md` and any `_`-prefixed items are never removed, at any depth.

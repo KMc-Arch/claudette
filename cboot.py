@@ -270,8 +270,10 @@ def check_structure(report):
             # Skip excluded dirs and their children
             if any(d == ex or ex in d.parents for ex in EXCLUDE):
                 continue
-            # Skip _-prefixed dirs (invisible by convention)
-            if d.name.startswith("_"):
+            # Skip non-module dirs by convention: .-prefixed (internal, e.g.
+            # .archive) and _-prefixed (invisible, e.g. __pycache__) never carry
+            # a start.md manifest.
+            if any(part.startswith((".", "_")) for part in d.relative_to(base).parts):
                 continue
             # Skip runtime output subdirs (timestamped folders, individual pauses, etc.)
             # These are created at runtime and don't need start.md
