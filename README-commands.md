@@ -99,7 +99,7 @@ mileqa <scope>
 4. Fixes all critical + high in-round with proving tests; backlogs deliberate deferrals
 5. Repeats with a rotated/expanded panel -- up to 3 rounds or until a full pass is all medium-or-less
 
-**Exit states:** CLEAN (milestone gate open), EXHAUSTED (3 rounds, still critical/high -- not a pass), ESCALATION (finding exceeds scope).
+**Exit states** (evaluated after the closing round + a bounded verification coda over final-round fixes): CLEAN (no open critical/high, no residuals; gate open), HELD (only properly-classed residuals remain -- user-owned / user-deferred / out-of-subject; gate closed pending user rulings), EXHAUSTED (new critical/high still emerging at the round or coda cap -- not a pass; gate closed, only the user opens it; report carries the cross-round defect-class trajectory), ESCALATION (finding exceeds scope; user rules, loop resumes). The protocol file (`.codex/explicit/mileqa/start.md`) is authoritative -- this summary intentionally compresses.
 
 **Output:** Per-round reports + summary in `.state/tests/mileqa/YYYYMMDD-HHMM/`; a commit at every checkpoint and round.
 
