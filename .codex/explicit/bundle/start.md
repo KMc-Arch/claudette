@@ -31,7 +31,7 @@ Create a portable, self-contained copy of a child project by resolving all exter
 5. **Remove the `codex:` line** from the bundled CLAUDE.md entirely. An apex root with a local `.codex/` resolves it natively (that is `resolve_codex`'s no-ref path); any literal ref such as `codex: .codex` is unresolvable and triggers a governance WARNING at every session start of the bundle.
 6. Coalesce `^/^` **path references** in codex entries to `^` — but NOT prose that *defines or contrasts* the notations (the naming table, State Gravity, the frontmatter spec, this step's own text). A blind global replacement corrupts the governance text — proven 2026-08-01: it produced "using `^` or `^` notation", inverted the State Gravity rule, and made `apex-root` and `root` rows collide. Coalesce only inside path-shaped occurrences (`^/^/...`), and skip the known definition files.
 7. Populate `.codex/prefs.json` from the resolved cascade at bundle time (flattened snapshot).
-8. Generate `.claude/settings.json` from `.codex/settings.json`.
+8. Generate `.claude/settings.json` from `.codex/settings.json` — **at bundle time, apex-side**, along with `.claude/skills/` shims and a `.state/prefs-resolved.json` snapshot. The artifact ships these OUTPUTS pre-baked and carries NO build machinery (DECISION 2026-08-01: bundle is categorically decoupled from cboot — see BL-26). Baked hook commands use destination-independent `$CLAUDE_PROJECT_DIR/...` form, never apex-absolute paths.
 9. Resolve `start.md` chain references so the bundled project is self-interpreting.
 10. Copy root-level reference docs the codex points at (currently `README-concepts.md`, cited by `.codex/start.md` for full primitive definitions) — otherwise the bundle's eager boot chain contains dangling references.
 
