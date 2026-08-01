@@ -11,9 +11,23 @@ Environment:
     CLAUDE_PROJECT_DIR  set by Claude Code to the project root
 """
 
+import io
 import os
 import sys
 from pathlib import Path
+
+# Emit only content above this marker in any governance file (whole-file
+# fallback when absent). Keeps the eager payload small; reference sections
+# load lazily via Read.
+BOOT_CUT_TOKEN = "<!-- boot:cut"
+
+# Inline-safety ceiling for the whole payload, in bytes. The harness spills
+# oversized hook output to a file with only a ~2 KB preview — a SILENT
+# governance failure. Lowest observed spill: 29,898 B (2026-08-01); no
+# inline pass has been observed above ~2 KB, so per the upper-bound rule
+# this ceiling is conservative, not measured. Override for testing or
+# re-pinning via BOOT_INJECT_CEILING.
+CEILING_BYTES = int(os.environ.get("BOOT_INJECT_CEILING", "15000"))
 
 
 # -- Frontmatter parsing --------------------------------------------------
@@ -163,8 +177,10 @@ def find_memory_file(project_dir, filename, apex=None):
 # -- Content emission ------------------------------------------------------
 
 
-def emit_file(path):
-    """Print file content with its full filepath as header. Returns True if emitted."""
+def emit_file(buf, path):
+    """Write file content (banner + body) to buf. Honors the boot:cut marker:
+    only content above it is emitted, with a pointer to the full file.
+    Returns True if emitted."""
     if not path or not path.is_file():
         return False
     try:
@@ -173,9 +189,16 @@ def emit_file(path):
         return False
     if not content:
         return False
-    print(f"======== {path.as_posix()} ========")
-    print(content)
-    print()
+    cut = content.find(BOOT_CUT_TOKEN)
+    if cut != -1:
+        content = content[:cut].rstrip()
+        content += (
+            f"\n\n(trimmed at boot:cut — reference sections load lazily;"
+            f" full file: {path.as_posix()})"
+        )
+    print(f"======== {path.as_posix()} ========", file=buf)
+    print(content, file=buf)
+    print(file=buf)
     return True
 
 
@@ -208,41 +231,78 @@ def main():
     apex = find_apex(project_dir)
     codex_dir = resolve_codex(project_dir, fm, apex=apex)
 
-    # -- Governance content --
+    # -- Governance content (buffered: payload is size-checked before emission) --
+
+    buf = io.StringIO()
+    sources = []  # governance files that made it into the payload
 
     if codex_dir:
-        emit_file(codex_dir / "start.md")
+        src = codex_dir / "start.md"
+        if emit_file(buf, src):
+            sources.append(src)
 
-    emit_file(project_dir / ".state" / "start.md")
+    src = project_dir / ".state" / "start.md"
+    if emit_file(buf, src):
+        sources.append(src)
 
     user_path, _ = find_memory_file(project_dir, "user.md", apex=apex)
-    if user_path:
-        emit_file(user_path)
+    if user_path and emit_file(buf, user_path):
+        sources.append(user_path)
 
-    emit_file(project_dir / ".state" / "memory" / "state-abstract.md")
+    # NOTE: state-abstract.md is deliberately NOT emitted (decided 2026-08-01).
+    # Instance state is observational, high-churn, and unbounded — it belongs
+    # in the uncapped lazy channel (Read), not the capped eager one. The boot
+    # instructions below carry the read mandate instead.
 
     # -- Boot instructions --
 
     cmds = build_explicit_index(codex_dir) if codex_dir else []
 
-    print("=== BOOT INSTRUCTIONS ===")
-    print()
-    print("The governance roots above are pre-loaded. To complete boot:")
-    print("- Follow the codex loading rules: implicit tiers (priority-ordered,")
-    print("  sequential), then lazy-load indexes for explicit/, reactive/, reflexive/")
-    print("- The start.md convention: every folder has a start.md — read it BEFORE")
-    print("  anything else in that folder")
-    print()
+    print("=== BOOT INSTRUCTIONS ===", file=buf)
+    print(file=buf)
+    print("The governance roots above are pre-loaded. To complete boot:", file=buf)
+    print("- Follow the codex loading rules: implicit tiers (priority-ordered,", file=buf)
+    print("  sequential), then lazy-load indexes for explicit/, reactive/, reflexive/", file=buf)
+    print("- The start.md convention: every folder has a start.md — read it BEFORE", file=buf)
+    print("  anything else in that folder", file=buf)
+    print("- Instance state does NOT load eagerly: before substantive work, read", file=buf)
+    print(f"  {(project_dir / '.state' / 'memory' / 'state-abstract.md').as_posix()}", file=buf)
+    print(file=buf)
     if cmds:
-        print(f"Available explicit commands (invoke by name or /slash-command): {', '.join(cmds)}")
-        print("When the user invokes any of these, read .codex/explicit/<name>/start.md")
-        print("and follow its protocol exactly.")
-        print()
-    print("WARNING RELAY: If ANY other SessionStart hook produced a warning (look")
-    print("for lines containing ⚠ or BLOCKED or WARNING), you MUST reproduce that")
-    print("warning verbatim to the user in your FIRST response, BEFORE any other")
-    print("content. The user CANNOT see SessionStart hook output — you are the only")
-    print("relay. This is not optional.")
+        print(f"Available explicit commands (invoke by name or /slash-command): {', '.join(cmds)}", file=buf)
+        print("When the user invokes any of these, read .codex/explicit/<name>/start.md", file=buf)
+        print("and follow its protocol exactly.", file=buf)
+        print(file=buf)
+    print("WARNING RELAY: If ANY other SessionStart hook produced a warning (look", file=buf)
+    print("for lines containing ⚠ or BLOCKED or WARNING), you MUST reproduce that", file=buf)
+    print("warning verbatim to the user in your FIRST response, BEFORE any other", file=buf)
+    print("content. The user CANNOT see SessionStart hook output — you are the only", file=buf)
+    print("relay. This is not optional.", file=buf)
+
+    # -- Size gate: emit payload inline, or degrade LOUDLY --
+
+    payload = buf.getvalue()
+    size = len(payload.encode("utf-8"))
+    if size <= CEILING_BYTES:
+        sys.stdout.write(payload)
+        return
+
+    # Over ceiling: the harness would spill the payload to a file with a 2 KB
+    # preview and no warning. Emit a short, guaranteed-inline stub instead.
+    print(f"=== GOVERNANCE BUNDLE OVER CEILING ({size} B > {CEILING_BYTES} B) — NOT INLINED ===")
+    print()
+    print("Your governance rules did NOT load. Oversized hook output is silently")
+    print("spilled by the harness; this stub replaces it. RECOVER NOW —")
+    print("READ THESE FILES, in order, BEFORE any other action:")
+    for i, src in enumerate(sources, 1):
+        print(f"  {i}. {src.as_posix()}")
+    print()
+    print("Then complete boot per their instructions. Before substantive work, also")
+    print(f"read {(project_dir / '.state' / 'memory' / 'state-abstract.md').as_posix()}")
+    if cmds:
+        print(f"Explicit commands: {', '.join(cmds)}")
+    print("WARNING RELAY: reproduce any other SessionStart hook warning (⚠ / BLOCKED /")
+    print("WARNING) verbatim to the user in your FIRST response. This is not optional.")
 
 
 if __name__ == "__main__":

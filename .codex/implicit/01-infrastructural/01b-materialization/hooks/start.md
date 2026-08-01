@@ -1,5 +1,5 @@
 ---
-version: 3
+version: 4
 ---
 
 # hooks
@@ -10,7 +10,7 @@ Boot-time hook registration. These scripts implement structural enforcement of g
 
 | Script | Hook Event | Matcher | Purpose |
 |---|---|---|---|
-| `boot-inject.py` | SessionStart | (all) | Inject hierarchy-aware boot chain + command index + warning relay mandate into Claude's context (replaces legacy `boot-inject.sh`) |
+| `boot-inject.py` | SessionStart | (all) | Inject hierarchy-aware boot chain + command index + warning relay mandate into Claude's context (replaces legacy `boot-inject.sh`). Honors `<!-- boot:cut -->` in governance files (eager/lazy split); does NOT emit `state-abstract.md` (lazy-read mandate instead, 2026-08-01); size-gates its own payload (`CEILING_BYTES`, env `BOOT_INJECT_CEILING`) and degrades to a loud recovery stub instead of letting the harness spill silently |
 | `prefs-staleness-check.sh` | SessionStart | (all) | Warn if prefs-resolved.json is stale |
 | `memory-redirect-check.sh` | SessionStart | (all) | Warn if autoMemoryDirectory is misconfigured (6 failure modes checked) |
 | `visibility-guard.sh` | PreToolUse | Read\|Glob\|Grep\|Bash\|Write\|Edit | Block access to `_`-prefixed paths |

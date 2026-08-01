@@ -1,5 +1,5 @@
 ---
-version: 2
+version: 3
 short-desc: Package a child project as a standalone portable copy
 reads:
   - "^/.codex/"
@@ -26,11 +26,12 @@ Create a portable, self-contained copy of a child project by resolving all exter
 1. Copy the full project tree into the output folder.
 2. Copy `^/^/.codex/` into the bundled project's own `.codex/`.
 3. Update CLAUDE.md: `root: true` → `apex-root: true`.
-4. Replace `codex: ^/^/.codex` with `codex: .codex`.
-5. Coalesce all `^/^` references in codex entries to `^`.
-6. Populate `.codex/prefs.json` from the resolved cascade at bundle time (flattened snapshot).
-7. Generate `.claude/settings.json` from `.codex/settings.json`.
-8. Resolve `start.md` chain references so the bundled project is self-interpreting.
+4. **Materialize the boot-core:** copy the apex `CLAUDE.md` region between `<!-- boot-core:begin` and `<!-- boot-core:end -->` (markers included) into the bundled project's CLAUDE.md, after its hand-authored content. A bundle leaves the ancestor walk, so this is the only delivery path for Governance Primitives + Naming Conventions. Skip (with a warning in the bundle report) only if the region is already present.
+5. Replace `codex: ^/^/.codex` with `codex: .codex`.
+6. Coalesce all `^/^` references in codex entries to `^`.
+7. Populate `.codex/prefs.json` from the resolved cascade at bundle time (flattened snapshot).
+8. Generate `.claude/settings.json` from `.codex/settings.json`.
+9. Resolve `start.md` chain references so the bundled project is self-interpreting.
 
 ## Rules
 

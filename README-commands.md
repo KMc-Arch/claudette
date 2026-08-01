@@ -83,6 +83,26 @@ audit my-api architecture deep  # full invocation with depth
 
 **Output:** Findings written to `.state/tests/audits/YYYYMMDD-HHMM/`. Audit records are immutable -- the `audit-immutability-guard.sh` hook prevents modification after creation.
 
+## mileqa -- Pre-Milestone Holistic QA
+
+**Commits to a feature branch** (creates one if on main -- invoking mileqa authorizes its branch-local commits; it never pushes). Iterative multi-agent QA gate, typically run before `/milestone`.
+
+```
+mileqa
+mileqa <scope>
+```
+
+**What it does:**
+1. Checkpoint-commits pending work on the feature branch
+2. Fans out a blind QA panel -- cold readers (reconstruct functionality from the artifacts alone), adversaries (push every seam), plus lenses fit to the subject -- via multi-agent workflows
+3. Adversarially verifies every finding, then triages critical/high/medium/low
+4. Fixes all critical + high in-round with proving tests; backlogs deliberate deferrals
+5. Repeats with a rotated/expanded panel -- up to 3 rounds or until a full pass is all medium-or-less
+
+**Exit states:** CLEAN (milestone gate open), EXHAUSTED (3 rounds, still critical/high -- not a pass), ESCALATION (finding exceeds scope).
+
+**Output:** Per-round reports + summary in `.state/tests/mileqa/YYYYMMDD-HHMM/`; a commit at every checkpoint and round.
+
 ## new-project -- Child Project Scaffolding
 
 Creates a new child project with the standard Claudette2 structure.
