@@ -366,10 +366,26 @@ def main():
     # instructions below carry the read mandate instead.
 
     # -- Boot instructions --
-
-    print("=== BOOT INSTRUCTIONS ===", file=buf)
-    print(file=buf)
-    print("The governance roots above are pre-loaded. To complete boot:", file=buf)
+    # The sentinel header doubles as CLAUDE.md's layer-2 backstop condition,
+    # so it must assert that governance LOADED — not merely that this hook
+    # ran. Zero emitted sources -> NO sentinel; loud failure block instead
+    # (the backstop then fires, and this block agrees with it).
+    if not sources:
+        print("=== GOVERNANCE FAILED TO LOAD — NO BOOT PAYLOAD ===", file=buf)
+        print(file=buf)
+        print("No governance file could be emitted (see ⚠ WARNING lines above).", file=buf)
+        print("RECOVER NOW — read, in order, BEFORE any other action:", file=buf)
+        print("  1. the codex start.md for this project — local .codex/start.md if", file=buf)
+        print(f"     present, else the codex named by the 'codex:' ref in {(project_dir / 'CLAUDE.md').as_posix()}", file=buf)
+        print(f"  2. {(project_dir / '.state' / 'start.md').as_posix()}", file=buf)
+        print(file=buf)
+    else:
+        print("=== BOOT INSTRUCTIONS ===", file=buf)
+        print(file=buf)
+        if WARNINGS:
+            print("Governance loaded PARTIALLY — heed the ⚠ WARNING lines above. To complete boot:", file=buf)
+        else:
+            print("The governance roots above are pre-loaded. To complete boot:", file=buf)
     print("- Follow the codex loading rules: implicit tiers (priority-ordered,", file=buf)
     print("  sequential), then lazy-load indexes for explicit/, reactive/, reflexive/", file=buf)
     print("- The start.md convention: every folder has a start.md — read it BEFORE", file=buf)
@@ -407,7 +423,16 @@ def main():
         "spilled by the harness; this stub replaces it. RECOVER NOW —",
         "READ THESE FILES, in order, BEFORE any other action:",
     ]
-    stub += [f"  {i}. {src.as_posix()}" for i, src in enumerate(sources, 1)]
+    if sources:
+        stub += [f"  {i}. {src.as_posix()}" for i, src in enumerate(sources, 1)]
+    else:
+        # Nothing emitted: give the construction-rule fallback (same as the
+        # crash stub) instead of an empty list under "READ THESE FILES".
+        stub += [
+            "  1. the codex start.md for this project — local .codex/start.md if",
+            f"     present, else the codex named by the 'codex:' ref in {(project_dir / 'CLAUDE.md').as_posix()}",
+            f"  2. {(project_dir / '.state' / 'start.md').as_posix()}",
+        ]
     stub += [
         "",
         "Then complete boot per their instructions. Before substantive work, also",
