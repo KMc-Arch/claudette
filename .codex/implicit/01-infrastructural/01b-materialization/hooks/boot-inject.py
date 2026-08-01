@@ -13,21 +13,42 @@ Environment:
 
 import io
 import os
+import re
 import sys
 from pathlib import Path
 
 # Emit only content above this marker in any governance file (whole-file
-# fallback when absent). Keeps the eager payload small; reference sections
+# fallback when absent). Line-anchored: prose merely MENTIONING the token
+# mid-line does not trim. Keeps the eager payload small; reference sections
 # load lazily via Read.
-BOOT_CUT_TOKEN = "<!-- boot:cut"
+BOOT_CUT_RE = re.compile(r"(?m)^<!-- boot:cut")
 
-# Inline-safety ceiling for the whole payload, in bytes. The harness spills
-# oversized hook output to a file with only a ~2 KB preview — a SILENT
-# governance failure. Lowest observed spill: 29,898 B (2026-08-01); no
-# inline pass has been observed above ~2 KB, so per the upper-bound rule
-# this ceiling is conservative, not measured. Override for testing or
-# re-pinning via BOOT_INJECT_CEILING.
-CEILING_BYTES = int(os.environ.get("BOOT_INJECT_CEILING", "15000"))
+# Warnings that must reach the model (stderr is invisible to it) — collected
+# during resolution and emitted into the stdout payload and the stub.
+WARNINGS = []
+
+
+def _ceiling_bytes():
+    """Inline-safety ceiling for the whole payload, in bytes.
+
+    The harness spills oversized hook output to a file with only a ~2 KB
+    preview — a SILENT governance failure. Lowest observed spill: 29,898 B
+    (2026-08-01); inline passes are only observed well below that, so this
+    default is conservative against observed failures, NOT a measured
+    threshold (upper-bound rule). Override via BOOT_INJECT_CEILING;
+    malformed or non-positive values fall back to the default rather than
+    crash the hook — a crashed hook is a total governance loss.
+    """
+    try:
+        value = int(os.environ.get("BOOT_INJECT_CEILING", ""))
+        if value > 0:
+            return value
+    except ValueError:
+        pass
+    return 15000
+
+
+CEILING_BYTES = _ceiling_bytes()
 
 
 # -- Frontmatter parsing --------------------------------------------------
@@ -36,19 +57,22 @@ CEILING_BYTES = int(os.environ.get("BOOT_INJECT_CEILING", "15000"))
 def parse_frontmatter(path):
     """Extract simple key: value pairs from YAML frontmatter.
 
-    Handles only flat single-line 'key: value' pairs. Lists, multi-line
-    values, and nested YAML are silently ignored. Sufficient for the keys
-    this module queries (root, apex-root, codex).
+    Handles only flat single-line 'key: value' pairs. List item lines and
+    nested YAML are skipped (a list key itself is stored with an empty
+    value). Sufficient for the keys this module queries (root, apex-root,
+    codex). BOM-tolerant; the closing '---' must be its own line, so values
+    containing '---' cannot truncate the block.
     """
     try:
-        text = path.read_text(encoding="utf-8")
+        text = path.read_text(encoding="utf-8").lstrip("﻿")
     except (OSError, UnicodeDecodeError):
         return {}
     if not text.startswith("---"):
         return {}
-    end = text.find("---", 3)
-    if end == -1:
+    m = re.search(r"(?m)^---[ \t]*$", text[3:])
+    if not m:
         return {}
+    end = 3 + m.start()
     fm = {}
     for line in text[3:end].splitlines():
         if ":" not in line:
@@ -131,7 +155,10 @@ def resolve_codex(project_dir, fm, apex=None):
                 return resolved
 
     if codex_ref:
-        print(f"WARNING: codex ref '{codex_ref}' could not be resolved", file=sys.stderr)
+        # stderr is invisible to the model — record for payload emission too
+        msg = f"codex ref '{codex_ref}' could not be resolved; falling back to local .codex"
+        WARNINGS.append(msg)
+        print(f"WARNING: {msg}", file=sys.stderr)
 
     local = project_dir / ".codex"
     return local if local.is_dir() else None
@@ -177,21 +204,35 @@ def find_memory_file(project_dir, filename, apex=None):
 # -- Content emission ------------------------------------------------------
 
 
-def emit_file(buf, path):
-    """Write file content (banner + body) to buf. Honors the boot:cut marker:
-    only content above it is emitted, with a pointer to the full file.
-    Returns True if emitted."""
-    if not path or not path.is_file():
+def emit_file(buf, path, required=False):
+    """Write file content (banner + body) to buf. Honors a line-anchored
+    boot:cut marker: only content above it is emitted, with a pointer to the
+    full file. Returns True if emitted.
+
+    A file that EXISTS but cannot be loaded (unreadable, non-UTF8, empty) is
+    a governance gap the model must hear about — a WARNING line goes into the
+    payload instead of a silent skip. A missing file warns only if required.
+    """
+    if not path:
+        return False
+    if not path.is_file():
+        if required:
+            print(f"⚠ WARNING: expected governance file {path.as_posix()} is missing — governance may be incomplete.", file=buf)
+            print(file=buf)
         return False
     try:
         content = path.read_text(encoding="utf-8").rstrip()
-    except (OSError, UnicodeDecodeError):
+    except (OSError, UnicodeDecodeError) as exc:
+        print(f"⚠ WARNING: governance file {path.as_posix()} exists but could not be loaded ({type(exc).__name__}) — READ IT MANUALLY NOW.", file=buf)
+        print(file=buf)
         return False
     if not content:
+        print(f"⚠ WARNING: governance file {path.as_posix()} exists but is EMPTY — governance may be incomplete.", file=buf)
+        print(file=buf)
         return False
-    cut = content.find(BOOT_CUT_TOKEN)
-    if cut != -1:
-        content = content[:cut].rstrip()
+    m = BOOT_CUT_RE.search(content)
+    if m:
+        content = content[:m.start()].rstrip()
         content += (
             f"\n\n(trimmed at boot:cut — reference sections load lazily;"
             f" full file: {path.as_posix()})"
@@ -203,14 +244,19 @@ def emit_file(buf, path):
 
 
 def build_explicit_index(codex_dir):
-    """Build sorted list of explicit command names."""
+    """Build sorted list of explicit command names. An unreadable directory
+    degrades to an empty index rather than killing the whole payload."""
     explicit_dir = codex_dir / "explicit"
-    if not explicit_dir.is_dir():
+    try:
+        if not explicit_dir.is_dir():
+            return []
+        return sorted(
+            d.name for d in explicit_dir.iterdir()
+            if d.is_dir() and not d.name.startswith(("_", "."))
+        )
+    except OSError:
+        WARNINGS.append(f"explicit command index unavailable ({explicit_dir.as_posix()} unreadable)")
         return []
-    return sorted(
-        d.name for d in explicit_dir.iterdir()
-        if d.is_dir() and not d.name.startswith(("_", "."))
-    )
 
 
 # -- Main ------------------------------------------------------------------
@@ -238,16 +284,24 @@ def main():
 
     if codex_dir:
         src = codex_dir / "start.md"
-        if emit_file(buf, src):
+        if emit_file(buf, src, required=True):
             sources.append(src)
+    else:
+        WARNINGS.append("no codex directory resolved — codex governance NOT loaded")
 
     src = project_dir / ".state" / "start.md"
-    if emit_file(buf, src):
+    if emit_file(buf, src, required=True):
         sources.append(src)
 
     user_path, _ = find_memory_file(project_dir, "user.md", apex=apex)
     if user_path and emit_file(buf, user_path):
         sources.append(user_path)
+
+    # Resolution warnings must ride the payload — stderr never reaches the model
+    for w in WARNINGS:
+        print(f"⚠ WARNING: {w}", file=buf)
+    if WARNINGS:
+        print(file=buf)
 
     # NOTE: state-abstract.md is deliberately NOT emitted (decided 2026-08-01).
     # Instance state is observational, high-churn, and unbounded — it belongs
@@ -288,21 +342,31 @@ def main():
         return
 
     # Over ceiling: the harness would spill the payload to a file with a 2 KB
-    # preview and no warning. Emit a short, guaranteed-inline stub instead.
-    print(f"=== GOVERNANCE BUNDLE OVER CEILING ({size} B > {CEILING_BYTES} B) — NOT INLINED ===")
-    print()
-    print("Your governance rules did NOT load. Oversized hook output is silently")
-    print("spilled by the harness; this stub replaces it. RECOVER NOW —")
-    print("READ THESE FILES, in order, BEFORE any other action:")
-    for i, src in enumerate(sources, 1):
-        print(f"  {i}. {src.as_posix()}")
-    print()
-    print("Then complete boot per their instructions. Before substantive work, also")
-    print(f"read {(project_dir / '.state' / 'memory' / 'state-abstract.md').as_posix()}")
+    # preview and no warning. Emit a short stub instead — recovery-critical
+    # lines first, the one unbounded line (command index) last and dropped
+    # if the stub itself would breach the ceiling.
+    stub = [
+        f"=== GOVERNANCE BUNDLE OVER CEILING ({size} B > {CEILING_BYTES} B) — NOT INLINED ===",
+        "",
+        "Your governance rules did NOT load. Oversized hook output is silently",
+        "spilled by the harness; this stub replaces it. RECOVER NOW —",
+        "READ THESE FILES, in order, BEFORE any other action:",
+    ]
+    stub += [f"  {i}. {src.as_posix()}" for i, src in enumerate(sources, 1)]
+    stub += [
+        "",
+        "Then complete boot per their instructions. Before substantive work, also",
+        f"read {(project_dir / '.state' / 'memory' / 'state-abstract.md').as_posix()}",
+        "WARNING RELAY: reproduce any other SessionStart hook warning (⚠ / BLOCKED /",
+        "WARNING) verbatim to the user in your FIRST response. This is not optional.",
+    ]
+    stub += [f"⚠ WARNING: {w}" for w in WARNINGS]
     if cmds:
-        print(f"Explicit commands: {', '.join(cmds)}")
-    print("WARNING RELAY: reproduce any other SessionStart hook warning (⚠ / BLOCKED /")
-    print("WARNING) verbatim to the user in your FIRST response. This is not optional.")
+        cmd_line = f"Explicit commands: {', '.join(cmds)}"
+        current = len("\n".join(stub).encode("utf-8"))
+        if current + len(cmd_line.encode("utf-8")) + 1 <= min(CEILING_BYTES, 4000):
+            stub.append(cmd_line)
+    print("\n".join(stub))
 
 
 if __name__ == "__main__":

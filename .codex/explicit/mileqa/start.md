@@ -6,6 +6,8 @@ reads:
   - "^/"
 writes:
   - "^/.state/tests/mileqa/"
+  - "^/.state/work/backlog.md"
+  - "^/ (fix phase only: files inside the QA scope, plus git commits on the feature branch)"
 ---
 
 # mileqa

@@ -20,7 +20,7 @@ The codex is the shareable behavior layer of a claudette2 instance. Everything p
 
 ## Boot-Core (relocated 2026-08-01)
 
-**Governance Primitives** and **Naming Conventions** live in the apex `CLAUDE.md` **boot-core region** (between `boot-core:begin` / `boot-core:end` markers) — delivered natively to the apex and every child session by Claude Code's CLAUDE.md ancestor walk, verified live 2026-08-01. `/bundle` copies the region into a bundled child's `CLAUDE.md` (a bundle leaves the ancestor chain). Full primitive definitions with examples: `README-concepts.md`.
+**Governance Primitives**, **Naming Conventions**, and the **Instance State** read mandate live in the apex `CLAUDE.md` **boot-core region** (between `boot-core:begin` / `boot-core:end` markers) — delivered natively to the apex and every child session by Claude Code's CLAUDE.md ancestor walk, verified live 2026-08-01. `/bundle` copies the region into a bundled child's `CLAUDE.md` (a bundle leaves the ancestor chain). Full primitive definitions with examples: `README-concepts.md`.
 
 ---
 
@@ -221,7 +221,7 @@ Each boundary should have at least two defense layers. Single-layer boundaries a
 
 | Boundary | Convention | Directive | Automation | Infrastructure |
 |---|---|---|---|---|
-| Push | — | scrub protocol | `scrub/hooks/pre-push` (fail-closed, BDRY-03 done) | `core.hooksPath` |
+| Push | — | scrub protocol | `scrub/hooks/pre-push` (fail-closed, BDRY-03 done) + `remote-guard.sh` (blocks main pushes, force-pushes, GitHub API writes) | `core.hooksPath` |
 | Backup / copy-out | — | `/backup` protocol | `exclude_files` (credential class, `scrub-*.md`) | `.state/backup.json` |
 | Visibility | `_` naming | CLAUDE.md directive | `visibility-guard.sh` | `.gitignore` |
 | Access | — | ABSOLUTE HOLD | `api-guard.sh` (pattern-based) | — |

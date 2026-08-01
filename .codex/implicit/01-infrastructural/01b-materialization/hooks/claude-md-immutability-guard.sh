@@ -48,9 +48,10 @@ if file_path != apex:
 
 # Write operations always blocked — a full rewrite would clobber the body.
 if tool_name != "Edit":
-    print("BLOCKED: apex CLAUDE.md is immutable (design constraint #2).", file=sys.stderr)
-    print("  CLAUDE.md is a bootstrap pointer — it never grows.", file=sys.stderr)
-    print("  Body evolves through start.md files downstream.", file=sys.stderr)
+    print("BLOCKED: apex CLAUDE.md is immutable to Claude (design constraint #2).", file=sys.stderr)
+    print("  The body (incl. the boot-core region) is user-maintained: hand-edited", file=sys.stderr)
+    print("  by the user, or cboot-materialized (BL-15) — never agent-edited.", file=sys.stderr)
+    print("  Other body content evolves through start.md files downstream.", file=sys.stderr)
     print("  Frontmatter-only edits are permitted via the Edit tool.", file=sys.stderr)
     sys.exit(2)
 

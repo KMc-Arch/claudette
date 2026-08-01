@@ -1,6 +1,6 @@
 ---
 version: 2
-short-desc: Read-only structural validation (60 checks, safe anytime)
+short-desc: Read-only structural validation (66 checks, safe anytime)
 reads:
   - "^/.codex/"
   - "^/.state/"
@@ -122,7 +122,7 @@ Condition: extract all `"command"` values from hooks section, for each that star
 ### Category D: Explicit Commands
 
 **T19** — Every explicit command folder is registered as a skill shim
-Condition: enumerate the folders in `.codex/explicit/` (exclude the `start.md` file). For each folder `F`, `.claude/skills/F/SKILL.md` must exist. This is registration completeness — it replaces a brittle hardcoded folder list, so new commands (e.g. `ask`) are covered automatically. Core commands that must be present: `audit`, `bundle`, `milestone`, `new-project`, `pause`, `purge`, `rebuild`, `scrub`, `test-safe`, `test-burn`, `unpause`, `ask`.
+Condition: enumerate the folders in `.codex/explicit/` (exclude the `start.md` file). For each folder `F`, `.claude/skills/F/SKILL.md` must exist. This is registration completeness — it replaces a brittle hardcoded folder list, so new commands (e.g. `ask`) are covered automatically. Core commands that must be present: `audit`, `bundle`, `mileqa`, `milestone`, `new-project`, `pause`, `purge`, `rebuild`, `scrub`, `test-safe`, `test-burn`, `unpause`, `ask`.
 
 **T20** — Each explicit command folder has a `start.md`
 Condition: `start.md` exists in each folder enumerated in T19

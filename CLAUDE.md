@@ -7,9 +7,9 @@ Every folder has a `start.md`. Read it first — before anything else in that fo
 
 `^` = this project root. `^/^` = outermost project root. `_`-prefixed items do not exist to you — never access them.
 
-YOU MUST read `.codex/start.md` and `.state/start.md` NOW, before responding to any message. They contain your operating rules. This is not optional.
+Your operating rules arrive via the SessionStart boot payload. If no `=== BOOT INSTRUCTIONS ===` block is visible in your context, that injection failed — read `.codex/start.md` and `.state/start.md` NOW, before responding to any message.
 
-<!-- boot-core:begin — universal governance, delivered to apex + all children via the CLAUDE.md ancestor walk. /bundle copies this region into a bundled child's CLAUDE.md. Hand-authored content stays OUTSIDE this region. -->
+<!-- boot-core:begin — universal governance, delivered to apex + all children via the CLAUDE.md ancestor walk. /bundle IS PLANNED to copy this region into a bundled child's CLAUDE.md. Hand-authored content stays OUTSIDE this region. -->
 
 ## Governance Primitives
 

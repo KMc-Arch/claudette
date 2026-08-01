@@ -1,5 +1,6 @@
 ---
 version: 4
+runtime: python
 ---
 
 # hooks
@@ -17,6 +18,7 @@ Boot-time hook registration. These scripts implement structural enforcement of g
 | `containment-guard.sh` | PreToolUse | Write\|Edit | Block writes outside `^` |
 | `gravity-guard.sh` | PreToolUse | Write\|Edit | Block `.state/` writes outside `^` |
 | `api-guard.sh` | PreToolUse | Bash | Block Anthropic API/SDK invocations (ABSOLUTE HOLD) |
+| `remote-guard.sh` | PreToolUse | Bash | Block pushes to main/master, force-pushes, and direct GitHub API/issue/release access; feature-branch pushes and PR ops allowed (defense-in-depth behind `permissions.deny`) |
 | `audit-immutability-guard.sh` | PreToolUse | Write\|Edit | Block writes to existing audit folders (except `decisions.md`) |
 | `claude-md-immutability-guard.sh` | PreToolUse | Write\|Edit | Block writes to root CLAUDE.md |
 | `codex-edit-notify.sh` | PostToolUse | Write\|Edit | Notify when codex executables are edited |
@@ -34,5 +36,6 @@ PreToolUse hooks provide **structural enforcement** — they block violations be
 | Path containment | `containment-guard.sh` | Blocks writes outside `^` |
 | State gravity | `gravity-guard.sh` | Blocks `.state/` writes outside `^` |
 | Access (API) | `api-guard.sh` | Blocks Anthropic API/SDK invocations in Bash |
+| Push / remote | `remote-guard.sh` | Blocks main/master pushes, force-pushes, and GitHub API writes in Bash |
 | Audit immutability | `audit-immutability-guard.sh` | Blocks writes to existing audit run folders |
 | CLAUDE.md immutability | `claude-md-immutability-guard.sh` | Blocks writes to root CLAUDE.md |

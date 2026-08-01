@@ -8,7 +8,7 @@ Claudette2 has a four-tier test system. The tiers are ordered from fastest and s
 |------|------|-----------|----------|-----------------|---------------|
 | 1 | `python ctest.py` | Terminal (no LLM) | Milliseconds | No | Bootstrap outputs are correct |
 | 2 | `python chooks.py` | Terminal (no LLM) | Seconds | Minimal (trace files) | Hook scripts behave correctly |
-| 3 | `test-safe` (in Claude) | Claude session | Minutes | No (log only) | 60 structural checks |
+| 3 | `test-safe` (in Claude) | Claude session | Minutes | No (log only) | 66 structural checks |
 | 4 | `test-burn` (in Claude) | Claude session | Minutes | Yes (temporary) | End-to-end functional tests |
 
 **Recommended order:** Run them in tier order. If tier 1 fails, do not proceed to tier 2. If tier 3 fails, fix issues before running tier 4.
@@ -76,7 +76,7 @@ Run from inside a Claude session:
 You: run test-safe
 ```
 
-60 read-only checks across 12 categories (A through L). See [README-commands.md](README-commands.md) for the category list. This is the most comprehensive structural check because it runs inside Claude's context and can verify things the external scripts cannot (like cross-reference integrity between documentation files).
+66 read-only checks across 13 categories (A through M). See [README-commands.md](README-commands.md) for the category list. This is the most comprehensive structural check because it runs inside Claude's context and can verify things the external scripts cannot (like cross-reference integrity between documentation files).
 
 **Output format:**
 ```
@@ -128,7 +128,7 @@ See [README-commands.md](README-commands.md) for the detailed phase breakdown.
 
 | Failure | Likely Cause | Fix |
 |---------|-------------|-----|
-| Script not found | Hook script missing from hooks directory | Verify `.codex/implicit/01-infrastructural/01b-materialization/hooks/` contains all 13 .sh files |
+| Script not found | Hook script missing from hooks directory | Verify `.codex/implicit/01-infrastructural/01b-materialization/hooks/` contains all 14 hook scripts (13 `.sh` + `boot-inject.py`) |
 | Wrong exit code | Hook logic error or Bash compatibility issue | Read the hook script, check for platform-specific issues (Windows line endings, path separators) |
 | COV1 -- untested hooks | New hook added without tests | Add test functions in chooks.py with `@register_test("hook-name.sh")` |
 

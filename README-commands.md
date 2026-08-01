@@ -4,7 +4,7 @@ All commands can be invoked by name in conversation ("audit this project", "scru
 
 ## test-safe -- Structural Validation
 
-Read-only. 60 checks across 12 categories. Safe to run anytime, makes no changes (writes only a log file).
+Read-only. 66 checks across 13 categories. Safe to run anytime, makes no changes (writes only a log file).
 
 ```
 test-safe
@@ -12,9 +12,9 @@ test-safe
 
 **What it checks:**
 - Boot chain and structure (CLAUDE.md, codex, state)
-- All 13 hook scripts exist and are registered
+- All 14 hook scripts exist and are registered
 - Hook matcher coverage (visibility-guard covers all 6 tool types, etc.)
-- All 10 command folders exist with start.md manifests
+- All 18 command folders exist with start.md manifests
 - Reactive and reflexive modules present
 - State structure (memory, work, tests, traces files)
 - Preference system integrity (schema, cascade, resolved output)
@@ -60,7 +60,7 @@ scrub <path>       # scan a specific file or directory
 
 **Output:** Report in `.state/tests/explicit/scrub/` with file, line number, and matched pattern. Exit 0 = clean, exit 1 = matches found.
 
-**Note on automated enforcement:** The scrub `start.md` describes a pre-push git hook for automated scanning. This hook script does not exist yet in the current version. Scrub is currently a manual protocol -- run it before pushing. Automated pre-push enforcement is planned for a future release.
+**Automated enforcement:** A fail-closed pre-push hook (`.codex/explicit/scrub/hooks/pre-push`) is wired into every repo via `core.hooksPath` by `cboot` (BDRY-03, done 2026-07-30). Pushes are blocked until a per-commit scrub of the pushed range passes; `scrub:allow` is the escape hatch. Running scrub manually before large pushes is still recommended to avoid gate surprises.
 
 ## audit -- Quality Verification
 
