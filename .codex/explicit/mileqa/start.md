@@ -1,5 +1,5 @@
 ---
-version: 1
+version: 2
 short-desc: Pre-milestone holistic QA — iterative blind multi-agent fan-out, fix critical/high, repeat until clean
 isolation: inline
 reads:
@@ -51,7 +51,7 @@ If the scope is ambiguous, enumerate the candidate surfaces and ask the user to 
 - Each round **rotates and expands** the panel — fresh lenses over identical reruns; any surface newly touched by fixes gets a fresh cold read next round.
 - Exit states:
   - **CLEAN** — a pass with all findings ≤ medium. The milestone gate is open.
-  - **EXHAUSTED** — 3 rounds and critical/high still emerging. This is NOT a pass: report residuals and stop; the subject needs redesign, not a round 4.
+  - **EXHAUSTED** — 3 rounds and critical/high still emerging. This is NOT a pass: report residuals and stop. **Report the severity trend across rounds with the verdict** — it changes what EXHAUSTED means (learned on the first run, 2026-08-01): a **monotonically narrowing** class (mainline defects → regressions-in-fixes → exotic-edge/pre-existing-adjacent) means the surface is converging and the verdict is "bounded residuals; point at the planned structural remedy if one exists." A **flat or widening** class is the true redesign signal — new mainline highs in round 3 mean the design itself is generating defects, and no round 4 will fix that.
   - **ESCALATION** — a finding exceeds the subject's scope; route per the signal taxonomy and pause the loop for the user.
 
 ## Tooling
