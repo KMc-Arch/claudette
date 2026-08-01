@@ -107,6 +107,7 @@ Most governance is directive-based -- Claude reads rules and follows them. For t
 | `containment-guard.sh` | Writing files outside the project root | Write, Edit |
 | `gravity-guard.sh` | Writing to `.state/` in a parent project (state leaking upward) | Write, Edit |
 | `api-guard.sh` | Bash commands that reference the Anthropic API | Bash |
+| `remote-guard.sh` | Pushes to main/master, force-pushes, direct GitHub API access | Bash |
 | `audit-immutability-guard.sh` | Modifying existing audit records | Write, Edit |
 | `claude-md-immutability-guard.sh` | Editing the root CLAUDE.md | Write, Edit |
 

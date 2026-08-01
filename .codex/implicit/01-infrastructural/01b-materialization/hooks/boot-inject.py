@@ -51,6 +51,51 @@ def _ceiling_bytes():
 CEILING_BYTES = _ceiling_bytes()
 
 
+def _project_dir():
+    """CLAUDE_PROJECT_DIR, else cwd — without evaluating getcwd eagerly.
+    A deleted/stale process cwd must not crash resolution (or the crash
+    handler itself) when the env var is set."""
+    pd = os.environ.get("CLAUDE_PROJECT_DIR")
+    if pd:
+        return pd
+    try:
+        return os.getcwd()
+    except OSError:
+        return "."
+
+
+# pathlib does NOT swallow EACCES — an unreadable ancestor raises
+# PermissionError from a bare probe. Treat unprobeable as absent.
+def _is_file(path):
+    try:
+        return path.is_file()
+    except OSError:
+        return False
+
+
+def _is_dir(path):
+    try:
+        return path.is_dir()
+    except OSError:
+        return False
+
+
+def _exists(path):
+    try:
+        return path.exists()
+    except OSError:
+        return False
+
+
+def _warn_lines(limit=None):
+    """WARNINGS as payload lines — each truncated (warnings can embed
+    arbitrary frontmatter text), optionally capped for stub contexts."""
+    lines = [f"⚠ WARNING: {w[:300]}" for w in WARNINGS]
+    if limit is not None and len(lines) > limit:
+        lines = lines[:limit] + [f"⚠ WARNING: +{len(lines) - limit} more warnings suppressed — run the hook manually for the full list"]
+    return lines
+
+
 # -- Frontmatter parsing --------------------------------------------------
 
 
@@ -99,7 +144,7 @@ def find_apex(start_dir):
     highest_root = None
     while True:
         claude_md = current / "CLAUDE.md"
-        if claude_md.exists():
+        if _exists(claude_md):
             fm = parse_frontmatter(claude_md)
             if fm.get("apex-root") is True:
                 return current
@@ -117,7 +162,7 @@ def find_nearest_root(start_dir):
     current = start_dir.resolve().parent
     while current != current.parent:
         claude_md = current / "CLAUDE.md"
-        if claude_md.exists():
+        if _exists(claude_md):
             fm = parse_frontmatter(claude_md)
             if fm.get("root") is True or fm.get("apex-root") is True:
                 return current
@@ -133,10 +178,13 @@ def resolve_codex(project_dir, fm, apex=None):
     Children with codex: ^/.codex: resolve to nearest root ancestor's .codex/.
     """
     codex_ref = fm.get("codex", "")
+    if not isinstance(codex_ref, str):
+        WARNINGS.append(f"codex ref {codex_ref!r} is not a string; ignoring it")
+        codex_ref = ""
 
     if not codex_ref:
         local = project_dir / ".codex"
-        return local if local.is_dir() else None
+        return local if _is_dir(local) else None
 
     if codex_ref.startswith("^/^"):
         if not apex:
@@ -144,14 +192,14 @@ def resolve_codex(project_dir, fm, apex=None):
         if apex:
             relative = codex_ref.replace("^/^/", "", 1)
             resolved = (apex / relative).resolve()
-            if resolved.is_dir() and resolved.is_relative_to(apex.resolve()):
+            if _is_dir(resolved) and resolved.is_relative_to(apex.resolve()):
                 return resolved
     elif codex_ref.startswith("^/"):
         nearest = find_nearest_root(project_dir)
         if nearest:
             relative = codex_ref[2:]  # strip "^/"
             resolved = (nearest / relative).resolve()
-            if resolved.is_dir() and resolved.is_relative_to(nearest.resolve()):
+            if _is_dir(resolved) and resolved.is_relative_to(nearest.resolve()):
                 return resolved
 
     if codex_ref:
@@ -161,7 +209,7 @@ def resolve_codex(project_dir, fm, apex=None):
         print(f"WARNING: {msg}", file=sys.stderr)
 
     local = project_dir / ".codex"
-    return local if local.is_dir() else None
+    return local if _is_dir(local) else None
 
 
 def find_memory_file(project_dir, filename, apex=None):
@@ -172,7 +220,7 @@ def find_memory_file(project_dir, filename, apex=None):
         return None, None
 
     local = project_dir / ".state" / "memory" / filename
-    if local.is_file():
+    if _is_file(local):
         return local, "local"
 
     apex_resolved = apex.resolve() if apex else None
@@ -186,7 +234,7 @@ def find_memory_file(project_dir, filename, apex=None):
         # Stop at apex ceiling — check apex's own memory, then break
         if apex_resolved and current == apex_resolved:
             candidate = current / ".state" / "memory" / filename
-            if candidate.is_file():
+            if _is_file(candidate):
                 return candidate, "inherited"
             break
         claude_md = current / "CLAUDE.md"
@@ -194,7 +242,7 @@ def find_memory_file(project_dir, filename, apex=None):
             fm = parse_frontmatter(claude_md)
             if fm.get("root") is True or fm.get("apex-root") is True:
                 candidate = current / ".state" / "memory" / filename
-                if candidate.is_file():
+                if _is_file(candidate):
                     return candidate, "inherited"
         current = current.parent
 
@@ -275,12 +323,10 @@ def main():
     if sys.stdout.encoding != "utf-8":
         sys.stdout.reconfigure(encoding="utf-8")
 
-    project_dir = Path(
-        os.environ.get("CLAUDE_PROJECT_DIR", os.getcwd())
-    ).resolve()
+    project_dir = Path(_project_dir()).resolve()
 
     claude_md = project_dir / "CLAUDE.md"
-    fm = parse_frontmatter(claude_md) if claude_md.exists() else {}
+    fm = parse_frontmatter(claude_md) if _exists(claude_md) else {}
 
     apex = find_apex(project_dir)
     codex_dir = resolve_codex(project_dir, fm, apex=apex)
@@ -309,8 +355,8 @@ def main():
     cmds = build_explicit_index(codex_dir) if codex_dir else []
 
     # All warnings must ride the payload — stderr never reaches the model.
-    for w in WARNINGS:
-        print(f"⚠ WARNING: {w}", file=buf)
+    for line in _warn_lines():
+        print(line, file=buf)
     if WARNINGS:
         print(file=buf)
 
@@ -369,7 +415,7 @@ def main():
         "WARNING RELAY: reproduce any other SessionStart hook warning (⚠ / BLOCKED /",
         "WARNING) verbatim to the user in your FIRST response. This is not optional.",
     ]
-    stub += [f"⚠ WARNING: {w}" for w in WARNINGS]
+    stub += _warn_lines(limit=10)
     if cmds:
         cmd_line = f"Explicit commands: {', '.join(cmds)}"
         current = len("\n".join(stub).encode("utf-8"))
@@ -382,9 +428,11 @@ if __name__ == "__main__":
     try:
         main()
     except Exception as exc:  # a crashed hook is a total governance loss — degrade loudly instead
-        pd = os.environ.get("CLAUDE_PROJECT_DIR", os.getcwd())
+        pd = _project_dir()
         print("=== BOOT-INJECT CRASHED — GOVERNANCE NOT LOADED ===")
         print(f"⚠ WARNING: boot-inject.py raised {type(exc).__name__}: {exc}")
+        for _line in _warn_lines(limit=10):
+            print(_line)
         print("READ THESE FILES NOW, before any other action:")
         print(f"  1. the codex start.md for this project — local .codex/start.md if present,")
         print(f"     else the codex named by the 'codex:' ref in {pd}/CLAUDE.md")
