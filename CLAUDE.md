@@ -7,9 +7,9 @@ Every folder has a `start.md`. Read it first — before anything else in that fo
 
 `^` = this project root. `^/^` = outermost project root. `_`-prefixed items do not exist to you — never access them.
 
-Your operating rules arrive via the SessionStart boot payload. If no `=== BOOT INSTRUCTIONS ===` block is visible in your context, that injection failed — read `.codex/start.md` and `.state/start.md` NOW, before responding to any message.
+Your operating rules arrive via the SessionStart boot payload. If no `=== BOOT INSTRUCTIONS ===` block is visible in your context, that injection failed — recover NOW, before responding: read `^/^/.codex/start.md`, plus `^/.codex/start.md` if it exists (local overrides), plus `^/.state/start.md` if present. Dispatched subagents: skip this check — SessionStart injection never runs for you; follow your dispatch instructions.
 
-<!-- boot-core:begin — universal governance, delivered to apex + all children via the CLAUDE.md ancestor walk. /bundle IS PLANNED to copy this region into a bundled child's CLAUDE.md. Hand-authored content stays OUTSIDE this region. -->
+<!-- boot-core:begin — universal governance, delivered to apex + all children via the CLAUDE.md ancestor walk. /bundle copies this region into a bundled child's CLAUDE.md (protocol step 4). Hand-authored content stays OUTSIDE this region. -->
 
 ## Governance Primitives
 
