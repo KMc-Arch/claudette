@@ -1,6 +1,6 @@
 ---
-version: 2
-short-desc: Read-only structural validation (66 checks, safe anytime)
+version: 3
+short-desc: Read-only structural validation (77 checks, safe anytime)
 reads:
   - "^/.codex/"
   - "^/.state/"
@@ -36,7 +36,7 @@ Print results as they complete. Passing tests get one line. Failing tests get th
        [PASS] Negative: no leakage to default external location for this project
 
 ═══════════════════════════════════════
-  RESULTS: 63/66 passed, 1 failed, 1 warn, 1 skip
+  RESULTS: 74/77 passed, 1 failed, 1 warn, 1 skip
 ═══════════════════════════════════════
 ```
 
@@ -58,8 +58,27 @@ Condition: file exists
 **T02** — CLAUDE.md has `apex-root: true` in frontmatter
 Condition: read the file, parse YAML frontmatter, check for `apex-root: true`
 
+**T02a** — Boot-core region integrity in apex CLAUDE.md
+Condition: four sub-checks (the region is the primary governance delivery — apex + every child receive it via the CLAUDE.md ancestor walk; deleting or emptying it strips governance silently):
+1. Exactly one `boot-core:begin` marker and exactly one `boot-core:end` marker, begin before end
+2. The region between them is non-empty and contains all three mandated section headings: `Governance Primitives`, `Naming Conventions`, `Instance State`
+3. The Instance State section carries the `state-abstract.md` read mandate
+4. `^/README-concepts.md` exists (the boot-core's lazy-vocabulary target)
+
 **T03** — CLAUDE.md body references `.codex/start.md` and `.state/start.md`
 Condition: body text contains both strings
+
+**T03a** — Backstop ↔ sentinel token contract
+Condition: three sub-checks (the layer-2 backstop must fire iff governance failed to load; token drift on either side makes it always-fire or never-fire — the CONFIRMED-critical class the mileqa cadre caught live):
+1. The CLAUDE.md backstop line conditions on the literal trigger token `=== BOOT INSTRUCTIONS ===` and includes the dispatched-subagent carve-out
+2. `boot-inject.py` emits that exact token on the governance-loaded path only — exactly one emission site in the script
+3. The failure-branch marker `GOVERNANCE FAILED TO LOAD` is present in `boot-inject.py` (sentinel-withholding path intact)
+
+**T03b** — boot-inject.py hardening invariants
+Condition: three sub-checks (static content checks only — behavioral verification belongs to chooks/test-bench, never this suite):
+1. `CEILING_BYTES` is defined, positive, and below 29,898 (the lowest observed spill; per upper-bound doctrine the true threshold is known only from failures)
+2. The over-ceiling degradation stub is present (loud recovery text, not silent truncation)
+3. `state-abstract.md` is NOT emitted eagerly by the hook (laziness is a recorded decision), while the boot-instructions text still carries its read mandate
 
 **T04** — Child template CLAUDE.md exists
 Condition: file exists at `^/.templates/child/CLAUDE.md`
@@ -69,8 +88,17 @@ Condition: two sub-checks:
 1. frontmatter contains `root: true`
 2. frontmatter contains `codex:` key
 
+**T05a** — Child template does NOT carry boot-core or backstop
+Condition: `.templates/child/CLAUDE.md` contains neither a `boot-core:` marker nor the `=== BOOT INSTRUCTIONS ===` token. In-tree children receive governance via the ancestor walk; bundles get it materialized by `/bundle` step 4 — duplication into the template would double-deliver and drift.
+
 **T06** — `.codex/start.md` exists and has `version:` in frontmatter
 Condition: file exists, frontmatter has `version` key
+
+**T06a** — `boot:cut` trim contract in `.codex/start.md`
+Condition: three sub-checks (marker deletion re-inflates the boot payload toward the ~29.9 KB spill; an emptied eager section degrades boot to a warning):
+1. A line-anchored `boot:cut` marker is present and matches the pattern `boot-inject.py` cuts on (`BOOT_CUT_RE`)
+2. The eager section above the marker is non-empty
+3. The eager section carries the Boot-Core pointer (the relocation note directing to the apex CLAUDE.md region)
 
 **T07** — `.state/start.md` exists and has `version:` in frontmatter
 Condition: same
@@ -82,8 +110,8 @@ Condition: file exists, contains line matching `_*` OR a bare `*` (inverted whit
 
 ### Category B: Implicit Tiers
 
-**T09** — All four implicit tiers exist
-Condition: directories exist at `.codex/implicit/01-infrastructural/`, `02-foundational/`, `03-standard/`, `04-supplementary/`
+**T09** — All five implicit tiers exist
+Condition: directories exist at `.codex/implicit/00-preboot/`, `01-infrastructural/`, `02-foundational/`, `03-standard/`, `04-supplementary/` (00-preboot added to the enumeration 2026-08-01 — closes the BL-07 omission class at the test layer)
 
 **T10** — 01a-resolution contains `frontmatter.md` and `path-containment.md`
 Condition: both files exist
@@ -91,8 +119,8 @@ Condition: both files exist
 **T11** — 01b-materialization contains `pref-resolve/start.md`, `codex-register/start.md`, `statusline/start.md`
 Condition: all three files exist
 
-**T12** — 02-foundational contains `identity-isolation.md` and `state-gravity.md`
-Condition: both files exist
+**T12** — 02-foundational contains `identity-isolation.md`, `state-gravity.md`, `transient-gravity.md`
+Condition: all three files exist
 
 ---
 
@@ -102,8 +130,13 @@ Condition: both files exist
 Condition: these files exist in `.codex/implicit/01-infrastructural/01b-materialization/hooks/`:
 `boot-inject.py`, `prefs-staleness-check.sh`, `memory-redirect-check.sh`, `visibility-guard.sh`, `containment-guard.sh`, `gravity-guard.sh`, `api-guard.sh`, `remote-guard.sh`, `audit-immutability-guard.sh`, `claude-md-immutability-guard.sh`, `codex-edit-notify.sh`, `trace-logger.sh`, `session-close.sh`, `subagent-conformance.sh`
 
-**T14** — All 14 hooks are registered in `.claude/settings.json`
-Condition: read `.claude/settings.json`, for each script filename from T13, verify the filename appears in a `"command"` value somewhere in the hooks section
+**T14** — Hook registration is bidirectionally complete
+Condition: two sub-checks (dynamic — a 15th script added to `hooks/` must not land invisible):
+1. Every script filename from T13 appears in a `"command"` value somewhere in the hooks section of `.claude/settings.json`
+2. Every script file actually present in the `hooks/` directory (exclude `start.md`, `__pycache__/`) appears in a `"command"` value — no unregistered stragglers
+
+**T14a** — boot-inject.py is bound to SessionStart
+Condition: in `.claude/settings.json`, `boot-inject.py` appears in a command under `hooks.SessionStart`. (Binding only — emission ORDER is deliberately unasserted: other SessionStart hooks are observed to emit first without harm, and no ordering requirement has been verified.)
 
 **T15** — `visibility-guard.sh` covers all 6 tool types
 Condition: in `.claude/settings.json`, `visibility-guard.sh` appears in matchers that collectively cover `Read`, `Glob`, `Grep`, `Bash`, `Write`, `Edit`
@@ -114,15 +147,18 @@ Condition: both scripts appear in a PreToolUse entry with matcher containing `Wr
 **T17** — `api-guard.sh` matches `Bash`
 Condition: appears in a PreToolUse entry with matcher containing `Bash`
 
+**T17a** — `remote-guard.sh` matches `Bash`
+Condition: appears in a PreToolUse entry with matcher containing `Bash` (structural binding only; behavioral push-block coverage remains BL-24 / chooks territory)
+
 **T18** — Every hook path in `.claude/settings.json` points to a file that exists
-Condition: extract all `"command"` values from hooks section, for each that starts with `bash `, check that the script path after `bash ` exists as a file
+Condition: extract ALL `"command"` values from the hooks section plus `statusLine.command` — not just those starting with `bash `; the boot hook is now a quoted-python command and must not escape this check. Tokenize each with `shlex.split` (posix), expand `$CLAUDE_PROJECT_DIR`/`${CLAUDE_PROJECT_DIR}` to `^`, then verify the interpreter and script paths exist (absolute → on disk; bare name → resolvable via `shutil.which`). Redundant with T48b's apex row by design — this is the cheap first layer.
 
 ---
 
 ### Category D: Explicit Commands
 
 **T19** — Every explicit command folder is registered as a skill shim
-Condition: enumerate the folders in `.codex/explicit/` (exclude the `start.md` file). For each folder `F`, `.claude/skills/F/SKILL.md` must exist. This is registration completeness — it replaces a brittle hardcoded folder list, so new commands (e.g. `ask`) are covered automatically. Core commands that must be present: `audit`, `bundle`, `mileqa`, `milestone`, `new-project`, `pause`, `purge`, `rebuild`, `scrub`, `test-safe`, `test-burn`, `unpause`, `ask`.
+Condition: enumerate the folders in `.codex/explicit/` (exclude the `start.md` file). For each folder `F`, `.claude/skills/F/SKILL.md` must exist. This is registration completeness — it replaces a brittle hardcoded folder list, so new commands (e.g. `ask`) are covered automatically. Core commands that must be present: `ask`, `audit`, `backup`, `break-glass`, `break-glass-qa`, `bundle`, `checkWinTasks`, `mileqa`, `milestone`, `new-project`, `pause`, `purge`, `rebuild`, `scrub`, `test-bench`, `test-burn`, `test-safe`, `unpause` (the full 2026-08-01 inventory — this floor moves only by deliberate edit).
 
 **T20** — Each explicit command folder has a `start.md`
 Condition: `start.md` exists in each folder enumerated in T19
@@ -147,11 +183,13 @@ Condition: all three files exist
 **T24** — `.state/memory/start.md` exists
 Condition: file exists
 
-**T25** — `.state/memory/user.md` exists
-Condition: file exists
+**T25** — Auto-memory index integrity
+Condition: two sub-checks (replaces the retired `user.md` — the memory model moved to typed auto-memory files; the user profile lives in `state-abstract.md`):
+1. Positive: `.state/memory/MEMORY.md` exists (the auto-memory index)
+2. Integrity: every markdown link target in `MEMORY.md` (`[title](file.md)`) resolves to an existing file in `.state/memory/`
 
-**T26** — `.state/memory/decisions.md` exists
-Condition: file exists
+**T26** — Decision memories exist as typed files
+Condition: at least one `decision_*.md` file exists in `.state/memory/`, and every `decision_*.md` present is linked from `MEMORY.md`. (Replaces the retired monolithic `decisions.md`.)
 
 **T27** — `.state/memory/state-abstract.md` exists
 Condition: file exists
@@ -165,17 +203,25 @@ Condition: all five files exist
 **T30** — `.state/tests/start.md` and `.state/tests/audits/start.md` exist
 Condition: both files exist
 
+**T30a** — /mileqa report convention under `.state/tests/mileqa/`
+Condition: if `.state/tests/mileqa/` is absent, `[SKIP]` (no runs yet). If present, two sub-checks:
+1. Every subdirectory name matches `^\d{8}-\d{4}$` (run-timestamp convention)
+2. The folder has a `start.md` (every-folder convention)
+
 **T31** — `.state/traces/start.md` exists
 Condition: file exists
 
 **T31a** — `.state/plans/start.md` exists
 Condition: file exists
 
+**T31b** — `.state/pauses/start.md` exists
+Condition: file exists (live `/pause`/`/unpause` surface)
+
 **T32** — `.state/bundles/start.md` exists
 Condition: file exists
 
-**T33** — `.state/prefs.json` exists and is valid JSON
-Condition: file exists, read it, confirm it parses as JSON (even if empty `{}`)
+**T33** — `.state/prefs.json` is valid JSON if present (optional override layer)
+Condition: the file is an optional, sparse instance-override input to the pref cascade (`pref-resolve/start.md`: each layer is sparse; missing keys fall through) — absence is normal and cboot resolves without it. If present, it MUST parse as JSON — `[FAIL]` on malformed content (a broken override layer corrupts materialization silently). If absent, `[PASS]` with note `(optional layer absent — cascade falls through)`. The materialization OUTPUT is what T37/T38 validate.
 
 ---
 
@@ -190,8 +236,8 @@ Condition: file exists, parses as JSON
 **T36** — Every key in `prefs.json` exists in `pref-options.json`
 Condition: for each key in `.codex/prefs.json`, that key exists in `.codex/pref-options.json`
 
-**T37** — `prefs-resolved.json` exists and is valid JSON with `_meta`
-Condition: if file exists, parse as JSON, verify it contains `_meta.generated`. If file doesn't exist, `[WARN]` (cboot.py may not have run).
+**T37** — `^/.state/prefs-resolved.json` exists and is valid JSON with `_meta`
+Condition: the resolved file lives at `^/.state/prefs-resolved.json` (state, NOT `.codex/`). If it exists, parse as JSON, verify it contains `_meta.generated`. If it doesn't exist, `[WARN]` (cboot.py may not have run).
 
 **T38** — Every key in `prefs-resolved.json` (except `_meta`) exists in `pref-options.json`
 Condition: if T37 passed, for each non-`_meta` key in resolved file, verify it exists in `pref-options.json`. If T37 was WARN, `[SKIP]`.
@@ -234,25 +280,26 @@ Condition: if T46 passed, verify the path ends with `.state/memory` and resolves
 **T48** — Auto-memory is landing in `.state/memory/` and NOT in user profile
 Condition: Two checks, both must pass:
 1. **Positive:** `.state/memory/MEMORY.md` exists OR at least one `.md` file (besides `start.md`) exists in `.state/memory/`. This confirms auto-memory is writing to the correct location. If no memory files exist at all, `[WARN]` — the system may not have accumulated any memories yet (expected on first boot).
-2. **Negative:** Run `bash -c "ls ~/.claude/projects/*/memory/*.md 2>/dev/null"` and check if any returned files belong to THIS project (match the project path slug or leaf folder name). If memory files exist in the default external location for this project, `[FAIL]` with the external path — auto-memory is leaking. If no match, this check passes.
+2. **Negative:** Run `bash -c "ls ~/.claude/projects/*/memory/*.md 2>/dev/null"` and check whether any returned file's project directory name EXACTLY equals the slug of `^` (for `/mnt/claudette`: `-mnt-claudette`). Exact equality only — never prefix, substring, or leaf-name matching: sibling slugs such as `-mnt-claudette--plugins-cppc` are other session roots and must not match. If memory files exist under the exact-slug directory, `[FAIL]` with the external path — auto-memory is leaking. If no match, this check passes.
 Overall: PASS requires positive check pass + negative check pass. WARN if positive is uncertain but negative passes. FAIL if negative check finds leakage.
 
 **T48a** — No broken `Bash(command:...)` permission syntax anywhere
 Condition: Glob for all `settings.json` and `settings.local.json` files under `^/` (include `.codex/`, `.claude/`, and every child project's `.codex/` and `.claude/`). For each file, read it and check whether the literal string `Bash(command:` appears. The legacy form `Bash(command:xxx*)` matches nothing — the colon is treated as a literal character — so any rule in this form is dead weight (allow lists don't auto-approve; deny lists don't block). Canonical form is `Bash(xxx:*)`. See `.state/memory/feedback_permission_syntax.md`.
 - **PASS** if zero files contain `Bash(command:`.
 - **FAIL** if any file contains it — list each offending file and the count of occurrences.
-Skip `_`-prefixed paths (visibility-guard territory). Skip `.state/`, `.templates/`, audit snapshots, and other non-live copies — only scan live `.codex/` and `.claude/` settings under project roots.
+Skip `_`-prefixed paths (visibility-guard territory). Skip `.state/`, `.tmp/` (disposable rigs), audit snapshots, and other non-live copies — scan live `.codex/` and `.claude/` settings under project roots AND under `.templates/` (a broken rule in the template would re-seed every new child).
 
 **T48b** — All `.claude/settings.json` hook commands resolve to existing files
-Condition: Glob `**/.claude/settings.json` under `^/`. Skip `_`-prefixed paths and `_archive/`. For each file, parse as JSON. For every command string in `hooks` (walk all events × matchers × hooks) and in `statusLine.command`:
-1. Tokenize the command respecting shell quoting (use `shlex.split` in posix mode) — extract the interpreter (first token) and script argument (second token, if present).
-2. **Malformed-shape check:** reject any command containing two stacked drive letters (regex `[A-Za-z]:[\\/].*[A-Za-z]:[\\/]` appearing outside of normal interpreter+script pairing — i.e., one token should have at most one drive letter). Catches the `C:/root/"C:/interpreter"` class of bug.
-3. **Interpreter check:** if absolute (starts with `/` or matches `^[A-Za-z]:[\\/]`), verify it exists on disk. If a bare name (`bash`, `python`, `python3`), verify `shutil.which` resolves it.
-4. **Script check:** if a script argument is present and absolute, verify it exists on disk.
+Condition: Glob `**/.claude/settings.json` under `^/`. Skip `_`-prefixed paths (which subsumes `_archive/`) and `.tmp/` (rigs exist to be broken — scratch content must not fail the suite). For each file, parse as JSON. For every command string in `hooks` (walk all events × matchers × hooks) and in `statusLine.command`:
+1. Expand `$CLAUDE_PROJECT_DIR` / `${CLAUDE_PROJECT_DIR}` to the OWNING settings file's project root (the directory containing that `.claude/`) BEFORE any path checks. This is the mandatory bundle form (BL-19/BL-26); unexpanded it is neither absolute nor a bare interpreter and would silently escape the checks below, making the guard vacuous.
+2. Tokenize the command respecting shell quoting (use `shlex.split` in posix mode) — extract the interpreter (first token) and script argument (second token, if present).
+3. **Malformed-shape check:** reject any command containing two stacked drive letters (regex `[A-Za-z]:[\\/].*[A-Za-z]:[\\/]` appearing outside of normal interpreter+script pairing — i.e., one token should have at most one drive letter). Catches the `C:/root/"C:/interpreter"` class of bug.
+4. **Interpreter check:** if absolute (starts with `/` or matches `^[A-Za-z]:[\\/]`), verify it exists on disk. If a bare name (`bash`, `python`, `python3`), verify `shutil.which` resolves it.
+5. **Script check:** if a script argument is present and absolute, verify it exists on disk.
 - **PASS** if every command in every file tokenizes cleanly and all referenced paths exist.
 - **FAIL** with `<file>: <hook_event>: <command>` for each offender, plus the specific failure reason (malformed / interpreter missing / script missing).
 
-Catches the hook-propagation regression class directly: had T48b existed, the 26-child breakage from the boot-inject.py migration would have been caught at audit time instead of session-start time. Also guards against the predicted `$CLAUDE_PROJECT_DIR` env-var regression (a malformed path in settings.json would fail check #2 or #4).
+Catches the hook-propagation regression class directly: had T48b existed, the 26-child breakage from the boot-inject.py migration would have been caught at audit time instead of session-start time. The step-1 expansion is what makes the `$CLAUDE_PROJECT_DIR` env-var form actually validated — the pre-2026-08-01 spec claimed this coverage while `shlex` left the token non-absolute and the checks silently skipped it (a vacuous guard).
 
 ---
 
@@ -269,6 +316,9 @@ Condition: read the file, two sub-checks:
 1. Positive: contains a reference to `.base.md`
 2. Negative: does NOT contain a reference to `_base.md`
 
+**T50a** — `.state/work/start.md` file table matches disk
+Condition: every file named in the Files table of `.state/work/start.md` exists in `.state/work/` — the canon-vs-disk drift class behind the 2026-08-01 T25/T26/T29 false-fail cluster. Missing listed files are a `[FAIL]`; extra unlisted `.md` files on disk are a `[WARN]` (canon behind reality).
+
 ---
 
 ### Category K: Scripts & Templates
@@ -279,6 +329,9 @@ Condition: file exists at `^/cboot.py`
 **T52** — `scrub.py` exists in `.codex/explicit/scrub/`
 Condition: file exists
 
+**T52a** — scrub pre-push hook source exists
+Condition: `.codex/explicit/scrub/hooks/pre-push` exists and is non-empty (the fail-closed per-commit push gate). Warn-only companion: `^/.git/hooks/pre-push` exists — absence is a wiring gap (cboot re-run), not a source defect, so `[WARN]` not `[FAIL]`.
+
 **T53** — `purge.py` exists in `.codex/explicit/purge/`
 Condition: file exists
 
@@ -288,34 +341,37 @@ Condition: file exists
 **T55** — `.templates/child/` exists and contains `CLAUDE.md`
 Condition: directory and file exist
 
-**T56** — `.templates/child/.state/` has expected subdirs
-Condition: `memory/`, `work/`, `tests/`, `traces/`, `plans/` all exist under `.templates/child/.state/`
+**T56** — `.templates/child/.state/` has the full template manifest
+Condition: `memory/`, `work/`, `tests/`, `traces/`, `plans/`, `bundles/`, `pauses/` all exist under `.templates/child/.state/`, AND `.templates/child/.state/prefs.json` exists (a bootstrap regression dropping any of these would previously go unnoticed)
 
 **T57** — `.templates/child/.gitignore` exists
 Condition: file exists
 
 ---
 
-### Category L: Frontmatter Contract Spot-Checks
+### Category L: Frontmatter Contracts & Version Floors
 
-**T58** — `bundle/start.md` `writes:` is not empty
-Condition: read frontmatter, verify `writes` is not `[]` or absent. Catches the `writes: []` regression.
+**T58** — Every explicit command declares a `writes:` contract
+Condition: enumerate every `.codex/explicit/*/start.md` (generalized 2026-08-01 — the fixed bundle/rebuild/new-project trio missed real offenders). `[FAIL]` for any command whose frontmatter has no `writes:` key at all — an undeclared contract. Genuinely read-only commands must declare `writes: []` explicitly.
 
-**T59** — `rebuild/start.md` `writes:` is not empty
-Condition: same check
+**T59** — Empty `writes:` only for declared read-only commands
+Condition: commands with `writes: []` must be in the read-only set (`test-bench`, `unpause`, `checkWinTasks`); any command OUTSIDE that set with an empty or absent-value `writes` is a `[FAIL]` — the `writes: []` regression class (bundle, rebuild, new-project, mileqa, ask et al. all carry write obligations).
 
-**T60** — `new-project/start.md` `writes:` is not empty
-Condition: same check
+**T60** — Hardened-command version floors
+Condition: three sub-checks (a rollback below these floors silently revives pre-hardening semantics):
+1. `bundle/start.md` frontmatter `version >= 3` AND body references the boot-core region copy (`boot-core:begin`) — step-4 materialization intact
+2. `purge/start.md` frontmatter `version >= 9` AND body contains `allowlist` AND `CONFIRMED HOLD` appears in the file — the nuclear gate stays gated
+3. `mileqa/start.md` frontmatter `version >= 5` AND `writes:` includes `^/.state/tests/mileqa/`
 
 ---
 
 ### Category M: Worker Modes & `/ask`
 
 **T61** — `/ask` command is registered and current
-Condition: `.codex/explicit/ask/start.md` exists; its frontmatter declares `isolation: subagent` and a non-empty `short-desc`; and the shim `.claude/skills/ask/SKILL.md` exists.
+Condition: `.codex/explicit/ask/start.md` exists; its frontmatter declares `isolation: subagent`, a non-empty `short-desc`, and a `writes:` that includes `^/.tmp/` (the hard-mode out-of-band request channel T63 depends on); and the shim `.claude/skills/ask/SKILL.md` exists.
 
 **T62** — `roots.db` schema (if present)
-Condition: SKIP if `.state/roots.db` is absent (it is a rebuildable cache). If present, open it via the sqlite factory (`.codex/reactive/sqlite/sqlite.py`) and verify the `roots` table has columns `name, abs_path, rel_path, parent_path, depth, is_apex, contains_roots` and exactly one row with `is_apex = 1`.
+Condition: SKIP if `.state/roots.db` is absent (it is a rebuildable cache). If present, open it STRICTLY READ-ONLY via `sqlite3.connect("file:<abs-path>?mode=ro", uri=True)` — do NOT open through the sqlite factory here: its `PRAGMA journal_mode=WAL` persists a journal-mode flip into the db file, violating this suite's read-only contract. Verify the `roots` table contains AT LEAST the columns `name, abs_path, rel_path, parent_path, depth, is_apex, contains_roots` (superset semantics — the live schema also carries `id` and `generated_at`) and exactly one row with `is_apex = 1`.
 
 **T63** — `/ask` hard mode is injection-safe
 Condition: in `ask/start.md`, the `hard` branch delivers `<request>` **out-of-band as a file** — written with the Write tool into `.tmp/` and run via `python cboot.py … --exec-file '<reqfile>'` — so the request bytes never appear on a shell command line. FAIL if the branch puts `<request>` into shell syntax in any form: a `--exec "<request>"` interpolation, or a heredoc (`--exec - <<'…'`) whose fixed delimiter is itself a public injection vector.
@@ -324,6 +380,7 @@ Condition: in `ask/start.md`, the `hard` branch delivers `<request>` **out-of-ba
 
 ## Execution Notes
 
+- HARD CONTRACT — 100% read-only: the ONLY write this suite may perform is its own log under `.state/tests/explicit/test-safe/`. Never execute project scripts or hooks, never open a database writable (see T62's `mode=ro`), never touch git state. Static content checks only.
 - Use the Read tool to check file existence and contents. Do NOT use Bash for file reads.
 - Use Glob to verify directory contents efficiently.
 - For JSON validation, read the file and check if the content is well-formed JSON.
