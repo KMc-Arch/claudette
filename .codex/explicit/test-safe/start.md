@@ -1,5 +1,5 @@
 ---
-version: 5
+version: 6
 short-desc: Read-only structural validation (77 checks, safe anytime)
 reads:
   - "^/.codex/"
@@ -13,6 +13,7 @@ reads:
   - "^/.git/ (T52a only: config via its mandated git command; hook presence via Read)"
   - "^/**/.codex/ and ^/**/.claude/ (child settings scans, T48a/T48b)"
   - "~/.claude/projects/ (EXTERNAL, read-only — T48 leak probe only)"
+  - "EXTERNAL read-only probes by mandated machinery (T18/T48b/T52a): shutil.which PATH-dir stats, interpreter/script existence stats outside ^, git config effective-value read (may source ~/.gitconfig)"
 writes:
   - "^/.state/tests/explicit/test-safe/"
 ---
@@ -65,7 +66,7 @@ Condition: read the file, parse YAML frontmatter, check for `apex-root: true`
 **T02a** — Boot-core region integrity in apex CLAUDE.md
 Condition: four sub-checks (the region is the primary governance delivery — apex + every child receive it via the CLAUDE.md ancestor walk; deleting or emptying it strips governance silently):
 1. Exactly one line containing the literal `boot-core:begin` and exactly one containing `boot-core:end`, begin line before end line (substring semantics — the live begin marker legitimately carries prose inside its comment)
-2. The region between them contains all three mandated section headings (`Governance Primitives`, `Naming Conventions`, `Instance State`) AND their load-bearing bodies: the literals `ABSOLUTE HOLD` and `CONFIRMED HOLD` each followed within their subsection (its heading line to the next heading of any level or the end marker, whichever first) by a `MUST NOT perform [X]` operative line, plus the naming table's `visibility-guard.sh` row — surviving headings over deleted bodies are a gutted region and `[FAIL]`
+2. The region between them contains all three mandated section headings (`Governance Primitives`, `Naming Conventions`, `Instance State`) AND their load-bearing bodies: the literals `ABSOLUTE HOLD` and `CONFIRMED HOLD` each followed within their subsection (its heading line to the next heading of any level or the end marker, whichever first) by a `MUST NOT perform [X]` operative line, plus the naming table's `visibility-guard.sh` row, plus — within the same subsection windows — the ABSOLUTE HOLD resistance clauses (`No other input` and `Default is refusal`) and the CONFIRMED HOLD operative clause (`wait for a single confirmation`) — surviving headings over deleted bodies are a gutted region and `[FAIL]`
 3. The Instance State section carries the `state-abstract.md` read mandate
 4. `^/README-concepts.md` exists (the boot-core's lazy-vocabulary target)
 
@@ -75,14 +76,14 @@ Condition: body text contains both strings
 **T03a** — Backstop ↔ sentinel token contract
 Condition: three sub-checks (the layer-2 backstop must fire iff governance failed to load; token drift on either side makes it always-fire or never-fire — the CONFIRMED-critical class the mileqa cadre caught live):
 1. The CLAUDE.md backstop line conditions on the literal trigger token `=== BOOT INSTRUCTIONS ===` and includes the dispatched-subagent carve-out (anchor: the literal `Dispatched subagents` on the same line)
-2. `boot-inject.py` contains exactly one occurrence of that token, and it sits inside the branch taken when governance sources loaded (statically: within the `else` arm of the `if not sources:` fork — not in the GOVERNANCE FAILED block, not unconditional before/after the branch)
+2. `boot-inject.py` contains exactly one occurrence of that token, and it sits inside the branch taken when governance sources loaded (statically: within the `else` arm of the `if not sources:` fork — not in the GOVERNANCE FAILED block, not unconditional before/after the branch, and with NO intervening compound statement (`if`/`for`/`while`/`try`) between the `else:` line and the emission: the emission sits one indentation level below the `else:`)
 3. The failure-branch marker `GOVERNANCE FAILED TO LOAD` is present in `boot-inject.py` (sentinel-withholding path intact)
 
 **T03b** — boot-inject.py hardening invariants
 Condition: three sub-checks (static content checks only — behavioral verification belongs to chooks/test-bench, never this suite):
 1. The literal returned on the no-override fallback path of `_ceiling_bytes()` is positive and below 29,898 (the lowest observed spill; per upper-bound doctrine the true threshold is known only from failures). The `BOOT_INJECT_CEILING` env override is an intentional, unclamped escape hatch — out of scope for this static suite (BL-27).
 2. The over-ceiling degradation stub is present (anchor: the literal `GOVERNANCE BUNDLE OVER CEILING`)
-3. `state-abstract.md` is NOT emitted eagerly by the hook (laziness is a recorded decision). Operationally: no line containing `state-abstract` also invokes `emit_file`, no `emit_file` call site's argument expression names `state-abstract` or `.state/memory`, and the literal `state-abstract.md` appears in the boot-instructions block (the read mandate)
+3. `state-abstract.md` is NOT emitted eagerly by the hook (laziness is a recorded decision). Operationally: the string `state-abstract` must not occur on any NON-COMMENT line of boot-inject.py outside the boot-instructions/stub emission text blocks (lines whose stripped form starts with `#` are exempt — comments are inert), and the literal `state-abstract.md` appears in the boot-instructions block (the read mandate). Declared residual: dynamically-constructed names are out of scope — a static suite guards drift, not deliberate obfuscation
 
 **T04** — Child template CLAUDE.md exists
 Condition: file exists at `^/.templates/child/CLAUDE.md`
@@ -93,7 +94,7 @@ Condition: two sub-checks:
 2. frontmatter contains `codex:` key
 
 **T05a** — Child template does NOT carry boot-core or backstop
-Condition: `.templates/child/CLAUDE.md` contains none of: a `boot-core:` marker, the `=== BOOT INSTRUCTIONS ===` token, or the content canaries `Governance Primitives`, `ABSOLUTE HOLD`, `CONFIRMED HOLD` (markerless copying of the region's content is the same defect). In-tree children receive governance via the ancestor walk; bundles get it materialized by `/bundle` step 4 — duplication into the template would double-deliver and drift.
+Condition: `.templates/child/CLAUDE.md` contains none of: a `boot-core:` marker, the `=== BOOT INSTRUCTIONS ===` token, or the content canaries `Governance Primitives`, `ABSOLUTE HOLD`, `CONFIRMED HOLD`, `visibility-guard.sh`, `state-abstract.md` (one absence-canary per boot-core section, mirroring T02a's presence anchors — markerless copying of any section's content is the same defect). In-tree children receive governance via the ancestor walk; bundles get it materialized by `/bundle` step 4 — duplication into the template would double-deliver and drift.
 
 **T06** — `.codex/start.md` exists and has `version:` in frontmatter
 Condition: file exists, frontmatter has `version` key
@@ -143,7 +144,7 @@ Condition: two sub-checks (dynamic — a 15th script added to `hooks/` must not 
 Condition: in `.claude/settings.json`, `boot-inject.py` appears in a command under `hooks.SessionStart`. (Binding only — emission ORDER is deliberately unasserted: other SessionStart hooks are observed to emit first without harm, and no ordering requirement has been verified.)
 
 **T15** — `visibility-guard.sh` covers all 6 tool types
-Condition: in `.claude/settings.json`, `visibility-guard.sh` appears in matchers that collectively cover `Read`, `Glob`, `Grep`, `Bash`, `Write`, `Edit`
+Condition: in `.claude/settings.json`, `visibility-guard.sh` appears in matchers that collectively cover `Read`, `Glob`, `Grep`, `Bash`, `Write`, `Edit`. Matcher semantics: treat each matcher as a regex; a tool is covered if the regex matches the full tool name (an empty or wildcard matcher covers all tools)
 
 **T16** — `containment-guard.sh` and `gravity-guard.sh` match `Write|Edit`
 Condition: both scripts appear in a PreToolUse entry with matcher containing `Write` and `Edit`
@@ -154,15 +155,15 @@ Condition: appears in a PreToolUse entry with matcher containing `Bash`
 **T17a** — `remote-guard.sh` matches `Bash`
 Condition: appears in a PreToolUse entry with matcher containing `Bash` (structural binding only; behavioral push-block coverage remains BL-24 / chooks territory)
 
-**T18** — Every hook path in `.claude/settings.json` points to a file that exists
-Condition: extract ALL `"command"` values from the hooks section plus `statusLine.command` — not just those starting with `bash `; the boot hook is now a quoted-python command and must not escape this check. Tokenize each with `shlex.split` (posix), expand `$CLAUDE_PROJECT_DIR`/`${CLAUDE_PROJECT_DIR}` to `^` and apply `expanduser` to every token, then verify: the interpreter exists (absolute → on disk; non-absolute-but-path-bearing → resolve against `^`, never `shutil.which`; bare name → `shutil.which`); the script argument — the first NON-FLAG token after the interpreter — exists on disk, resolving non-absolute tokens (with or without a separator) against `^`, no other fallback — not found → FAIL as script-missing (inline forms like `-c` exempt the command from the script check). Redundant with T48b's apex row by design — this is the cheap first layer.
+**T18** — Every hook and statusLine command path in `.claude/settings.json` points to a file that exists
+Condition: extract ALL `"command"` values from the hooks section plus `statusLine.command` — not just those starting with `bash `; the boot hook is now a quoted-python command and must not escape this check. Tokenize each with `shlex.split` (posix), expand `$CLAUDE_PROJECT_DIR`/`${CLAUDE_PROJECT_DIR}` to `^` and apply `expanduser` to every token, then verify: the interpreter exists (absolute → on disk; non-absolute-but-path-bearing → resolve against `^`, never `shutil.which`; bare name → `shutil.which`); the script argument — the first NON-FLAG token after the interpreter — exists on disk, resolving non-absolute tokens (with or without a separator) against `^`, no other fallback — not found → FAIL as script-missing (interpreter forms `-c` and `-m` exempt the command from the script check — inline code and module names are not filesystem paths; drop leading `VAR=value` assignment tokens, matching `^[A-Za-z_][A-Za-z0-9_]*=`, before selecting the interpreter). Redundant with T48b's apex row by design — this is the cheap first layer.
 
 ---
 
 ### Category D: Explicit Commands
 
 **T19** — Every explicit command folder is registered as a skill shim
-Condition: enumerate the folders in `.codex/explicit/` (exclude the `start.md` file). For each folder `F`, `.claude/skills/F/SKILL.md` must exist (`[FAIL]` if missing), and its description line — the first non-empty body line after the frontmatter, which must begin with the literal `[codex] ` (shim frontmatter carries only `name:`, never a `description:` key) — must equal `[codex] ` + the `short-desc` from `.codex/explicit/F/start.md` (surrounding quotes stripped) — mismatch = `[WARN]` (stale materialization; cboot re-run pending). This is registration completeness — it replaces a brittle hardcoded folder list, so new commands (e.g. `ask`) are covered automatically. Core commands that must be present: `ask`, `audit`, `backup`, `break-glass`, `break-glass-qa`, `bundle`, `checkWinTasks`, `mileqa`, `milestone`, `new-project`, `pause`, `purge`, `rebuild`, `scrub`, `test-bench`, `test-burn`, `test-safe`, `unpause` (the full 2026-08-01 inventory — this floor moves only by deliberate edit).
+Condition: enumerate the folders in `.codex/explicit/` (exclude the `start.md` file). For each folder `F`, `.claude/skills/F/SKILL.md` must exist (`[FAIL]` if missing), and its description line — the first non-empty body line after the frontmatter, which must begin with the literal `[codex] ` (shim frontmatter carries only `name:`, never a `description:` key) — must equal `[codex] ` + the `short-desc` from `.codex/explicit/F/start.md` (surrounding quotes stripped) — mismatch = `[WARN]` (stale materialization; cboot re-run pending); a description line NOT beginning `[codex] `, or a `description:` frontmatter key present, = `[FAIL]` (registration-shape defect — cboot always writes the prefix, so its absence means hand-editing, never staleness; deliberate tightening 2026-08-02); a missing core-floor command = `[FAIL]`. This is registration completeness — it replaces a brittle hardcoded folder list, so new commands (e.g. `ask`) are covered automatically. Core commands that must be present: `ask`, `audit`, `backup`, `break-glass`, `break-glass-qa`, `bundle`, `checkWinTasks`, `mileqa`, `milestone`, `new-project`, `pause`, `purge`, `rebuild`, `scrub`, `test-bench`, `test-burn`, `test-safe`, `unpause` (the full 2026-08-01 inventory — this floor moves only by deliberate edit).
 
 **T20** — Each explicit command folder has a `start.md`
 Condition: `start.md` exists in each folder enumerated in T19
@@ -194,7 +195,7 @@ Condition: three sub-checks (replaces the retired `user.md` — the memory model
 3. Reverse: memory `.md` files on disk (excluding `start.md`, `MEMORY.md`, `state-abstract.md`) that are NOT linked from `MEMORY.md` are a `[WARN]` regardless of body content — the tombstone rationale (files declaring themselves deprecated/superseded, awaiting deletion) explains why this is WARN rather than FAIL; it exempts nothing
 
 **T26** — Decision memories exist as typed files
-Condition: at least one `decision_*.md` file exists in `.state/memory/`, and every `decision_*.md` present is linked from `MEMORY.md` — `[FAIL]` for an unexplained orphan; `[WARN]` if the orphan's own body declares itself deprecated or superseded (a deliberate tombstone). (Replaces the retired monolithic `decisions.md`.)
+Condition: at least one `decision_*.md` file exists in `.state/memory/`, and every `decision_*.md` present is linked from `MEMORY.md` — `[FAIL]` for an unexplained orphan; `[WARN]` if the orphan's file contains, case-insensitively, any of `deprecated`, `superseded`, or `tombstone` (a deliberate tombstone; this rule applies to orphans only — linked files are never body-scanned). (Replaces the retired monolithic `decisions.md`.)
 
 **T27** — `.state/memory/state-abstract.md` exists
 Condition: file exists
@@ -289,22 +290,22 @@ Condition: Two checks, both must pass:
 Overall: PASS requires positive check pass + negative check pass. WARN if positive is uncertain but negative passes. FAIL if negative check finds leakage.
 
 **T48a** — No broken `Bash(command:...)` permission syntax anywhere
-Condition: scan set = every `settings.json` and `settings.local.json` whose parent directory is named `.codex` or `.claude`, anywhere under `^/` including `.templates/` (a broken rule in the template would re-seed every new child), AFTER applying the skip list: `_`-prefixed paths (visibility-guard territory), `.state/`, `.tmp/` (disposable rigs). Settings files under other parent directories (e.g. `BravoGroup/Bravo/.act/config/settings.json`) are DELIBERATELY out of scope — foreign-tool settings are not Claude permission surfaces. For each in-scope file, read it and check whether the literal string `Bash(command:` appears. The legacy form `Bash(command:xxx*)` matches nothing — the colon is treated as a literal character — so any rule in this form is dead weight (allow lists don't auto-approve; deny lists don't block). Canonical form is `Bash(xxx:*)`. See `.state/memory/feedback_permission_syntax.md`.
+Condition: scan set = every `settings.json` and `settings.local.json` whose parent directory is named `.codex` or `.claude`, anywhere under `^/` including `.templates/` (a broken rule in the template would re-seed every new child), AFTER applying the skip list, matched against ANY path segment at any depth: `_`-prefixed segments (visibility-guard territory), `.state`, `.tmp` (disposable rigs). Settings files under other parent directories (e.g. `BravoGroup/Bravo/.act/config/settings.json`) are DELIBERATELY out of scope — foreign-tool settings are not Claude permission surfaces. For each in-scope file, read it and check whether the literal string `Bash(command:` appears. The legacy form `Bash(command:xxx*)` matches nothing — the colon is treated as a literal character — so any rule in this form is dead weight (allow lists don't auto-approve; deny lists don't block). Canonical form is `Bash(xxx:*)`. See `.state/memory/feedback_permission_syntax.md`.
 - **PASS** if zero files contain `Bash(command:`.
 - **FAIL** if any file contains it — list each offending file and the count of occurrences.
-The scan-set rule above is complete — nothing else, no judgment calls.
+The scan-set rule above is complete — nothing else, no judgment calls. Enumerate with `os.walk` or equivalent that traverses dot-directories; wildcard engines that exclude hidden segments by default are non-conforming (they would silently drop `.templates/`).
 
 **T48b** — All `.claude/settings.json` hook commands resolve to existing files
-Condition: Glob `**/.claude/settings.json` AND `**/.claude/settings.local.json` under `^/` (local files declare hooks that execute identically at session start). Skip `_`-prefixed paths (which subsumes `_archive/`), `.tmp/` (rigs exist to be broken — scratch content must not fail the suite), and `.state/` (snapshots there are non-live; bundle outputs are validated at bundle time by `/bundle` step 4 and the T60.1 floor). For each file, parse as JSON. For every command string in `hooks` (walk all events × matchers × hooks) and in `statusLine.command`:
-1. Expand `$CLAUDE_PROJECT_DIR` / `${CLAUDE_PROJECT_DIR}` to the OWNING settings file's project root (the directory containing that `.claude/`) BEFORE any path checks. This is the mandatory bundle form (BL-19/BL-26); unexpanded it is neither absolute nor a bare interpreter and would silently escape the checks below, making the guard vacuous.
-2. Tokenize the command respecting shell quoting (use `shlex.split` in posix mode) and apply `expanduser` to every token — the interpreter is the first token; the script argument is the first NON-FLAG token after it (leading-`-` tokens are flags; inline forms like `-c` exempt the command from the script check).
-3. **Malformed-shape check:** apply the regex `[A-Za-z]:[\\/].*[A-Za-z]:[\\/]` to each step-2 token INDIVIDUALLY; reject the command if any single token matches (a token may contain at most one drive-letter root). Do NOT apply the regex to the whole command string — a legitimate Windows interpreter+script pair has one drive letter per token and must pass. Catches the `C:/root/"C:/interpreter"` class of bug.
+Condition: Glob `**/.claude/settings.json` AND `**/.claude/settings.local.json` under `^/` (local files declare hooks that execute identically at session start) — the enumeration MUST traverse hidden intermediate segments (e.g. `.templates/`); engines that exclude dot-segments from `**` by default are non-conforming as configured. Skip `_`-prefixed, `.tmp`, and `.state` path segments AT ANY DEPTH (`_` = visibility-guard territory; `.tmp` = rigs exist to be broken, scratch content must not fail the suite; `.state` = snapshots are non-live — bundle outputs are validated at bundle time by `/bundle` step 4 and the T60.1 floor). For each file, parse as JSON. For every command string in `hooks` (walk all events × matchers × hooks) and in `statusLine.command`:
+1. Tokenize the command respecting shell quoting (use `shlex.split` in posix mode) FIRST, then per token expand `$CLAUDE_PROJECT_DIR` / `${CLAUDE_PROJECT_DIR}` to the OWNING settings file's project root (the directory containing that `.claude/`) and apply `expanduser`. Tokenize-before-expand is deliberate — expanding into the raw string first would fragment tokens if the expansion value contains whitespace; this matches T18's order (the two layers are step-identical by design). The env-var form is the mandatory bundle form (BL-19/BL-26); unexpanded it is neither absolute nor a bare interpreter and would silently escape the checks below, making the guard vacuous.
+2. Identify tokens: drop leading `VAR=value` assignment tokens (matching `^[A-Za-z_][A-Za-z0-9_]*=`); the interpreter is the first remaining token; the script argument is the first NON-FLAG token after it (leading-`-` tokens are flags; interpreter forms `-c` and `-m` exempt the command from the script check — inline code and module names are not filesystem paths).
+3. **Malformed-shape check:** apply the regex `[A-Za-z]:[\\/].*[A-Za-z]:[\\/]` to each step-1 token INDIVIDUALLY; reject the command if any single token matches (a token may contain at most one drive-letter root). Do NOT apply the regex to the whole command string — a legitimate Windows interpreter+script pair has one drive letter per token and must pass. Catches the `C:/root/"C:/interpreter"` class of bug.
 4. **Interpreter check:** if absolute (starts with `/` or matches `^[A-Za-z]:[\\/]`), verify it exists on disk. If non-absolute but containing a path separator, resolve against the owning settings file's project root — exists there → pass, else FAIL (never route path-bearing tokens through `shutil.which`: its cwd-relative fallback makes the verdict depend on runner cwd). If a bare name (`bash`, `python`, `python3`), verify `shutil.which` resolves it.
 5. **Script check:** if a script argument is present, verify it exists on disk — absolute as-is; a non-absolute token (with or without a path separator) resolves against the owning settings file's project root; no other fallback — not found there → FAIL (script missing).
 - **PASS** if every command in every file tokenizes cleanly and all referenced paths exist.
 - **FAIL** with `<file>: <hook_event>: <command>` for each offender, plus the specific failure reason (malformed / interpreter missing / script missing).
 
-Catches the hook-propagation regression class directly: had T48b existed, the 26-child breakage from the boot-inject.py migration would have been caught at audit time instead of session-start time. The step-1 expansion is what makes the `$CLAUDE_PROJECT_DIR` env-var form actually validated — the pre-2026-08-01 spec claimed this coverage while `shlex` left the token non-absolute and the checks silently skipped it (a vacuous guard).
+Catches the hook-propagation regression class directly: had T48b existed, the 26-child breakage from the boot-inject.py migration would have been caught at audit time instead of session-start time. The step-1 expansion is what makes the `$CLAUDE_PROJECT_DIR` env-var form actually validated — the pre-2026-08-01 spec claimed this coverage while `shlex` left the token non-absolute and the checks silently skipped it (a vacuous guard). Declared residual: this is one-level static resolution — a registered wrapper script that internally execs a dead path passes; wrapper internals are behavioral territory (chooks / the BL-24 class).
 
 ---
 
@@ -337,7 +338,7 @@ Condition: file exists
 **T52a** — scrub pre-push hook: source + wiring
 Condition: three sub-checks. Wiring is `core.hooksPath`, NOT a copy into `.git/hooks/` — cboot points every repo at the codex hooks dir:
 1. `.codex/explicit/scrub/hooks/pre-push` exists and is non-empty (the fail-closed per-commit push gate)
-2. `git -C ^ config core.hooksPath` (mandated read-only command) resolves, relative to the repo, to `.codex/explicit/scrub/hooks` — `[WARN]` if unset or wrong (that is the real cboot-re-run wiring gap)
+2. `git -C ^ config core.hooksPath` (mandated read-only command) resolves, relative to the repo, to `.codex/explicit/scrub/hooks` — `[WARN]` if unset or wrong (that is the real cboot-re-run wiring gap); normalize before comparing: an absolute path equal to `^/.codex/explicit/scrub/hooks` is equivalent
 3. Inverted legacy probe: a live non-sample `^/.git/hooks/pre-push` EXISTS → `[WARN]` — `core.hooksPath` silently hides it (matches cboot's own displaced-hooks warning)
 
 **T53** — `purge.py` exists in `.codex/explicit/purge/`
@@ -359,6 +360,8 @@ Condition: file exists
 
 ### Category L: Frontmatter Contracts & Version Floors
 
+These checks validate declaration shape and anchors only. Declaration truthfulness (declared vs. actual writes) is verified at runtime by the `contract-conformance` reflexive module — an observer, not a gate; static body-vs-contract analysis is deliberately out of scope here.
+
 **T58** — Every explicit command declares a `writes:` contract
 Condition: enumerate every `.codex/explicit/*/start.md` (generalized 2026-08-01 — the fixed bundle/rebuild/new-project trio missed real offenders). `[FAIL]` for any command whose frontmatter has no `writes:` key, or whose `writes:` value is not a YAML list (null, scalar, or mapping values are undeclared contracts in disguise; an empty list is valid). Genuinely read-only commands must declare `writes: []` explicitly.
 
@@ -379,7 +382,7 @@ Condition: three sub-checks (a rollback below these floors silently revives pre-
 Condition: `.codex/explicit/ask/start.md` exists; its frontmatter declares `isolation: subagent`, a non-empty `short-desc`, and a `writes:` that includes `^/.tmp/` (the hard-mode out-of-band request channel T63 depends on); and the shim `.claude/skills/ask/SKILL.md` exists.
 
 **T62** — `roots.db` schema (if present)
-Condition: SKIP if `.state/roots.db` is absent (it is a rebuildable cache). If present, open it STRICTLY READ-ONLY via `sqlite3.connect("file:<abs-path>?mode=ro", uri=True)` — do NOT open through the sqlite factory here: its `PRAGMA journal_mode=WAL` persists a journal-mode flip into the db file, violating this suite's read-only contract. Verify the `roots` table contains AT LEAST the columns `name, abs_path, rel_path, parent_path, depth, is_apex, contains_roots` (superset semantics — the live schema also carries `id` and `generated_at`) and exactly one row with `is_apex = 1`. An error opening the database read-only is a `[FAIL]` reporting the exception text.
+Condition: SKIP if `.state/roots.db` is absent (it is a rebuildable cache). If present, open it STRICTLY READ-ONLY via `sqlite3.connect("file:<abs-path>?immutable=1&mode=ro", uri=True)` — `immutable=1` is the operative flag: a plain `mode=ro` open of a WAL-mode db still creates/updates the `-wal`/`-shm` side files (mode=ro governs only the main file), itself a read-only-contract breach; `mode=ro` stays as the belt because SQLite silently ignores unrecognized URI parameters. Do NOT open through the sqlite factory here: its `PRAGMA journal_mode=WAL` persists a journal-mode flip into the db file. Stated caveats (acceptable for a rebuildable cache): with change detection disabled the verdict is undefined if anything writes roots.db during the open, and committed-but-uncheckpointed `-wal` frames from a crashed writer are invisible (stale snapshot) — keep the connection short-lived: open, check, close. Verify the `roots` table contains AT LEAST the columns `name, abs_path, rel_path, parent_path, depth, is_apex, contains_roots` (superset semantics — the live schema also carries `id` and `generated_at`) and exactly one row with `is_apex = 1`. An error opening the database read-only is a `[FAIL]` reporting the exception text.
 
 **T63** — `/ask` hard mode is injection-safe
 Condition: in `ask/start.md`, the `hard` branch delivers `<request>` **out-of-band as a file** — written with the Write tool into `.tmp/` and run via `python cboot.py … --exec-file '<reqfile>'` — so the request bytes never appear on a shell command line. FAIL if the branch puts `<request>` into shell syntax in any form: a `--exec "<request>"` interpolation, or a heredoc (`--exec - <<'…'`) whose fixed delimiter is itself a public injection vector.
@@ -394,5 +397,5 @@ Condition: in `ask/start.md`, the `hard` branch delivers `<request>` **out-of-ba
 - Use Glob to verify directory contents efficiently.
 - For JSON validation, read the file and check if the content is well-formed JSON.
 - Count passes, fails, warns, and skips separately. Report all four in the summary.
-- For tests with numbered sub-conditions (1, 2) or labeled sub-checks (Positive, Negative): print each sub-result as an indented line beneath the parent. The parent's overall verdict is the worst of its sub-conditions (FAIL > WARN > PASS). The same worst-of rule governs per-item iterated tests (T19, T48a, T48b, T58, T59): the parent verdict is the worst across items; print offenders only. Only count the parent in the summary totals, not the sub-checks.
+- For tests with numbered sub-conditions (1, 2) or labeled sub-checks (Positive, Negative): print each sub-result as an indented line beneath the parent. The parent's overall verdict is the worst of its sub-conditions (FAIL > WARN > PASS). The same worst-of rule governs EVERY per-item iterated test (e.g. T13, T14, T18, T19, T20, T26, T36, T38, T48a, T48b, T50a, T56, T58, T59): the parent verdict is the worst across items; print offenders only. Only count the parent in the summary totals, not the sub-checks.
 - Write the full log to `.state/tests/explicit/test-safe/` with timestamp filename.
