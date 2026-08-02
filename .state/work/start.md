@@ -17,6 +17,8 @@ Work tracking captures all mutable project state — distinct from memory (knowl
 | `architecture.md` | Design debt, structural weaknesses |
 | `boundaries.md` | Defense-layer gaps, observed failures |
 | `enhancements.md` | Good ideas not yet implemented |
+| `requirements-inventory.md` | Modularization requirements inventory (BL-05) |
+| `codex-analysis-20260801-reconciled.md` | Verified reconciliation of the 2026-08-01 codex analysis (supersedes the zMisc transient original) |
 
 ---
 

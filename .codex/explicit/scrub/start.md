@@ -103,7 +103,7 @@ This gate scans **diffs**, so it only ever sees tracked content. Gitignored cred
 
 ## Output
 
-Writes scan results to `.state/tests/explicit/scrub/`. Reports matches with file, line number, and matched pattern. Exit status: 0 = clean, 1 = matches found.
+Writes scan results to `.state/tests/explicit/scrub/`. Reports matches with file, line number, and matched pattern. Exit status: 0 = clean, 1 = matches found, >=2 = could not scan. Any caller gating on this MUST treat >=2 as a block, not a pass.
 
 **Reports embed the matched line verbatim** (first 120 chars, see `format_report`). A report from a failing scan therefore *contains* the secrets it found, in a file under `.state/`. Treat `scrub-*.md` as sensitive: never sync, mirror, or bundle it. `/backup` excludes the pattern for this reason.
 
