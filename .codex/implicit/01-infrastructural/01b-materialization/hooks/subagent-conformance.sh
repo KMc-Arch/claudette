@@ -7,6 +7,7 @@ SUBAGENT COMPLETE — if this was an explicit module running with isolation: sub
 - Did the module's actual outputs match its declared writes: contract?
 - Were any files written that weren't declared?
 - Were any declared outputs not produced?
+- Was the dispatch armed with a GOV-PREAMBLE sentinel (govgen)? An unarmed governed dispatch is a conformance gap — log it.
 
 Log findings to .state/tests/reflexive/contract-conformance/ if mismatches found.
 CONFORM

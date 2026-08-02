@@ -103,7 +103,7 @@ Condition: file exists, frontmatter has `version` key
 Condition: three sub-checks (marker deletion re-inflates the boot payload toward the ~29.9 KB spill; an emptied eager section degrades boot to a warning):
 1. A line-anchored `boot:cut` marker is present and matches the pattern `boot-inject.py` cuts on (`BOOT_CUT_RE`)
 2. The eager section above the marker is non-empty
-3. The eager section carries the Boot-Core pointer (anchors: `Boot-Core` and `boot-core:begin` both appear above the cut)
+3. The file carries the Boot-Core pointer (anchors: `Boot-Core` and `boot-core:begin` both appear somewhere in the file — the pointer lives below the cut as lazy reference, zero eager cost; revised 2026-08-02)
 
 **T07** — `.state/start.md` exists and has `version:` in frontmatter
 Condition: same

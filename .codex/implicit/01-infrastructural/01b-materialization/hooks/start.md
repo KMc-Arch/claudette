@@ -1,5 +1,5 @@
 ---
-version: 4
+version: 5
 runtime: python
 ---
 
@@ -23,7 +23,7 @@ Boot-time hook registration. These scripts implement structural enforcement of g
 | `codex-edit-notify.sh` | PostToolUse | Write\|Edit | Notify when codex executables are edited |
 | `trace-logger.sh` | PostToolUse | Read\|Write\|Edit\|Bash\|Glob\|Grep | Append tool calls + output size to session trace |
 | `session-close.sh` | Stop | (all) | Prompt for state-abstract + compliance + trace finalization |
-| `subagent-conformance.sh` | SubagentStop | (all) | Trigger contract conformance check |
+| `subagent-conformance.sh` | SubagentStop | (all) | Trigger contract conformance check, incl. `GOV-PREAMBLE` dispatch-arming check (govgen) |
 
 ## Enforcement Model
 

@@ -1,10 +1,22 @@
 ---
-version: 2
+version: 3
 ---
 
 # Codex
 
 The codex is the shareable behavior layer of a claudette2 instance. Everything prescriptive lives here: rules, commands, protocols, triggers, scripts, specs, and preference schemas. Portable across instances — copy entries or the whole folder.
+
+---
+
+<!-- boot:cut — content below is reference material and loads lazily; boot-inject.py emits only what is above this marker at session start. Read the full file when authoring, porting, or auditing codex modules. -->
+
+## Boot-Core
+
+Universal governance — **Governance Primitives**, **State Gravity**, **Standing Rules**, **Naming Conventions**, and the **Instance State** read mandate — lives in the apex `CLAUDE.md` **boot-core region** (between `boot-core:begin` / `boot-core:end` markers), delivered natively to the apex and every child session by Claude Code's CLAUDE.md ancestor walk — the only governance channel that also reaches dispatched subagents. `/bundle` copies the region into a bundled child's `CLAUDE.md` (a bundle leaves the ancestor chain).
+
+- **Region admission test:** only rules that prevent wrong actions by arbitrary actors (including blind subagents) qualify — every region byte is multiplied across every session and every subagent spawn.
+- **INTERIM authorship:** the region's authored home is apex `CLAUDE.md` (hand-maintained) until Phase B (BL-15) returns authorship to the codex via cboot/govgen materialization (`implicit/01-infrastructural/01b-materialization/govgen/`).
+- **Porting:** a copied codex does NOT carry the boot-core region — establishing it in the destination's apex `CLAUDE.md` is a required porting step. Full primitive definitions: `README-concepts.md`.
 
 ---
 
@@ -17,24 +29,6 @@ The codex is the shareable behavior layer of a claudette2 instance. Everything p
 | bash | — | Hook scripts, statusline. Real bash (Git for Windows, mingw, Cygwin, or WSL+distro). The Windows `System32\bash.exe` WSL shim without an installed distro does not satisfy this. |
 
 ---
-
-## Boot-Core (relocated 2026-08-01)
-
-**Governance Primitives**, **Naming Conventions**, and the **Instance State** read mandate live in the apex `CLAUDE.md` **boot-core region** (between `boot-core:begin` / `boot-core:end` markers) — delivered natively to the apex and every child session by Claude Code's CLAUDE.md ancestor walk, verified live 2026-08-01. `/bundle` copies the region into a bundled child's `CLAUDE.md` (a bundle leaves the ancestor chain). Full primitive definitions with examples: `README-concepts.md`.
-
----
-
-## State Gravity
-
-All `.state/` reads and writes default to the nearest `root: true` context — the current working folder's `.state/`. Deviations require the user to explicitly provide a path using `^` or `^/^` notation.
-
-- Path containment is the fence (don't go outside `^`). State gravity is the default (default to here, not up).
-- A child project session writing to `^/^/.state/` without explicit user path notation is a violation.
-- The backlog routing directive ("write to the lowest-level `root: true` project's backlog") is a specific application of state gravity.
-
----
-
-<!-- boot:cut — content below is reference material and loads lazily; boot-inject.py emits only what is above this marker at session start. Read the full file when authoring, porting, or auditing codex modules. -->
 
 ## Preference Cascade
 
