@@ -173,6 +173,33 @@ def main():
         e = govgen._resolve_entry("~/elsewhere/file", mod, rooted, None)
         check("unprefixed entry labeled as-declared", e.startswith("as-declared: "), e)
 
+        # -- round-3 grammar hardening --
+        e = govgen._resolve_entry("^/out/ (mirrors ^/^/shared/)", mod, rooted, None)
+        check("apex notation in note, no apex: whole entry as-declared",
+              e.startswith("as-declared: "), e)
+        apex = Path(tmp)
+        e = govgen._resolve_entry("^/out/ (mirrors ^/^/shared/)", mod, rooted, apex)
+        check("apex notation in note resolved when apex known",
+              (apex / "shared").as_posix() + "/" in e and "^" not in e, e)
+        ok, d = raises_exit(govgen._resolve_entry, 2, "^/logs/ (also ^/../outside/)", mod, rooted, None)
+        check("note ..-escape refused like heads", ok, d)
+        e = govgen._resolve_entry("^/x (binds ^ here)", mod, rooted, None)
+        check("bare ^ token in note resolved", "(binds " + rooted.as_posix() + " here)" in e, e)
+        ok, d = raises_exit(govgen._resolve_entry, 2, "^/a\\..\\b", mod, rooted, None)
+        check("backslash separator refused", ok, d)
+        fm = govgen.parse_frontmatter('---\nreads: ["a #b", "c"]\n---\n')
+        check("flow element with # inside quotes survives", fm.get("reads") == ["a #b", "c"], repr(fm))
+        fm = govgen.parse_frontmatter('---\nwrites:\n  - "^/a/"\n  # interior comment\n\n  - "^/b/"\n---\n')
+        check("block list survives comment + blank lines", fm.get("writes") == ["^/a/", "^/b/"], repr(fm))
+        fm = govgen.parse_frontmatter('---\nreads: ["unterminated, x]\n---\n')
+        check("unterminated flow quote: single preserved item",
+              fm.get("reads") == ['"unterminated, x'], repr(fm))
+        outside = Path(tmp) / "outside"; outside.mkdir(exist_ok=True)
+        (rooted / "esc").symlink_to(outside)
+        ok, d = raises_exit(govgen._resolve_entry, 2, "^/esc/", mod, rooted, None)
+        check("existing symlink escape refused physically", ok, d)
+        (rooted / "esc").unlink()
+
         # -- frontmatter parser hardening --
         fm = govgen.parse_frontmatter('---\na: 1\nlist:\n  - "x"\n  - y\nb: true\n---\nbody')
         check("frontmatter: flat + block list + bool",

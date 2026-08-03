@@ -10,10 +10,12 @@ output. The sentinel version hash covers the template, the profile table,
 and this script — it versions the GENERATOR, not the per-dispatch payload.
 
 Emission is fail-closed: content that would break the preamble frame (line
-or paragraph separators, sentinel-colliding text), a contract entry that
-escapes its containment base, an unparseable module frontmatter, or a
-payload over the profile budget is refused loudly (exit 2 / exit 3), never
-trimmed, escaped, or silently degraded.
+or paragraph separators, sentinel-colliding text), a contract entry or
+annotation token that escapes its containment base, backslash separators,
+an unparseable module frontmatter, or a payload over the profile budget is
+refused loudly (exit 2 / exit 3), never trimmed, escaped, or silently
+degraded. Entries needing an apex when none is known fall back to
+`as-declared:` — semantic notation is never half-resolved.
 
 Usage:
     python govgen.py subagent --root <path> [--module <name>]
@@ -58,20 +60,22 @@ def _apex() -> Path | None:
 
 
 def _strip_comment(v: str) -> str:
-    """Drop a YAML inline comment. Quote-aware only when the value BEGINS
-    with a quote (YAML quoted-scalar shape); an interior apostrophe in a
-    plain scalar must not defeat comment stripping."""
+    """Drop a YAML inline comment (`#` at start or after whitespace, outside
+    quotes). A quote only OPENS at a token boundary (start / space / comma /
+    `[`), so an interior apostrophe in a plain scalar does not defeat
+    stripping while quoted elements — including inside flow lists — protect
+    their `#` and `,` content."""
     v = v.rstrip()
-    if v and v[0] in "\"'":
-        q = v[0]
-        close = v.find(q, 1)
-        if close != -1:
-            rest = v[close + 1:]
-            cut = re.search(r"(^|[ \t])#", rest)
-            return (v[:close + 1] + (rest[:cut.start()] if cut else rest)).rstrip()
-        return v
-    cut = re.search(r"(^|[ \t])#", v)
-    return v[:cut.start()].rstrip() if cut else v
+    q = None
+    for i, ch in enumerate(v):
+        if q:
+            if ch == q:
+                q = None
+        elif ch in "\"'" and (i == 0 or v[i - 1] in " \t,["):
+            q = ch
+        elif ch == "#" and (i == 0 or v[i - 1] in " \t"):
+            return v[:i].rstrip()
+    return v
 
 
 def _unquote(v: str) -> str:
@@ -82,7 +86,8 @@ def _unquote(v: str) -> str:
 
 
 def _split_flow(inner: str) -> list[str]:
-    """Split flow-list innards on commas, quote-aware."""
+    """Split flow-list innards on commas, quote-aware. An unterminated quote
+    degrades to a SINGLE preserved item (never fragmented garbage)."""
     parts, buf, q = [], [], None
     for ch in inner:
         if q:
@@ -97,6 +102,8 @@ def _split_flow(inner: str) -> list[str]:
             buf = []
         else:
             buf.append(ch)
+    if q is not None:
+        return [_unquote(inner.strip())]
     parts.append("".join(buf))
     return [_unquote(p.strip()) for p in parts if p.strip()]
 
@@ -108,8 +115,9 @@ def _scalar(v: str):
 
 def parse_frontmatter(text: str) -> dict:
     """Flat `key: value` pairs, block lists (`- item` lines), and flow lists
-    (`key: [a, b]` / `key: []`, quote-aware split). Inline comments stripped
-    (quote-aware for quoted scalars); quotes stripped only when symmetric."""
+    (`key: [a, b]` / `key: []`, quote-aware split). Blank and full-line
+    comment lines inside a block list are skipped WITHOUT ending the list
+    (matching YAML), never silently truncating declarations."""
     if not text or not text.startswith("---"):
         return {}
     m = re.search(r"(?m)^---[ \t]*$", text[3:])
@@ -118,6 +126,9 @@ def parse_frontmatter(text: str) -> dict:
     fm: dict = {}
     list_key = None
     for line in text[3:3 + m.start()].splitlines():
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#"):
+            continue  # blank/comment lines are inert — they do not end a block list
         item = re.match(r"\s*-\s+(.*)$", line)
         if item and list_key is not None:
             fm[list_key].append(_unquote(_strip_comment(item.group(1)).strip()))
@@ -191,9 +202,11 @@ def root_warning(root: Path) -> str | None:
 
 
 def _join_contained(base: Path, rest: str, entry: str) -> str:
-    """Join rest onto base, normalize, and refuse escapes — a contract entry
-    that resolves outside its containment base contradicts the fence and is
-    an authoring error, not something to launder into the payload."""
+    """Join rest onto base, normalize, and refuse escapes — textual for
+    not-yet-existing paths, physical (symlink-resolved) for existing ones.
+    A contract entry resolving outside its containment base contradicts the
+    fence and is an authoring error, never something to launder into the
+    payload."""
     trail = "/" if (rest.endswith("/") or rest == "") else ""
     joined = Path(os.path.normpath(str(base / rest))) if rest else base
     try:
@@ -201,43 +214,70 @@ def _join_contained(base: Path, rest: str, entry: str) -> str:
     except ValueError:
         _die(f"contract entry {entry!r} escapes its containment base "
              f"({base.as_posix()}) — refusing to emit", 2)
+    if joined.exists():
+        try:
+            joined.resolve().relative_to(base.resolve())
+        except ValueError:
+            _die(f"contract entry {entry!r} physically escapes its containment "
+                 f"base via a symlink — refusing to emit", 2)
+        except OSError:
+            pass  # unreadable resolution: keep the textual verdict
     return joined.as_posix() + (trail if not joined.as_posix().endswith("/") else "")
 
 
-def _resolve_note(note: str, root: Path, apex: Path | None) -> str:
-    """Annotations ride along verbatim, except `^` notation inside them is
-    resolved so no semantic tokens reach a blind subagent."""
-    if apex is not None:
-        note = note.replace("^/^/", apex.as_posix() + "/").replace("^/^", apex.as_posix())
-    note = note.replace("^/", root.as_posix() + "/")
-    return note
+def _resolve_caret(token: str, mod_dir: Path, root: Path, apex: Path | None, entry: str) -> str | None:
+    """Resolve one ^-notation token (head or annotation) to a concrete path.
+    Returns None when the token is not ^-notation. Same containment refusals
+    everywhere — annotations get no laundering privileges."""
+    if token == "^" or token in ("^/",):
+        return root.as_posix() + "/" if token == "^/" else root.as_posix()
+    if token in ("^/^", "^/^/") or token.startswith("^/^/"):
+        rest = token[4:] if token.startswith("^/^/") else ""
+        return _join_contained(apex, rest, entry) if apex is not None else None
+    if token.startswith("^/"):
+        return _join_contained(root, token[2:], entry)
+    return None
+
+
+def _resolve_note(note: str, mod_dir: Path, root: Path, apex: Path | None, entry: str) -> str:
+    """Annotations ride along verbatim, except ^-notation tokens inside them
+    resolve exactly like heads (same containment refusals) — no semantic
+    tokens and no laundered escapes reach a blind subagent."""
+    out = []
+    for raw in note.split(" "):
+        core = raw.strip("().,;:")
+        if core and core[0] == "^":
+            resolved = _resolve_caret(core, mod_dir, root, apex, entry)
+            if resolved is not None:
+                raw = raw.replace(core, resolved, 1)
+        out.append(raw)
+    return " ".join(out)
 
 
 def _resolve_entry(entry: str, mod_dir: Path, root: Path, apex: Path | None) -> str:
     """One declared I/O entry → resolved text. Head token (split at first
     whitespace of any kind) resolves by prefix: `./` module-relative, `^/`
-    dispatch-root-relative, `^/^/` apex-relative (as-declared when no apex
-    is known); trailing slash preserved as a directory marker; `..` escapes
-    of the containment base are refused; annotations ride along with their
-    own `^` notation resolved. Entries with no prefix are emitted
-    unresolved, labeled as-declared."""
+    dispatch-root-relative, `^/^/` apex-relative; trailing slash preserved
+    as a directory marker; `..` and symlink escapes refused; backslash
+    separators refused (not in the grammar). When the entry needs an apex
+    and none is known, the WHOLE entry falls back to `as-declared:` —
+    heads and annotations behave identically. Unprefixed entries are
+    emitted unresolved, labeled as-declared."""
+    if "\\" in entry:
+        _die(f"contract entry {entry!r} contains a backslash separator — not in the grammar, refusing", 2)
+    if apex is None and "^/^" in entry:
+        return f"as-declared: {entry}"
     parts = re.split(r"\s+", entry.strip(), maxsplit=1)
     head, note = parts[0], (parts[1] if len(parts) > 1 else "")
-    if head in ("^/^", "^/^/") or head.startswith("^/^/"):
-        if apex is None:
-            return f"as-declared: {entry}"
-        resolved = _join_contained(apex, head[4:] if head.startswith("^/^/") else "", entry)
-    elif head in ("^", "^/"):
-        resolved = root.as_posix() + "/"
-    elif head.startswith("^/"):
-        resolved = _join_contained(root, head[2:], entry)
-    elif head == "./":
+    if head == "./":
         resolved = mod_dir.as_posix() + "/"
     elif head.startswith("./"):
         resolved = _join_contained(mod_dir, head[2:], entry)
     else:
-        return f"as-declared: {entry}"
-    note = _resolve_note(note, root, apex) if note else ""
+        resolved = _resolve_caret(head, mod_dir, root, apex, entry)
+        if resolved is None:
+            return f"as-declared: {entry}"
+    note = _resolve_note(note, mod_dir, root, apex, entry) if note else ""
     return resolved + (f" {note}" if note else "")
 
 
