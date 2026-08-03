@@ -65,7 +65,7 @@ Resolution order: downstream `prefs.json` context → `default_context` (only if
 
 ### Resolver
 
-`pref-resolve` (in `implicit/01b-materialization/`) runs at boot, merges all layers, writes `.state/prefs-resolved.json`. Claude reads ONLY the resolved file. Output format, staleness detection, and run-level metadata are defined in `pref-resolve/start.md`.
+`pref-resolve` (in `implicit/01b-materialization/`) runs at boot, merges all layers, writes `.state/prefs-resolved.json`. The read-only-resolved rule lives in the boot-core Standing Rules (single home). Output format, staleness detection, and run-level metadata are defined in `pref-resolve/start.md`.
 
 ---
 
@@ -97,7 +97,7 @@ Codex is authoritative over `.claude/`. Claude Code's native registration paths 
 
 Module-specific settings use `$ref` notation in `.codex/settings.json` to point to the module's own `settings.json`. This keeps platform config co-located with the module it configures.
 
-Do not write skill definitions, agent definitions, platform settings, or persistent state directly in `.claude/`.
+The never-write-`.claude/`-directly rule lives in the boot-core Standing Rules (single home); `.claude/` content changes by editing `.codex/` sources and rematerializing (cboot).
 
 ---
 

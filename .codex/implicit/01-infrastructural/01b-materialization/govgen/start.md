@@ -4,6 +4,7 @@ runtime: python
 reads:
   - "./sub-preamble.md"
   - "^/.codex/explicit/<module>/start.md"
+  - "<dispatch-root>/CLAUDE.md (root: true probe)"
 writes: []
 ---
 
@@ -19,8 +20,10 @@ The principle: all governance delivery is the output of one deterministic progra
 python govgen.py subagent --root <path> [--module <name>]
 ```
 
-- `--root` — the dispatch root: absolute path, or `^/`-prefixed (resolved against `CLAUDE_PROJECT_DIR`, falling back to cwd). Gravity and containment are emitted **resolved** — concrete paths, not `^` notation — so a blind subagent needs no resolution rules to comply.
-- `--module` — an explicit codex module name; its declared `reads:`/`writes:` frontmatter becomes an I/O contract block in the preamble.
+- `--root` — the dispatch root: absolute, `^/`-prefixed (resolved against `CLAUDE_PROJECT_DIR`, falling back to cwd), or cwd-relative. The filesystem root is refused; a root outside `CLAUDE_PROJECT_DIR` emits a warning but proceeds. Gravity and containment are emitted **resolved** — concrete paths, not `^` notation — so a blind subagent needs no resolution rules to comply.
+- `--module` — an explicit codex module name (contained to `.codex/explicit/` — separators and dot-leading names refused); its declared `reads:`/`writes:` frontmatter becomes an I/O contract block in the preamble.
+
+**Contract-entry grammar:** an entry's head token resolves by prefix (`./` module-relative, `^/` dispatch-root-relative; trailing slash preserved as a directory marker); any annotation after the first whitespace rides along verbatim; entries with neither prefix are emitted unresolved, labeled `as-declared:`. Scalar declarations are treated as one-item lists. **Emission is fail-closed:** content that would break the preamble frame (line breaks, sentinel-colliding text) is refused with exit 2, never escaped or trimmed.
 
 The dispatcher runs this at dispatch time and embeds the output in the Agent prompt. No round trip for the subagent; the caller controls arming, so compliance is checkable (see Verification).
 
@@ -37,11 +40,11 @@ Defined in `govgen.py` (`PROFILES` — data next to its tests, one diffable home
 
 ## Sentinel & versioning
 
-Output is framed by `=== GOV-PREAMBLE v<hash8> ===` … `=== END GOV-PREAMBLE v<hash8> ===`. The hash covers the template, the profile table, and `govgen.py` itself — any generator change mints a new version, making stale preambles detectable by inspection.
+Output is framed by `=== GOV-PREAMBLE v<hash8> ===` … `=== END GOV-PREAMBLE v<hash8> ===`. The hash covers the template, the profile table, and `govgen.py` itself — it versions the **generator**, not the per-dispatch payload: any generator change mints a new version, making stale preambles detectable by inspection. Per-dispatch content (root, module contract) is deliberately outside the hash — a contract edit in a module's `start.md` shows up in the emitted text, not the version.
 
 ## Verification (prototype tier)
 
-`subagent-conformance.sh` (SubagentStop) directs a post-dispatch check that the dispatch was armed with a `GOV-PREAMBLE` sentinel — warn-level, directive-layer. Mechanical pre-dispatch enforcement (a PreToolUse hook on the Agent tool) is deliberately deferred to the Phase B cutover, when hook registration moves from `cboot.py` hardcode into codex data; adding a 15th hook script before that would touch the hardcoded registry, the hook-count assertions (test-safe T13), and chooks in one step — too many variables for a prototype.
+`subagent-conformance.sh` (SubagentStop) carries the arming-check line, but SubagentStop stdout does not reach model context on this platform, so that channel is currently directive-dead at runtime ([[BL-29]], mileqa 2026-08-02) — arming discipline rides the dispatching protocols (mileqa / ask briefs) until then. Mechanical pre-dispatch enforcement (a PreToolUse hook on the Agent tool) is deliberately deferred to the Phase B cutover, when hook registration moves from `cboot.py` hardcode into codex data and BL-29's re-platforming (PostToolUse, whose stdout IS injected) lands with it; adding a 15th hook script before that would touch the hardcoded registry, the hook-count assertions (test-safe T13), and chooks in one step — too many variables for a prototype.
 
 ## Exit codes
 
@@ -53,7 +56,7 @@ Output is framed by `=== GOV-PREAMBLE v<hash8> ===` … `=== END GOV-PREAMBLE v<
 python tests/test_govgen.py
 ```
 
-Determinism, budget, root resolution (rooted / unrooted-warn / missing), contract-block resolution, frontmatter list parsing. Golden-per-profile snapshots join ctest at the build-time cutover.
+Determinism, budget ceiling AND the exit-3 overrun refusal, root resolution (rooted / unrooted-warn / missing / filesystem-root-refused), CLI `--module` end-to-end against the install codex, module-name containment (traversal/absolute/empty refused), sentinel-forgery refusal, contract-entry grammar (comments, symmetric quotes, flow lists, scalars, trailing slashes, annotations), exact exit codes. Bytecode writing is disabled (`writes: []` holds even under test). Golden-per-profile snapshots join ctest at the build-time cutover.
 
 ## Roadmap (Phase B, BL-15)
 

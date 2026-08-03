@@ -6,9 +6,14 @@ The dispatcher runs this at dispatch time and embeds the emitted preamble in
 the Agent prompt. Gravity and containment arrive RESOLVED (concrete paths),
 not semantic (`^` notation) — a blind subagent needs no resolution rules to
 comply. Deterministic: identical sources + arguments produce identical
-output; the sentinel version hash covers the template, the profile table,
-and this script, so any generator change mints a new version and stale
-preambles are detectable.
+output. The sentinel version hash covers the template, the profile table,
+and this script — it versions the GENERATOR, not the per-dispatch payload —
+so any generator change mints a new version and stale preambles are
+detectable; per-dispatch contract content is not hash-covered by design.
+
+Emission is fail-closed: content that would break the preamble frame (line
+breaks, sentinel-colliding text) or exceed the profile budget is refused
+loudly (exit 2 / exit 3), never trimmed or escaped silently.
 
 Usage:
     python govgen.py subagent --root <path> [--module <name>]
@@ -33,15 +38,49 @@ PROFILES = {
     "subagent": {"template": "sub-preamble.md", "budget": 2000},
 }
 
+_MODULE_NAME_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]*")
+
+
+def _die(msg: str, code: int):
+    print(f"govgen: {msg}", file=sys.stderr)
+    raise SystemExit(code)
+
 
 def _read(path: Path) -> str:
     return path.read_text(encoding="utf-8").lstrip("﻿")
 
 
+def _strip_comment(v: str) -> str:
+    """Drop a YAML inline comment (` #` outside quotes). Quote-aware."""
+    q = None
+    for i, ch in enumerate(v):
+        if q:
+            if ch == q:
+                q = None
+        elif ch in "\"'":
+            q = ch
+        elif ch == "#" and (i == 0 or v[i - 1] in " \t"):
+            return v[:i].rstrip()
+    return v.rstrip()
+
+
+def _unquote(v: str) -> str:
+    """Symmetric quote strip: only when the SAME quote wraps the whole value."""
+    if len(v) >= 2 and v[0] == v[-1] and v[0] in "\"'":
+        return v[1:-1]
+    return v
+
+
+def _scalar(v: str):
+    v = _unquote(_strip_comment(v).strip())
+    return {"true": True, "false": False}.get(v.lower(), v)
+
+
 def parse_frontmatter(text: str) -> dict:
-    """Flat `key: value` pairs plus block lists (`key:` followed by `- item`
-    lines). Values keep their quotes stripped; `true`/`false` become bools."""
-    if not text.startswith("---"):
+    """Flat `key: value` pairs, block lists (`- item` lines), and flow lists
+    (`key: [a, b]` / `key: []`). Inline comments stripped quote-aware;
+    quotes stripped only when symmetric."""
+    if not text or not text.startswith("---"):
         return {}
     m = re.search(r"(?m)^---[ \t]*$", text[3:])
     if not m:
@@ -50,66 +89,111 @@ def parse_frontmatter(text: str) -> dict:
     list_key = None
     for line in text[3:3 + m.start()].splitlines():
         item = re.match(r"\s*-\s+(.*)$", line)
-        if item and list_key:
-            fm[list_key].append(item.group(1).strip().strip('"').strip("'"))
+        if item and list_key is not None:
+            fm[list_key].append(_unquote(_strip_comment(item.group(1)).strip()))
             continue
         if ":" not in line:
             list_key = None
             continue
         key, _, value = line.partition(":")
-        key, value = key.strip(), value.strip().strip('"').strip("'")
+        key = key.strip()
+        value = _strip_comment(value.strip())
         if value == "":
             list_key = key
             fm[key] = []
+        elif value.startswith("[") and value.endswith("]"):
+            list_key = None
+            inner = value[1:-1].strip()
+            fm[key] = [_unquote(p.strip()) for p in inner.split(",") if p.strip()] if inner else []
         else:
             list_key = None
-            fm[key] = {"true": True, "false": False}.get(value.lower(), value)
+            fm[key] = _scalar(value)
     return fm
 
 
+def _payload_safe(s: str, what: str) -> str:
+    """Refuse content that would break the preamble frame. Fail-closed."""
+    if "\n" in s or "\r" in s:
+        _die(f"{what} contains a line break — refusing to emit", 2)
+    if "GOV-PREAMBLE" in s or s.lstrip().startswith("==="):
+        _die(f"{what} collides with the sentinel frame — refusing to emit", 2)
+    return s
+
+
 def resolve_root(arg: str) -> Path:
-    """Absolute path, or ^/-prefixed resolved against CLAUDE_PROJECT_DIR
-    (cwd fallback). Must be an existing directory."""
+    """Absolute path, ^/-prefixed (resolved against CLAUDE_PROJECT_DIR, cwd
+    fallback), or cwd-relative. Must be an existing directory; the
+    filesystem root is refused; a root outside CLAUDE_PROJECT_DIR warns."""
     if arg.startswith("^/"):
         base = os.environ.get("CLAUDE_PROJECT_DIR") or os.getcwd()
         root = (Path(base) / arg[2:]).resolve()
     else:
         root = Path(arg).resolve()
     if not root.is_dir():
-        print(f"govgen: root is not a directory: {root}", file=sys.stderr)
-        raise SystemExit(2)
+        _die(f"root is not a directory: {root}", 2)
+    if root == Path(root.anchor):
+        _die("the filesystem root is not a valid dispatch root", 2)
+    cpd = os.environ.get("CLAUDE_PROJECT_DIR")
+    if cpd:
+        try:
+            root.relative_to(Path(cpd).resolve())
+        except ValueError:
+            print(f"govgen: WARNING — root {root.as_posix()} lies outside "
+                  f"CLAUDE_PROJECT_DIR ({cpd}); fence emitted as given.", file=sys.stderr)
     return root
 
 
 def root_warning(root: Path) -> str | None:
     claude_md = root / "CLAUDE.md"
-    if claude_md.is_file():
-        fm = parse_frontmatter(_read(claude_md))
-        if fm.get("root") is True or fm.get("apex-root") is True:
-            return None
+    try:
+        if claude_md.is_file():
+            fm = parse_frontmatter(_read(claude_md))
+            if fm.get("root") is True or fm.get("apex-root") is True:
+                return None
+    except (OSError, UnicodeDecodeError) as exc:
+        return (f"govgen: WARNING — {claude_md.as_posix()} could not be read "
+                f"({type(exc).__name__}); treating root as undeclared.")
     return (f"govgen: WARNING — {root.as_posix()} has no root: true CLAUDE.md; "
             "the fence still applies, but `^` binding is dispatcher-declared only.")
 
 
+def _resolve_entry(entry: str, mod_dir: Path, root: Path) -> str:
+    """One declared I/O entry → resolved text. Head token resolves by prefix
+    convention (`./` module-relative, `^/` root-relative); a trailing slash
+    is preserved as a directory marker; any annotation after the first
+    whitespace rides along verbatim. Entries with neither prefix are emitted
+    unresolved, labeled as-declared."""
+    head, _, note = entry.partition(" ")
+    trail = "/" if head.endswith("/") and head not in ("./", "^/") else ""
+    if head in ("^", "^/"):
+        resolved = root.as_posix() + "/"
+    elif head.startswith("./"):
+        resolved = (mod_dir / head[2:]).as_posix() + trail
+    elif head.startswith("^/"):
+        resolved = (root / head[2:]).as_posix() + trail
+    else:
+        return f"as-declared: {entry}"
+    return resolved + (f" {note}" if note else "")
+
+
 def contract_block(codex_dir: Path, name: str, root: Path) -> str:
-    """I/O contract line from the module's declared reads:/writes: frontmatter.
-    `./` resolves to the module dir, `^/` to the dispatch root."""
+    """I/O contract line from the module's declared reads:/writes:
+    frontmatter. The module name is contained to .codex/explicit/ — path
+    separators and dot-leading names are refused."""
+    if not _MODULE_NAME_RE.fullmatch(name or ""):
+        _die(f"invalid module name: {name!r} (letters/digits/._- only, no separators)", 2)
     start_md = codex_dir / "explicit" / name / "start.md"
     if not start_md.is_file():
-        print(f"govgen: no such explicit module: {name} ({start_md})", file=sys.stderr)
-        raise SystemExit(2)
+        _die(f"no such explicit module: {name} ({start_md})", 2)
     fm = parse_frontmatter(_read(start_md))
+    mod_dir = start_md.parent
 
     def resolve(paths):
-        out = []
-        for p in paths if isinstance(paths, list) else []:
-            if p.startswith("./"):
-                out.append((start_md.parent / p[2:]).as_posix())
-            elif p.startswith("^/"):
-                out.append((root / p[2:]).as_posix())
-            else:
-                out.append(p)
-        return ", ".join(out) if out else "(none declared)"
+        if isinstance(paths, str):
+            paths = [paths]
+        entries = [_payload_safe(_resolve_entry(p, mod_dir, root), f"contract entry {p!r}")
+                   for p in (paths or []) if isinstance(p, str) and p.strip()]
+        return ", ".join(entries) if entries else "(none declared)"
 
     return (f"Module contract ({name}) — declared reads: {resolve(fm.get('reads'))}; "
             f"declared writes: {resolve(fm.get('writes'))}. "
@@ -131,16 +215,14 @@ def emit(profile_name: str, root: Path, module: str | None) -> str:
     contract = contract_block(codex_dir, module, root) if module else ""
     payload = template.format(
         version=version_hash(template),
-        root=root.as_posix(),
-        state_dir=(root / ".state").as_posix(),
+        root=_payload_safe(root.as_posix(), "root path"),
+        state_dir=_payload_safe((root / ".state").as_posix(), "state dir"),
         contract=contract,
     )
     size = len(payload.encode("utf-8"))
     if size > profile["budget"]:
-        print(f"govgen: payload {size} B exceeds '{profile_name}' budget "
-              f"{profile['budget']} B — refusing to emit (budget = admission test).",
-              file=sys.stderr)
-        raise SystemExit(3)
+        _die(f"payload {size} B exceeds '{profile_name}' budget {profile['budget']} B "
+             "— refusing to emit (budget = admission test).", 3)
     return payload
 
 
@@ -150,6 +232,8 @@ def main(argv=None) -> int:
     parser.add_argument("--root", required=True)
     parser.add_argument("--module", default=None)
     args = parser.parse_args(argv)
+    if args.module is not None and not args.module.strip():
+        _die("--module requires a non-empty name", 2)
 
     root = resolve_root(args.root)
     warning = root_warning(root)
