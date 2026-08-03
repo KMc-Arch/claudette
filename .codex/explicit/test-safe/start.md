@@ -11,7 +11,8 @@ reads:
   - "^/.templates/"
   - "^/cboot.py"
   - "^/.git/ (T52a only: config via its mandated git command; hook presence via Read)"
-  - "^/**/.codex/ and ^/**/.claude/ (child settings scans, T48a/T48b)"
+  - "^/**/.codex/ (child settings scans, T48a/T48b)"
+  - "^/**/.claude/ (child settings scans, T48a/T48b)"
   - "~/.claude/projects/ (EXTERNAL, read-only — T48 leak probe only)"
   - "EXTERNAL read-only probes by mandated machinery (T18/T48b/T52a): shutil.which PATH-dir stats, interpreter/script existence stats outside ^, git config effective-value read (may source ~/.gitconfig)"
 writes:
@@ -94,7 +95,7 @@ Condition: two sub-checks:
 2. frontmatter contains `codex:` key
 
 **T05a** — Child template does NOT carry boot-core or backstop
-Condition: `.templates/child/CLAUDE.md` contains none of: a `boot-core:` marker, the `=== BOOT INSTRUCTIONS ===` token, or the content canaries `Governance Primitives`, `ABSOLUTE HOLD`, `CONFIRMED HOLD`, `visibility-guard.sh`, `state-abstract.md` (one absence-canary per boot-core section, mirroring T02a's presence anchors — markerless copying of any section's content is the same defect). In-tree children receive governance via the ancestor walk; bundles get it materialized by `/bundle` step 4 — duplication into the template would double-deliver and drift.
+Condition: `.templates/child/CLAUDE.md` contains none of: a `boot-core:` marker, the `=== BOOT INSTRUCTIONS ===` token, or the content canaries `Governance Primitives`, `ABSOLUTE HOLD`, `CONFIRMED HOLD`, `visibility-guard.sh`, `state-abstract.md`, `default to the nearest`, ``Never write `.claude/` directly`` (one absence-canary per boot-core section, mirroring T02a's presence anchors — the State Gravity and Standing Rules canaries joined 2026-08-02 when T02a grew to five sections; markerless copying of any section's content is the same defect). In-tree children receive governance via the ancestor walk; bundles get it materialized by `/bundle` step 4 — duplication into the template would double-deliver and drift.
 
 **T06** — `.codex/start.md` exists and has `version:` in frontmatter
 Condition: file exists, frontmatter has `version` key

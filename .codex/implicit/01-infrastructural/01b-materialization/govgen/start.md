@@ -3,6 +3,7 @@ version: 1
 runtime: python
 reads:
   - "./sub-preamble.md"
+  - "./govgen.py (self-hash for the version sentinel)"
   - "^/.codex/explicit/<module>/start.md"
   - "<dispatch-root>/CLAUDE.md (root: true probe)"
 writes: []
@@ -23,7 +24,7 @@ python govgen.py subagent --root <path> [--module <name>]
 - `--root` — the dispatch root: absolute, `^/`-prefixed (resolved against `CLAUDE_PROJECT_DIR`, falling back to cwd), or cwd-relative. The filesystem root is refused; a root outside `CLAUDE_PROJECT_DIR` emits a warning but proceeds. Gravity and containment are emitted **resolved** — concrete paths, not `^` notation — so a blind subagent needs no resolution rules to comply.
 - `--module` — an explicit codex module name (contained to `.codex/explicit/` — separators and dot-leading names refused); its declared `reads:`/`writes:` frontmatter becomes an I/O contract block in the preamble.
 
-**Contract-entry grammar:** an entry's head token resolves by prefix (`./` module-relative, `^/` dispatch-root-relative; trailing slash preserved as a directory marker); any annotation after the first whitespace rides along verbatim; entries with neither prefix are emitted unresolved, labeled `as-declared:`. Scalar declarations are treated as one-item lists. **Emission is fail-closed:** content that would break the preamble frame (line breaks, sentinel-colliding text) is refused with exit 2, never escaped or trimmed.
+**Contract-entry grammar:** an entry's head token (split at the first whitespace of any kind) resolves by prefix — `./` module-relative, `^/` dispatch-root-relative, `^/^/` apex-relative (resolved against `CLAUDE_PROJECT_DIR`; emitted `as-declared:` when no apex is known); trailing slash preserved as a directory marker; `..` escapes of the containment base are refused (exit 2); annotations ride along with any `^` notation inside them resolved; entries with no prefix are emitted unresolved, labeled `as-declared:`. Scalar declarations are treated as one-item lists; non-string/list declaration types and unparseable frontmatter are refused. **Emission is fail-closed:** content that would break the preamble frame (line/paragraph separators incl. U+2028/U+2029/NEL/VT/FF, sentinel-colliding text) is refused with exit 2, never escaped or trimmed. Tests are hermetic (the suite scrubs `CLAUDE_PROJECT_DIR`; CPD behaviors are tested explicitly).
 
 The dispatcher runs this at dispatch time and embeds the output in the Agent prompt. No round trip for the subagent; the caller controls arming, so compliance is checkable (see Verification).
 

@@ -7,13 +7,13 @@ the Agent prompt. Gravity and containment arrive RESOLVED (concrete paths),
 not semantic (`^` notation) — a blind subagent needs no resolution rules to
 comply. Deterministic: identical sources + arguments produce identical
 output. The sentinel version hash covers the template, the profile table,
-and this script — it versions the GENERATOR, not the per-dispatch payload —
-so any generator change mints a new version and stale preambles are
-detectable; per-dispatch contract content is not hash-covered by design.
+and this script — it versions the GENERATOR, not the per-dispatch payload.
 
 Emission is fail-closed: content that would break the preamble frame (line
-breaks, sentinel-colliding text) or exceed the profile budget is refused
-loudly (exit 2 / exit 3), never trimmed or escaped silently.
+or paragraph separators, sentinel-colliding text), a contract entry that
+escapes its containment base, an unparseable module frontmatter, or a
+payload over the profile budget is refused loudly (exit 2 / exit 3), never
+trimmed, escaped, or silently degraded.
 
 Usage:
     python govgen.py subagent --root <path> [--module <name>]
@@ -39,6 +39,8 @@ PROFILES = {
 }
 
 _MODULE_NAME_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]*")
+# frame-breaking characters: LF, CR, VT, FF, NEL, LS, PS
+_BREAK_CHARS = "\n\r\x0b\x0c\x85  "
 
 
 def _die(msg: str, code: int):
@@ -50,18 +52,26 @@ def _read(path: Path) -> str:
     return path.read_text(encoding="utf-8").lstrip("﻿")
 
 
+def _apex() -> Path | None:
+    cpd = os.environ.get("CLAUDE_PROJECT_DIR")
+    return Path(cpd).resolve() if cpd else None
+
+
 def _strip_comment(v: str) -> str:
-    """Drop a YAML inline comment (` #` outside quotes). Quote-aware."""
-    q = None
-    for i, ch in enumerate(v):
-        if q:
-            if ch == q:
-                q = None
-        elif ch in "\"'":
-            q = ch
-        elif ch == "#" and (i == 0 or v[i - 1] in " \t"):
-            return v[:i].rstrip()
-    return v.rstrip()
+    """Drop a YAML inline comment. Quote-aware only when the value BEGINS
+    with a quote (YAML quoted-scalar shape); an interior apostrophe in a
+    plain scalar must not defeat comment stripping."""
+    v = v.rstrip()
+    if v and v[0] in "\"'":
+        q = v[0]
+        close = v.find(q, 1)
+        if close != -1:
+            rest = v[close + 1:]
+            cut = re.search(r"(^|[ \t])#", rest)
+            return (v[:close + 1] + (rest[:cut.start()] if cut else rest)).rstrip()
+        return v
+    cut = re.search(r"(^|[ \t])#", v)
+    return v[:cut.start()].rstrip() if cut else v
 
 
 def _unquote(v: str) -> str:
@@ -71,6 +81,26 @@ def _unquote(v: str) -> str:
     return v
 
 
+def _split_flow(inner: str) -> list[str]:
+    """Split flow-list innards on commas, quote-aware."""
+    parts, buf, q = [], [], None
+    for ch in inner:
+        if q:
+            buf.append(ch)
+            if ch == q:
+                q = None
+        elif ch in "\"'":
+            q = ch
+            buf.append(ch)
+        elif ch == ",":
+            parts.append("".join(buf))
+            buf = []
+        else:
+            buf.append(ch)
+    parts.append("".join(buf))
+    return [_unquote(p.strip()) for p in parts if p.strip()]
+
+
 def _scalar(v: str):
     v = _unquote(_strip_comment(v).strip())
     return {"true": True, "false": False}.get(v.lower(), v)
@@ -78,8 +108,8 @@ def _scalar(v: str):
 
 def parse_frontmatter(text: str) -> dict:
     """Flat `key: value` pairs, block lists (`- item` lines), and flow lists
-    (`key: [a, b]` / `key: []`). Inline comments stripped quote-aware;
-    quotes stripped only when symmetric."""
+    (`key: [a, b]` / `key: []`, quote-aware split). Inline comments stripped
+    (quote-aware for quoted scalars); quotes stripped only when symmetric."""
     if not text or not text.startswith("---"):
         return {}
     m = re.search(r"(?m)^---[ \t]*$", text[3:])
@@ -104,7 +134,7 @@ def parse_frontmatter(text: str) -> dict:
         elif value.startswith("[") and value.endswith("]"):
             list_key = None
             inner = value[1:-1].strip()
-            fm[key] = [_unquote(p.strip()) for p in inner.split(",") if p.strip()] if inner else []
+            fm[key] = _split_flow(inner) if inner else []
         else:
             list_key = None
             fm[key] = _scalar(value)
@@ -113,8 +143,8 @@ def parse_frontmatter(text: str) -> dict:
 
 def _payload_safe(s: str, what: str) -> str:
     """Refuse content that would break the preamble frame. Fail-closed."""
-    if "\n" in s or "\r" in s:
-        _die(f"{what} contains a line break — refusing to emit", 2)
+    if any(ch in s for ch in _BREAK_CHARS):
+        _die(f"{what} contains a line/paragraph separator — refusing to emit", 2)
     if "GOV-PREAMBLE" in s or s.lstrip().startswith("==="):
         _die(f"{what} collides with the sentinel frame — refusing to emit", 2)
     return s
@@ -122,8 +152,10 @@ def _payload_safe(s: str, what: str) -> str:
 
 def resolve_root(arg: str) -> Path:
     """Absolute path, ^/-prefixed (resolved against CLAUDE_PROJECT_DIR, cwd
-    fallback), or cwd-relative. Must be an existing directory; the
-    filesystem root is refused; a root outside CLAUDE_PROJECT_DIR warns."""
+    fallback), or cwd-relative. Empty/whitespace and the filesystem root are
+    refused; a root outside CLAUDE_PROJECT_DIR warns but proceeds."""
+    if not arg or not arg.strip():
+        _die("--root requires a non-empty path", 2)
     if arg.startswith("^/"):
         base = os.environ.get("CLAUDE_PROJECT_DIR") or os.getcwd()
         root = (Path(base) / arg[2:]).resolve()
@@ -133,13 +165,14 @@ def resolve_root(arg: str) -> Path:
         _die(f"root is not a directory: {root}", 2)
     if root == Path(root.anchor):
         _die("the filesystem root is not a valid dispatch root", 2)
-    cpd = os.environ.get("CLAUDE_PROJECT_DIR")
-    if cpd:
+    apex = _apex()
+    if apex is not None:
         try:
-            root.relative_to(Path(cpd).resolve())
+            root.relative_to(apex)
         except ValueError:
             print(f"govgen: WARNING — root {root.as_posix()} lies outside "
-                  f"CLAUDE_PROJECT_DIR ({cpd}); fence emitted as given.", file=sys.stderr)
+                  f"CLAUDE_PROJECT_DIR ({apex.as_posix()}); fence emitted as given.",
+                  file=sys.stderr)
     return root
 
 
@@ -157,46 +190,87 @@ def root_warning(root: Path) -> str | None:
             "the fence still applies, but `^` binding is dispatcher-declared only.")
 
 
-def _resolve_entry(entry: str, mod_dir: Path, root: Path) -> str:
-    """One declared I/O entry → resolved text. Head token resolves by prefix
-    convention (`./` module-relative, `^/` root-relative); a trailing slash
-    is preserved as a directory marker; any annotation after the first
-    whitespace rides along verbatim. Entries with neither prefix are emitted
+def _join_contained(base: Path, rest: str, entry: str) -> str:
+    """Join rest onto base, normalize, and refuse escapes — a contract entry
+    that resolves outside its containment base contradicts the fence and is
+    an authoring error, not something to launder into the payload."""
+    trail = "/" if (rest.endswith("/") or rest == "") else ""
+    joined = Path(os.path.normpath(str(base / rest))) if rest else base
+    try:
+        joined.relative_to(base)
+    except ValueError:
+        _die(f"contract entry {entry!r} escapes its containment base "
+             f"({base.as_posix()}) — refusing to emit", 2)
+    return joined.as_posix() + (trail if not joined.as_posix().endswith("/") else "")
+
+
+def _resolve_note(note: str, root: Path, apex: Path | None) -> str:
+    """Annotations ride along verbatim, except `^` notation inside them is
+    resolved so no semantic tokens reach a blind subagent."""
+    if apex is not None:
+        note = note.replace("^/^/", apex.as_posix() + "/").replace("^/^", apex.as_posix())
+    note = note.replace("^/", root.as_posix() + "/")
+    return note
+
+
+def _resolve_entry(entry: str, mod_dir: Path, root: Path, apex: Path | None) -> str:
+    """One declared I/O entry → resolved text. Head token (split at first
+    whitespace of any kind) resolves by prefix: `./` module-relative, `^/`
+    dispatch-root-relative, `^/^/` apex-relative (as-declared when no apex
+    is known); trailing slash preserved as a directory marker; `..` escapes
+    of the containment base are refused; annotations ride along with their
+    own `^` notation resolved. Entries with no prefix are emitted
     unresolved, labeled as-declared."""
-    head, _, note = entry.partition(" ")
-    trail = "/" if head.endswith("/") and head not in ("./", "^/") else ""
-    if head in ("^", "^/"):
+    parts = re.split(r"\s+", entry.strip(), maxsplit=1)
+    head, note = parts[0], (parts[1] if len(parts) > 1 else "")
+    if head in ("^/^", "^/^/") or head.startswith("^/^/"):
+        if apex is None:
+            return f"as-declared: {entry}"
+        resolved = _join_contained(apex, head[4:] if head.startswith("^/^/") else "", entry)
+    elif head in ("^", "^/"):
         resolved = root.as_posix() + "/"
-    elif head.startswith("./"):
-        resolved = (mod_dir / head[2:]).as_posix() + trail
     elif head.startswith("^/"):
-        resolved = (root / head[2:]).as_posix() + trail
+        resolved = _join_contained(root, head[2:], entry)
+    elif head == "./":
+        resolved = mod_dir.as_posix() + "/"
+    elif head.startswith("./"):
+        resolved = _join_contained(mod_dir, head[2:], entry)
     else:
         return f"as-declared: {entry}"
+    note = _resolve_note(note, root, apex) if note else ""
     return resolved + (f" {note}" if note else "")
 
 
-def contract_block(codex_dir: Path, name: str, root: Path) -> str:
+def contract_block(codex_dir: Path, name: str, root: Path, apex: Path | None = None) -> str:
     """I/O contract line from the module's declared reads:/writes:
-    frontmatter. The module name is contained to .codex/explicit/ — path
-    separators and dot-leading names are refused."""
+    frontmatter. Module name is contained to .codex/explicit/; unparseable
+    frontmatter and non-list/string declaration types are refused."""
     if not _MODULE_NAME_RE.fullmatch(name or ""):
         _die(f"invalid module name: {name!r} (letters/digits/._- only, no separators)", 2)
     start_md = codex_dir / "explicit" / name / "start.md"
     if not start_md.is_file():
         _die(f"no such explicit module: {name} ({start_md})", 2)
     fm = parse_frontmatter(_read(start_md))
+    if not fm:
+        _die(f"module {name}: frontmatter missing or unparseable — refusing to emit a contract", 2)
     mod_dir = start_md.parent
 
-    def resolve(paths):
-        if isinstance(paths, str):
+    def resolve(key):
+        paths = fm.get(key)
+        if paths is None:
+            paths = []
+        elif isinstance(paths, str):
             paths = [paths]
-        entries = [_payload_safe(_resolve_entry(p, mod_dir, root), f"contract entry {p!r}")
-                   for p in (paths or []) if isinstance(p, str) and p.strip()]
+        elif not isinstance(paths, list) or not all(isinstance(p, str) for p in paths):
+            _die(f"module {name}: '{key}:' has an unsupported declaration type "
+                 f"({type(paths).__name__}) — refusing to emit a contract", 2)
+        entries = [_payload_safe(_resolve_entry(p, mod_dir, root, apex), f"contract entry {p!r}")
+                   for p in paths if p.strip()]
         return ", ".join(entries) if entries else "(none declared)"
 
-    return (f"Module contract ({name}) — declared reads: {resolve(fm.get('reads'))}; "
-            f"declared writes: {resolve(fm.get('writes'))}. "
+    safe_name = _payload_safe(name, "module name")
+    return (f"Module contract ({safe_name}) — declared reads: {resolve('reads')}; "
+            f"declared writes: {resolve('writes')}. "
             "Writes outside the declaration violate the module contract.\n")
 
 
@@ -212,7 +286,7 @@ def emit(profile_name: str, root: Path, module: str | None) -> str:
     profile = PROFILES[profile_name]
     template = _read(MODULE_DIR / profile["template"])
     codex_dir = MODULE_DIR.parents[2].parent  # …/.codex
-    contract = contract_block(codex_dir, module, root) if module else ""
+    contract = contract_block(codex_dir, module, root, apex=_apex()) if module else ""
     payload = template.format(
         version=version_hash(template),
         root=_payload_safe(root.as_posix(), "root path"),

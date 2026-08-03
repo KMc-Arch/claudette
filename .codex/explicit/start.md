@@ -18,7 +18,7 @@ Every explicit entry should declare `short-desc:` in its `start.md` frontmatter 
 
 Claude Code's `.claude/skills/` directory contains generated shims — one-line redirects pointing back to these entries. The codex entry is authoritative; the shim is derived.
 
-Slash-command registration is handled by `codex-register` at boot. Do not write skill definitions directly in `.claude/skills/`.
+Slash-command registration is handled by `codex-register` at boot. The never-write-`.claude/`-directly rule lives in the boot-core Standing Rules (single home).
 
 ## Output Directories
 
