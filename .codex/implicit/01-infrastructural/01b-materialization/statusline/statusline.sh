@@ -18,6 +18,7 @@ C_RESET='\033[0m'
 C_GRAY='\033[38;5;245m'
 C_BAR_EMPTY='\033[38;5;238m'
 C_WARN='\033[38;5;208m'
+C_CAUTION='\033[38;5;220m'
 case "$COLOR" in
     orange)   C_ACCENT='\033[38;5;173m' ;;
     blue)     C_ACCENT='\033[38;5;74m' ;;
@@ -36,9 +37,89 @@ input=$(cat)
 # Extract model, directory, cwd, and effort
 model=$(echo "$input" | jq -r '.model.display_name // .model.id // "?"')
 cwd=$(echo "$input" | jq -r '.cwd // empty')
+project_dir=$(echo "$input" | jq -r '.workspace.project_dir // empty')
 effort=$(jq -r '.effortLevel // empty' ~/.claude/settings.json 2>/dev/null)
 thinking=$(jq -r '.alwaysThinkingEnabled // empty' ~/.claude/settings.json 2>/dev/null)
 dir=$(basename "$cwd" 2>/dev/null || echo "?")
+
+# --- Location: 🏠 launch dir, 📁 path relative to it ---
+# 📁 is ^-relative, where ^ is the session's own root (workspace.project_dir) —
+# the same anchor gravity-guard.sh and boot-inject.py resolve ^ to. Neither the
+# ^ nor ^/^ literal is printed; real folder names are.
+#
+# The nearest root: true ancestor is still resolved, but it colours 🏠 rather
+# than moving the path. Crossing into a child project is worth flagging; it is
+# not worth silently re-anchoring 📁 onto a root the guards don't share.
+_is_root() {
+    [[ -f "$1" ]] || return 1
+    # Frontmatter only: first --- fence to the next. A body mention doesn't count.
+    awk 'NR==1 { if ($0 !~ /^---[[:space:]]*$/) exit 1; next }
+         /^---[[:space:]]*$/ { exit }
+         { print }' "$1" 2>/dev/null |
+        grep -qE '^[[:space:]]*(apex-)?root[[:space:]]*:[[:space:]]*true[[:space:]]*$'
+}
+
+# Nearest root: true / apex-root: true ancestor, inclusive of the start dir.
+_nearest_root() {
+    local d="$1" p
+    [[ -n "$d" ]] || return 1
+    for ((i=0; i<12; i++)); do
+        _is_root "$d/CLAUDE.md" && { echo "$d"; return 0; }
+        p=$(dirname "$d")
+        [[ "$p" == "$d" ]] && break
+        d="$p"
+    done
+    return 1
+}
+
+# Middle-truncate a path so the bar doesn't wrap, keeping both informative ends.
+_elide() {
+    local p="$1"
+    if [[ ${#p} -gt 32 && "$p" == */* ]]; then
+        echo "${p%%/*}/…/${p##*/}"
+    else
+        echo "$p"
+    fi
+}
+
+launch_label=""
+launch_plain=""
+if [[ -n "$cwd" ]]; then
+    # ^ for display purposes: the session root, falling back to the nearest
+    # declared root and finally to cwd itself.
+    launch_dir="$project_dir"
+    [[ -z "$launch_dir" ]] && launch_dir=$(_nearest_root "$cwd")
+    [[ -z "$launch_dir" ]] && launch_dir="$cwd"
+
+    launch_name=$(basename "$launch_dir")
+    launch_plain="🏠${launch_name}"
+    nearest=$(_nearest_root "$cwd")
+
+    if [[ "$cwd" == "$launch_dir" ]]; then
+        launch_label="🏠${launch_name}"
+        dir="$launch_name"
+    elif [[ "$cwd" == "$launch_dir"/* ]]; then
+        dir=$(_elide "${cwd#"$launch_dir"/}")
+        if [[ -n "$nearest" && "$nearest" != "$launch_dir" ]]; then
+            # Inside ^ but past a root: true boundary — a child project
+            launch_label="${C_CAUTION}🏠${launch_name}${C_GRAY}"
+        else
+            launch_label="🏠${launch_name}"
+        fi
+    else
+        # Left ^ entirely: 📁 now names a folder in another project, so anchor
+        # it on whatever root cwd actually sits under
+        launch_label="${C_WARN}🏠${launch_name}${C_GRAY}"
+        if [[ -n "$nearest" ]]; then
+            nearest_name=$(basename "$nearest")
+            if [[ "$cwd" == "$nearest" ]]; then
+                dir="$nearest_name"
+            else
+                dir=$(_elide "${nearest_name}/${cwd#"$nearest"/}")
+            fi
+        fi
+    fi
+fi
 
 # --- Project context from ProjectMetaBase.db ---
 project_info=""
@@ -250,7 +331,9 @@ else
     thinking_label=" ${C_GRAY}💭off"
 fi
 
-output="${C_ACCENT}${model}${effort_label}${thinking_label}${C_GRAY} | 📁${dir}"
+output="${C_ACCENT}${model}${effort_label}${thinking_label}${C_GRAY}"
+[[ -n "$launch_label" ]] && output+=" | ${launch_label}"
+[[ -n "$dir" ]] && output+=" | 📁${dir}"
 [[ -n "$project_info" ]] && output+=" | ${project_info}"
 [[ -n "$branch" ]] && output+=" | 🔀${branch} ${git_status}"
 output+=" | ${ctx}${C_RESET}"
@@ -259,7 +342,9 @@ printf '%b\n' "$output"
 
 # --- Last user message ---
 if [[ -n "$transcript_path" && -f "$transcript_path" ]]; then
-    plain_output="${model} | ${dir}"
+    plain_output="${model}"
+    [[ -n "$launch_plain" ]] && plain_output+=" | ${launch_plain}"
+    [[ -n "$dir" ]] && plain_output+=" | ${dir}"
     [[ -n "$project_info" ]] && plain_output+=" | ${project_id} [xxxxxxx]"
     [[ -n "$branch" ]] && plain_output+=" | ${branch} ${git_status}"
     plain_output+=" | xxxxxxxxxx ${pct}% of ${max_k}k tokens"
