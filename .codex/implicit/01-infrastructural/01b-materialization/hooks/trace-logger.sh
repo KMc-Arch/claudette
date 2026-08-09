@@ -14,10 +14,14 @@
 INPUT=$(cat)
 
 # Single-pass field extraction via bash builtin regex — no grep/tr subprocesses.
+# The value class excludes newline ([^"\n], via $'...') so a crafted payload with
+# a literal newline inside a value cannot forge extra trace lines — this matches
+# the per-line semantics of the retired grep pipeline (bash =~ would otherwise let
+# [^"]* span newlines).
 TOOL_NAME=""
 FILE_PATH=""
-re_tool='"tool_name"[[:space:]]*:[[:space:]]*"([^"]*)"'
-re_path='"file_path"[[:space:]]*:[[:space:]]*"([^"]*)"'
+re_tool=$'"tool_name"[[:space:]]*:[[:space:]]*"([^"\n]*)"'
+re_path=$'"file_path"[[:space:]]*:[[:space:]]*"([^"\n]*)"'
 [[ $INPUT =~ $re_tool ]] && TOOL_NAME="${BASH_REMATCH[1]}"
 [[ $INPUT =~ $re_path ]] && FILE_PATH="${BASH_REMATCH[1]}"
 
