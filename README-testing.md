@@ -47,14 +47,13 @@ python chooks.py --project-root /path/to/project
 
 Feeds mock tool-call JSON to each hook script via stdin and validates exit codes and stdout/stderr. Tests that hooks correctly allow or block specific operations.
 
-**13 hooks tested, ~45 individual test cases:**
+**12 hooks tested, ~45 individual test cases:**
 
 | Hook | Test IDs | Key Behaviors Tested |
 |------|----------|---------------------|
 | visibility-guard.sh | VG01-VG05 | Blocks `_`-prefixed paths, allows normal paths, catches nested underscore segments |
 | containment-guard.sh | CG01-CG04 | Blocks writes outside project root, allows inside, handles relative paths |
 | gravity-guard.sh | GG01-GG03 | Blocks `.state/` writes to parent project, allows local state writes |
-| api-guard.sh | AG01-AG05 | Blocks pip install anthropic, import anthropic, curl to api.anthropic.com |
 | audit-immutability-guard.sh | AI01-AI03 | Blocks edits to existing audit findings, allows decisions.md and non-audit writes |
 | claude-md-immutability-guard.sh | CM01-CM03 | Blocks root CLAUDE.md edits, allows child CLAUDE.md and other files |
 | boot-inject.py | BI01-BI03 | Outputs boot instructions with command index |
@@ -129,7 +128,7 @@ See [README-commands.md](README-commands.md) for the detailed phase breakdown.
 
 | Failure | Likely Cause | Fix |
 |---------|-------------|-----|
-| Script not found | Hook script missing from hooks directory | Verify `.codex/implicit/01-infrastructural/01b-materialization/hooks/` contains all 14 hook scripts (13 `.sh` + `boot-inject.py`) |
+| Script not found | Hook script missing from hooks directory | Verify `.codex/implicit/01-infrastructural/01b-materialization/hooks/` contains all 13 hook scripts (12 `.sh` + `boot-inject.py`) |
 | Wrong exit code | Hook logic error or Bash compatibility issue | Read the hook script, check for platform-specific issues (Windows line endings, path separators) |
 | COV1 -- untested hooks | New hook added without tests | Add test functions in chooks.py with `@register_test("hook-name.sh")` |
 

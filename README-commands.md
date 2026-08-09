@@ -12,7 +12,7 @@ test-safe
 
 **What it checks:**
 - Boot chain and structure (CLAUDE.md, codex, state)
-- All 14 hook scripts exist and are registered
+- All 13 hook scripts exist and are registered
 - Hook matcher coverage (visibility-guard covers all 6 tool types, etc.)
 - All 18 command folders exist with start.md manifests
 - Reactive and reflexive modules present

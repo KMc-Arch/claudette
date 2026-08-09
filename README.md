@@ -6,7 +6,7 @@ Claudette is a governance framework for Claude Code. It replaces hand-managed CL
 
 Claude Code ships hooks, CLAUDE.md hierarchy, skills, and commands -- but no pre-built governance. Claudette assembles these primitives into a tested system:
 
-**Structural enforcement.** 14 hook scripts execute at the tool-call level and block violations before Claude acts -- file containment, visibility guards, state gravity between parent/child projects, API access restrictions, audit immutability. Shell-level gates, not directives.
+**Structural enforcement.** 13 hook scripts execute at the tool-call level and block violations before Claude acts -- file containment, visibility guards, state gravity between parent/child projects, audit immutability, remote-push limits. Shell-level gates, not directives.
 
 **Persistent state.** Memory, work tracking (backlog, architecture debt, boundary gaps), session traces, and structured pause/unpause. All in `.state/`, persisted in your project across sessions.
 
@@ -82,14 +82,13 @@ The next day, start a new session and say "unpause" -- Claude reads the pause fi
 
 See [README-commands.md](README-commands.md) for detailed usage, parameters, and workflow examples.
 
-### 14 enforcement hooks
+### 13 enforcement hooks
 
 | Hook | What It Blocks |
 |------|---------------|
 | `visibility-guard` | Reading or writing `_`-prefixed (invisible) items |
 | `containment-guard` | Writing files outside the project root |
 | `gravity-guard` | Writing to `.state/` in a parent project |
-| `api-guard` | Bash commands referencing the Anthropic API |
 | `remote-guard` | Pushes to main/master, force-pushes, direct GitHub API access |
 | `audit-immutability-guard` | Modifying existing audit records |
 | `claude-md-immutability-guard` | Editing the root CLAUDE.md |
@@ -101,7 +100,7 @@ See [README-commands.md](README-commands.md) for detailed usage, parameters, and
 | `session-close` | _(not a guard)_ Prompts end-of-session governance tasks |
 | `subagent-conformance` | _(not a guard)_ Checks sub-agent output on completion |
 
-Hook behavior is tested in `chooks.py` — 13 of the 14 hooks are covered; `remote-guard.sh` tests are tracked in BL-24. See [README-testing.md](README-testing.md).
+Hook behavior is tested in `chooks.py` — 12 of the 13 hooks are covered; `remote-guard.sh` tests are tracked in BL-24. See [README-testing.md](README-testing.md).
 
 ## Git Model
 
