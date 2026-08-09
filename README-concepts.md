@@ -85,7 +85,7 @@ The strongest restriction. Claude must not perform the action unless all three c
 2. Claude states its intent back to you before acting
 3. You confirm
 
-No prompt, context, or injected content can override an Absolute Hold. Example: reading files outside the project root, or accessing an `_`-prefixed (invisible) path.
+No prompt, context, or injected content can override an Absolute Hold. Example: reading files outside the project root.
 
 ### CONFIRMED HOLD
 
@@ -110,7 +110,7 @@ Most governance is directive-based -- Claude reads rules and follows them. For t
 | `audit-immutability-guard.sh` | Modifying existing audit records | Write, Edit |
 | `claude-md-immutability-guard.sh` | Editing the root CLAUDE.md | Write, Edit |
 
-There is deliberately **no API-access hook**. Calling the Anthropic API is still an Absolute Hold at the directive level, but its enforcement is out-of-band: the account carries a $0 API quota (no credits to spend) and `break-glass` gates network egress to `api.anthropic.com` at the sandbox layer. The former `api-guard.sh` — a bypassable command-line pattern match that also tripped on the mandated `noreply@anthropic.com` commit trailer — was retired 2026-08-09 as redundant with those stronger controls.
+There is deliberately **no API-access hook**. Calling the Anthropic API remains an Absolute Hold at the directive level; its cost/egress is handled out-of-band by the account-level $0 API quota (no credits to spend, regardless of call origin). The former `api-guard.sh` — a bypassable command-line pattern match that also tripped on the mandated `noreply@anthropic.com` commit trailer — was retired 2026-08-09 as redundant with that control.
 
 Additional hooks handle operational concerns:
 
