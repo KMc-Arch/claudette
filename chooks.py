@@ -475,6 +475,87 @@ def test_trace_logger_writes_trace(t: HookTestRunner):
         t.fail("TL02", "Trace entry written", "Not found in trace file")
 
 
+@register_test("trace-logger.sh")
+def test_trace_logger_read_line_format(t: HookTestRunner):
+    # BL-32 format-preservation: a Read call must emit exactly
+    # "[<ISO8601-utc>] TOOL: Read <path> (<N>b)" with N == payload length as
+    # read by $(cat) (trailing newlines stripped). Isolated temp root so the
+    # line is read back exactly and N is deterministic.
+    import re, tempfile, shutil
+    sandbox = Path(tempfile.mkdtemp(prefix="tl-fmt-")).resolve()
+    try:
+        payload = make_tool_json("Read", file_path="/x/foo.md")
+        t.run_hook("trace-logger.sh", payload,
+                   env_overrides={"CLAUDE_PROJECT_DIR": str(sandbox)})
+        # Read the single trace file from the fresh temp dir — avoids a
+        # UTC-midnight rollover race between the hook's clock and the test's.
+        tdir = sandbox / ".state" / "traces"
+        tfiles = list(tdir.glob("*.trace")) if tdir.exists() else []
+        line = tfiles[0].read_text(encoding="utf-8").rstrip("\n") if len(tfiles) == 1 else ""
+        m = re.match(
+            r"^\[\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\] TOOL: Read /x/foo\.md \((\d+)b\)$",
+            line)
+        if m and int(m.group(1)) == len(payload):
+            t.ok("TL03", "Read trace line matches exact format + byte-size")
+        else:
+            t.fail("TL03", "Read trace line exact format",
+                   f"expected N={len(payload)}, got: {line!r}")
+    finally:
+        shutil.rmtree(sandbox, ignore_errors=True)
+
+
+@register_test("trace-logger.sh")
+def test_trace_logger_no_file_path(t: HookTestRunner):
+    # A tool call without file_path emits "...TOOL: <name> (<N>b)" — no path.
+    import re, tempfile, shutil
+    sandbox = Path(tempfile.mkdtemp(prefix="tl-nofp-")).resolve()
+    try:
+        payload = bash_tool("echo hello")
+        t.run_hook("trace-logger.sh", payload,
+                   env_overrides={"CLAUDE_PROJECT_DIR": str(sandbox)})
+        # Read the single trace file from the fresh temp dir — avoids a
+        # UTC-midnight rollover race between the hook's clock and the test's.
+        tdir = sandbox / ".state" / "traces"
+        tfiles = list(tdir.glob("*.trace")) if tdir.exists() else []
+        line = tfiles[0].read_text(encoding="utf-8").rstrip("\n") if len(tfiles) == 1 else ""
+        m = re.match(
+            r"^\[\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\] TOOL: Bash \((\d+)b\)$", line)
+        if m and int(m.group(1)) == len(payload):
+            t.ok("TL04", "No-file_path trace line matches exact format")
+        else:
+            t.fail("TL04", "No-file_path trace line exact format",
+                   f"expected N={len(payload)}, got: {line!r}")
+    finally:
+        shutil.rmtree(sandbox, ignore_errors=True)
+
+
+@register_test("trace-logger.sh")
+def test_trace_logger_single_line_on_nested_keys(t: HookTestRunner):
+    # BL-32 regression guard: a tool_response OBJECT with UNescaped nested
+    # "tool_name"/"file_path" keys must yield exactly ONE clean line using the
+    # envelope's values (first match). The retired 4x-grep pipeline concatenated
+    # every match with embedded newlines, splitting one entry across lines.
+    import tempfile, shutil
+    sandbox = Path(tempfile.mkdtemp(prefix="tl-nest-")).resolve()
+    try:
+        payload = ('{"tool_name":"Read","tool_input":{"file_path":"/real/path"},'
+                   '"tool_response":{"tool_name":"NESTED","file_path":"/nested/path"}}')
+        t.run_hook("trace-logger.sh", payload,
+                   env_overrides={"CLAUDE_PROJECT_DIR": str(sandbox)})
+        tdir = sandbox / ".state" / "traces"
+        tfiles = list(tdir.glob("*.trace")) if tdir.exists() else []
+        content = tfiles[0].read_text(encoding="utf-8") if len(tfiles) == 1 else ""
+        lines = [ln for ln in content.split("\n") if ln]
+        expected_suffix = f"TOOL: Read /real/path ({len(payload)}b)"
+        if len(lines) == 1 and lines[0].endswith(expected_suffix):
+            t.ok("TL05", "Nested unescaped keys -> one clean line (first match)")
+        else:
+            t.fail("TL05", "Nested keys single-line",
+                   f"lines={len(lines)} content={content!r}")
+    finally:
+        shutil.rmtree(sandbox, ignore_errors=True)
+
+
 # -- session-close.sh --
 
 @register_test("session-close.sh")
