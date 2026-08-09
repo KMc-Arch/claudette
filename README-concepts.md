@@ -110,7 +110,7 @@ Most governance is directive-based -- Claude reads rules and follows them. For t
 | `audit-immutability-guard.sh` | Modifying existing audit records | Write, Edit |
 | `claude-md-immutability-guard.sh` | Editing the root CLAUDE.md | Write, Edit |
 
-There is deliberately **no API-access hook**. Calling the Anthropic API remains an Absolute Hold at the directive level; its cost/egress is handled out-of-band by the account-level $0 API quota (no credits to spend, regardless of call origin). The former `api-guard.sh` — a bypassable command-line pattern match that also tripped on the mandated `noreply@anthropic.com` commit trailer — was retired 2026-08-09 as redundant with that control.
+There is deliberately **no API-access hook and no directive-level hold**. API cost and egress are governed out-of-band by the account-level **$0 API quota**: with no credits to spend, an API call fails regardless of call origin. This is an *admin* control — a legitimately authorized use is enabled by raising the quota, not by editing the repo — which is why it is preferred over a hard in-repo directive that would kneecap valid authorization. The former `api-guard.sh` — a bypassable command-line pattern match that also tripped on the mandated `noreply@anthropic.com` commit trailer — was retired 2026-08-09 in favor of that single, cleaner control.
 
 Additional hooks handle operational concerns:
 
