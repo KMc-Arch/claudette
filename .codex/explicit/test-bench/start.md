@@ -36,7 +36,7 @@ Report the results, then remind:
 > - **CT-1 thru CT-4**: Containment boundary (can child write outside its root?)
 > - **SG-1, SG-2**: State gravity (do .state/ writes stay local?)
 > - **BR-1, BR-2**: Boot resolution (does codex inheritance work?)
-> - **HE-1 thru HE-4**: Hook enforcement (API, visibility, immutability guards)
+> - **HE-2 thru HE-4**: Hook enforcement (visibility, immutability guards) — HE-1 (API guard) retired 2026-08-09
 > - **TL-1**: Trace locality (do traces stay in child's .state/traces/?)
 > - **SL-1**: StatusLine renders in child session
 >

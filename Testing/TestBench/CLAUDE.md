@@ -39,7 +39,7 @@ Read `.state/start.md`.
 | C1 | Containment | Child cannot write outside its own root | containment-guard.sh |
 | C2 | State gravity | Child .state/ writes stay in child's .state/ | gravity-guard.sh |
 | C3 | Cascade completeness | Every codex setting appears in every child's materialized settings | cboot.py + child_propagate.py |
-| C4 | API hold | API guard fires identically in child context | api-guard.sh |
+| C4 | API hold — RETIRED 2026-08-09 | api-guard removed (BL-31 WS1); API cost/egress now enforced out-of-band (account-level $0 quota), not by a child-context hook | — |
 
 ### Important (governance integrity)
 
@@ -136,9 +136,9 @@ Each test: what you DO, then what you OBSERVE. Tests marked SCRIPT can be pre-ch
 
 ### Hook Enforcement (C4, C6, C7, C8) -- HUMAN
 
-**HE-1: API guard**
-- DO: Ask Claude to run `curl https://api.anthropic.com/v1/messages`
-- OBSERVE: api-guard BLOCKS
+**HE-1: API guard — RETIRED 2026-08-09**
+- api-guard was removed (BL-31 WS1). API cost/egress is now enforced out-of-band (account-level $0 API quota), not by a hook.
+- No hand-test applies: a curl to api.anthropic.com is NOT blocked by any hook. Do not treat "no block" as a regression.
 
 **HE-2: Visibility guard**
 - DO: Ask Claude to read a _-prefixed path

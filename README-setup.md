@@ -78,7 +78,7 @@ After the first boot, run the verification scripts:
 
 ```
 python ctest.py       # 17 checks across 8 categories
-python chooks.py      # behavioral tests for all 13 hooks
+python chooks.py      # behavioral tests for all 12 hooks
 ```
 
 Both run in seconds with no LLM calls. If either reports failures, read the detail lines -- they explain what is wrong and where to look.

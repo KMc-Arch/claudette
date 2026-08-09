@@ -1,6 +1,6 @@
 ---
 version: 6
-short-desc: Read-only structural validation (77 checks, safe anytime)
+short-desc: Read-only structural validation (76 checks, safe anytime)
 reads:
   - "^/.codex/"
   - "^/.state/"
@@ -41,7 +41,7 @@ Print results as they complete. Passing tests without sub-conditions get one lin
        [PASS] Negative: no leakage to default external location for this project
 
 ═══════════════════════════════════════
-  RESULTS: 74/77 passed, 1 failed, 1 warn, 1 skip
+  RESULTS: 73/76 passed, 1 failed, 1 warn, 1 skip
 ═══════════════════════════════════════
 ```
 
@@ -131,12 +131,12 @@ Condition: all three files exist
 
 ### Category C: Hooks
 
-**T13** — All 14 hook scripts exist
+**T13** — All 13 hook scripts exist
 Condition: these files exist in `.codex/implicit/01-infrastructural/01b-materialization/hooks/`:
-`boot-inject.py`, `prefs-staleness-check.sh`, `memory-redirect-check.sh`, `visibility-guard.sh`, `containment-guard.sh`, `gravity-guard.sh`, `api-guard.sh`, `remote-guard.sh`, `audit-immutability-guard.sh`, `claude-md-immutability-guard.sh`, `codex-edit-notify.sh`, `trace-logger.sh`, `session-close.sh`, `subagent-conformance.sh`
+`boot-inject.py`, `prefs-staleness-check.sh`, `memory-redirect-check.sh`, `visibility-guard.sh`, `containment-guard.sh`, `gravity-guard.sh`, `remote-guard.sh`, `audit-immutability-guard.sh`, `claude-md-immutability-guard.sh`, `codex-edit-notify.sh`, `trace-logger.sh`, `session-close.sh`, `subagent-conformance.sh`
 
 **T14** — Hook registration is bidirectionally complete
-Condition: two sub-checks (dynamic — a 15th script added to `hooks/` must not land invisible):
+Condition: two sub-checks (dynamic — a 14th script added to `hooks/` must not land invisible):
 1. Every script filename from T13 appears in a `"command"` value somewhere in the hooks section of `.claude/settings.json`
 2. Every `*.sh` and `*.py` file directly in the `hooks/` directory (exclude `__pycache__/`) appears in a `"command"` value — no unregistered stragglers; other file types are out of scope
 
@@ -149,10 +149,7 @@ Condition: in `.claude/settings.json`, `visibility-guard.sh` appears in matchers
 **T16** — `containment-guard.sh` and `gravity-guard.sh` match `Write|Edit`
 Condition: both scripts appear in a PreToolUse entry with matcher containing `Write` and `Edit`
 
-**T17** — `api-guard.sh` matches `Bash`
-Condition: appears in a PreToolUse entry with matcher containing `Bash`
-
-**T17a** — `remote-guard.sh` matches `Bash`
+**T17** — `remote-guard.sh` matches `Bash`
 Condition: appears in a PreToolUse entry with matcher containing `Bash` (structural binding only; behavioral push-block coverage remains BL-24 / chooks territory)
 
 **T18** — Every hook and statusLine command path in `.claude/settings.json` points to a file that exists

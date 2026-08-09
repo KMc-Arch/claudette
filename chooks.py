@@ -56,7 +56,6 @@ BASH_PATH = resolve_bash()
 # ── Canonical hook list (must match cboot.py and hooks/start.md) ─────
 
 HOOK_SCRIPTS = [
-    "api-guard.sh",
     "audit-immutability-guard.sh",
     "boot-inject.py",
     "claude-md-immutability-guard.sh",
@@ -285,34 +284,6 @@ def test_gravity_allows_local_state_write(t: HookTestRunner):
 def test_gravity_allows_non_state_write(t: HookTestRunner):
     code, out, err = t.run_hook("gravity-guard.sh", write_tool(str(t.root / "README.md")))
     t.assert_exit("GG03", "Allows non-.state/ write (not its concern)", code, 0, err)
-
-
-# -- api-guard.sh --
-
-@register_test("api-guard.sh")
-def test_api_blocks_anthropic_import(t: HookTestRunner):
-    code, out, err = t.run_hook("api-guard.sh", bash_tool("pip install anthropic"))
-    t.assert_exit("AG01", "Blocks pip install anthropic", code, 2, err)
-
-@register_test("api-guard.sh")
-def test_api_blocks_sdk_reference(t: HookTestRunner):
-    code, out, err = t.run_hook("api-guard.sh", bash_tool("python -c 'import anthropic'"))
-    t.assert_exit("AG02", "Blocks python import anthropic", code, 2, err)
-
-@register_test("api-guard.sh")
-def test_api_blocks_api_url(t: HookTestRunner):
-    code, out, err = t.run_hook("api-guard.sh", bash_tool("curl https://api.anthropic.com/v1/messages"))
-    t.assert_exit("AG03", "Blocks curl to api.anthropic.com", code, 2, err)
-
-@register_test("api-guard.sh")
-def test_api_allows_normal_bash(t: HookTestRunner):
-    code, out, err = t.run_hook("api-guard.sh", bash_tool("ls -la"))
-    t.assert_exit("AG04", "Allows normal bash command", code, 0, err)
-
-@register_test("api-guard.sh")
-def test_api_allows_no_command(t: HookTestRunner):
-    code, out, err = t.run_hook("api-guard.sh", make_tool_json(tool_name="Bash"))
-    t.assert_exit("AG05", "Allows tool call without command field", code, 0, err)
 
 
 # -- audit-immutability-guard.sh --

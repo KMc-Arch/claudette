@@ -224,7 +224,7 @@ Each boundary should have at least two defense layers. Single-layer boundaries a
 | Push | — | scrub protocol | `scrub/hooks/pre-push` (fail-closed, BDRY-03 done) + `remote-guard.sh` (blocks main pushes, force-pushes, GitHub API writes) | `core.hooksPath` |
 | Backup / copy-out | — | `/backup` protocol | `exclude_files` (credential class, `scrub-*.md`) | `.state/backup.json` |
 | Visibility | `_` naming | CLAUDE.md directive | `visibility-guard.sh` | `.gitignore` |
-| Access | — | ABSOLUTE HOLD | `api-guard.sh` (pattern-based) | — |
+| Access (API) | — | — (out-of-band only) | — (`api-guard.sh` retired 2026-08-09) | account-level $0 API quota — admin-set (raise to authorize) |
 | Session | — | persistence rules | `session-close.sh` | `.claude/` gitignored |
 | Instance | classification | — | — | — (env assumption, BDRY-02) |
 | Project | — | path containment + state gravity | `containment-guard.sh` + `gravity-guard.sh` | `root: true` scoping |
