@@ -24,7 +24,30 @@ fi
 
 # Normalize path (resolve .. etc)
 FILE_PATH=$(realpath -m "$FILE_PATH" 2>/dev/null || echo "$FILE_PATH")
-PROJECT_ROOT=$(realpath -m "$CLAUDE_PROJECT_DIR" 2>/dev/null || echo "$CLAUDE_PROJECT_DIR")
+
+# Resolve ^ the way frontmatter.md does: nearest ancestor (inclusive) of the
+# launch dir whose CLAUDE.md frontmatter declares root: true / apex-root: true.
+# MUST stay in lockstep with the ^ algorithm in 01a-resolution/frontmatter.md and
+# with gravity-guard.sh (shared scenarios: tests/test_guards_walkup.sh).
+# Fall back to the raw launch dir if no root is found — never regress below the
+# prior behavior.
+resolve_root() {
+    local dir; dir=$(realpath -m "$1" 2>/dev/null || echo "$1")
+    while :; do
+        if [ -f "$dir/CLAUDE.md" ] && awk '
+            /^---[[:space:]]*$/ { n++; next }
+            n==1 && /^(apex-)?root:[[:space:]]*true[[:space:]]*$/ { found=1 }
+            n>=2 { exit }
+            END { exit !found }' "$dir/CLAUDE.md"; then
+            printf '%s\n' "$dir"; return 0
+        fi
+        [ "$dir" = "/" ] && return 1
+        dir=$(dirname "$dir")
+    done
+}
+
+PROJECT_ROOT=$(resolve_root "$CLAUDE_PROJECT_DIR") \
+    || PROJECT_ROOT=$(realpath -m "$CLAUDE_PROJECT_DIR" 2>/dev/null || echo "$CLAUDE_PROJECT_DIR")
 
 # Check if path is within project root
 case "$FILE_PATH" in
