@@ -26,7 +26,7 @@ The codex is the shareable behavior layer of a claudette2 instance. Everything p
 
 ## State Gravity
 
-All `.state/` reads and writes default to the nearest `root: true` context — the current working folder's `.state/`. Deviations require the user to explicitly provide a path using `^` or `^/^` notation.
+All `.state/` reads and writes default to the nearest `root: true` context — the session root's `.state/`, resolved from the launch directory (not live CWD; see `^` resolution). Deviations require the user to explicitly provide a path using `^` or `^/^` notation.
 
 - Path containment is the fence (don't go outside `^`). State gravity is the default (default to here, not up).
 - A child project session writing to `^/^/.state/` without explicit user path notation is a violation.
