@@ -12,7 +12,7 @@ Frontmatter declares what the document **is**; the body declares what to **do**.
 
 ### Algorithm
 
-1. Start at the current working directory.
+1. Start at the session's launch directory (`$CLAUDE_PROJECT_DIR`), captured once at session start. Do not re-derive from the live working directory, which may change during the session.
 2. Look for `CLAUDE.md` in the current directory.
 3. If found, parse its YAML frontmatter.
 4. If frontmatter contains `root: true` (or `apex-root: true`, which implies `root: true`), this directory is `^`.

@@ -1,6 +1,6 @@
 # State Gravity
 
-All `.state/` reads and writes default to the nearest `root: true` context — the current working folder's `.state/`. Deviations require the user to explicitly provide a path using `^` or `^/^` notation.
+All `.state/` reads and writes default to the nearest `root: true` context — the session root's `.state/`, resolved from the launch directory (not live CWD; see `^` resolution). Deviations require the user to explicitly provide a path using `^` or `^/^` notation.
 
 ---
 
