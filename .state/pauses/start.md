@@ -23,7 +23,8 @@ atomically: `pause` builds the snapshot in a `.tmp-YYYYMMDD.NNN/` staging folder
 and renames it to the final name only when both files are written; a folder is a
 valid pause only once it is final-named and holds both `context.md` and
 `state.md`. A `.tmp-*` folder is an interrupted pause — ignored by `unpause`, and
-reaped by the next `pause` for that day.
+best-effort reaped by a later same-session `pause` (concurrent same-root
+sessions must not reap each other's in-flight staging).
 
 ## Lifecycle
 
