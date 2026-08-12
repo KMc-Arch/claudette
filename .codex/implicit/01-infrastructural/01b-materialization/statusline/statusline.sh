@@ -38,6 +38,17 @@ input=$(cat)
 model=$(echo "$input" | jq -r '.model.display_name // .model.id // "?"')
 cwd=$(echo "$input" | jq -r '.cwd // empty')
 project_dir=$(echo "$input" | jq -r '.workspace.project_dir // empty')
+
+# Windows can hand us either separator, and can mix them between cwd and
+# project_dir even for the same real folder. Every path comparison below
+# (_elide, the "$launch_dir"/* globs, the nearest-root prefix strip) assumes
+# "/" as the join character, and the final line goes through `printf '%b'`
+# (needed to turn the \033[ color codes into real escapes) — so a stray
+# literal "\" surviving into $output can hit printf as a bad escape (e.g.
+# "\Users" -> \U) and truncate the rest of the status line. Normalize once,
+# here, before any of that logic runs.
+cwd="${cwd//\\//}"
+project_dir="${project_dir//\\//}"
 effort=$(jq -r '.effortLevel // empty' ~/.claude/settings.json 2>/dev/null)
 thinking=$(jq -r '.alwaysThinkingEnabled // empty' ~/.claude/settings.json 2>/dev/null)
 dir=$(basename "$cwd" 2>/dev/null || echo "?")
