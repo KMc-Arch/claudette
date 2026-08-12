@@ -26,20 +26,33 @@ fi
 FILE_PATH=$(realpath -m "$FILE_PATH" 2>/dev/null || echo "$FILE_PATH")
 
 # Resolve ^ the way frontmatter.md does: nearest ancestor (inclusive) of the
-# launch dir whose CLAUDE.md frontmatter declares root: true / apex-root: true.
-# MUST stay in lockstep with the ^ algorithm in 01a-resolution/frontmatter.md and
-# with gravity-guard.sh (shared scenarios: tests/test_guards_walkup.sh).
-# Fall back to the raw launch dir if no root is found — never regress below the
-# prior behavior.
+# launch dir whose LEADING CLAUDE.md frontmatter declares root: true / apex-root:
+# true. MUST stay in lockstep with 01a-resolution/frontmatter.md and the sibling
+# guard (shared scenarios: tests/test_guards_walkup.sh).
+# Security posture: this is a containment boundary, so it fails CLOSED. A CLAUDE.md
+# that exists but cannot be read/parsed fences AT that dir rather than being walked
+# past to a looser ceiling. Detection tolerates a trailing "# comment", quoted
+# "true", CRLF, and mawk (`[ \t]`, not `[[:space:]]`); only the LEADING `---`
+# block counts as frontmatter (a body `---` rule is not a fence). Fall back to the
+# raw launch dir only when no root is found anywhere above.
 resolve_root() {
-    local dir; dir=$(realpath -m "$1" 2>/dev/null || echo "$1")
+    local dir cm
+    dir=$(realpath -m "$1" 2>/dev/null) || dir=""
+    [ -n "$dir" ] || return 1
     while :; do
-        if [ -f "$dir/CLAUDE.md" ] && awk '
-            /^---[[:space:]]*$/ { n++; next }
-            n==1 && /^(apex-)?root:[[:space:]]*true[[:space:]]*$/ { found=1 }
-            n>=2 { exit }
-            END { exit !found }' "$dir/CLAUDE.md"; then
-            printf '%s\n' "$dir"; return 0
+        cm="$dir/CLAUDE.md"
+        if [ -e "$cm" ]; then
+            if [ -f "$cm" ] && [ -r "$cm" ]; then
+                if awk '
+                    FNR==1 { if ($0 !~ /^---[ \t]*\r?$/) exit 1; next }
+                    /^---[ \t]*\r?$/ { exit 1 }
+                    /^(apex-)?root:[ \t]*"?true"?[ \t]*(#|\r|$)/ { found=1; exit }
+                    END { exit (found ? 0 : 1) }' "$cm"; then
+                    printf '%s\n' "$dir"; return 0
+                fi
+            else
+                printf '%s\n' "$dir"; return 0   # exists but unreadable/non-regular -> fail closed
+            fi
         fi
         [ "$dir" = "/" ] && return 1
         dir=$(dirname "$dir")

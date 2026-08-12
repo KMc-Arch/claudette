@@ -3,7 +3,9 @@
 # Proves both guards resolve the containment ceiling to the nearest root:true
 # ancestor of $CLAUDE_PROJECT_DIR (matching 01a-resolution/frontmatter.md), so a
 # session launched from a non-root subdir can still write to its true ^/.state
-# (BL-35), while writes above ^ stay blocked. Exit 0 = all pass.
+# (BL-35), while writes above ^ stay blocked — and that detection FAILS CLOSED on
+# unreadable / malformed root markers rather than loosening the ceiling.
+# Exit 0 = all pass.
 set -u
 
 HOOKS_DIR="$(cd "$(dirname "$0")/.." && pwd)"
@@ -11,11 +13,28 @@ GRAV="$HOOKS_DIR/gravity-guard.sh"
 CONT="$HOOKS_DIR/containment-guard.sh"
 
 T=$(mktemp -d)
-trap 'rm -rf "$T"' EXIT
+trap 'chmod -R u+rwX "$T" 2>/dev/null; rm -rf "$T"' EXIT
 
-mkdir -p "$T/apex/child/sub" "$T/apex/child/grand" "$T/apex/plain" "$T/noroot/deep"
+# --- base tree: apex-root over a root child over a non-root sub -----------------
+mkdir -p "$T/apex/child/sub" "$T/apex/child/grand" "$T/apex/plain" "$T/apex/other" "$T/noroot/deep"
 printf -- '---\napex-root: true\n---\n' > "$T/apex/CLAUDE.md"
 printf -- '---\nroot: true\n---\n'       > "$T/apex/child/CLAUDE.md"
+
+# --- comment-root: a valid YAML root line carrying a trailing comment (#3) ------
+mkdir -p "$T/cmt/proj/sub"
+printf -- '---\napex-root: true\n---\n'              > "$T/cmt/CLAUDE.md"
+printf -- '---\nroot: true  # child project root\n---\n' > "$T/cmt/proj/CLAUDE.md"
+
+# --- unreadable-root: real root marker, but file unreadable (#4) ----------------
+mkdir -p "$T/unr/proj/sub"
+printf -- '---\napex-root: true\n---\n' > "$T/unr/CLAUDE.md"
+printf -- '---\nroot: true\n---\n'      > "$T/unr/proj/CLAUDE.md"
+chmod 000 "$T/unr/proj/CLAUDE.md"
+
+# --- body-fence: a NON-root doc whose body has a `---` rule then `root: true` (#5)
+mkdir -p "$T/bf/proj"
+printf -- '---\napex-root: true\n---\n'          > "$T/bf/CLAUDE.md"
+printf -- '# Proj\n\nNotes\n\n---\nroot: true\n---\n' > "$T/bf/proj/CLAUDE.md"
 
 FAILED=0
 check() {  # desc expect cpd guard fp
@@ -25,6 +44,14 @@ JSON
     local rc=$?
     if [ "$rc" -eq "$2" ]; then printf 'PASS  %s  (rc=%s)\n' "$1" "$rc"
     else printf 'FAIL  %s  (expected %s, got %s)\n' "$1" "$2" "$rc"; FAILED=1; fi
+}
+check_nohang() {  # desc cpd guard fp   (asserts the hook returns at all)
+    CLAUDE_PROJECT_DIR="$2" timeout 5 bash "$3" >/dev/null 2>&1 <<JSON
+{"tool_input":{"file_path":"$4"}}
+JSON
+    local rc=$?
+    if [ "$rc" -ne 124 ]; then printf 'PASS  %s  (returned rc=%s, no hang)\n' "$1" "$rc"
+    else printf 'FAIL  %s  (TIMED OUT — infinite loop)\n' "$1"; FAILED=1; fi
 }
 
 echo "# gravity-guard (.state writes)"
@@ -41,13 +68,42 @@ check "BL-35 non-root subdir: write true ^ file   -> allow" 0 "$T/apex/child/sub
 check "non-root subdir: write ABOVE ^             -> block" 2 "$T/apex/child/sub" "$CONT" "$T/apex/notes.md"
 check "write fully outside the tree              -> block" 2 "$T/apex/child"     "$CONT" "$T/elsewhere.md"
 
-echo "# fallback: no root anywhere -> raw launch dir (no regression)"
-check "no-root fallback: write under launch dir   -> allow" 0 "$T/noroot/deep"    "$GRAV" "$T/noroot/deep/.state/x"
-check "no-root fallback: write above launch dir   -> block" 2 "$T/noroot/deep"    "$GRAV" "$T/noroot/.state/x"
+echo "# HARDENING: root marker with a trailing '# comment' still detected (#3, fail-open fix)"
+check "comment-root: write true ^ file            -> allow" 0 "$T/cmt/proj/sub" "$CONT" "$T/cmt/proj/notes.md"
+check "comment-root: write ABOVE ^ (apex)         -> block" 2 "$T/cmt/proj/sub" "$CONT" "$T/cmt/x.md"
+check "comment-root: write parent .state          -> block" 2 "$T/cmt/proj/sub" "$GRAV" "$T/cmt/.state/x"
 
-echo "# cross-guard agreement (a .state write above ^ -> both block)"
-check "gravity    blocks above-^ .state" 2 "$T/apex/child/sub" "$GRAV" "$T/apex/.state/x"
-check "containment blocks above-^ .state" 2 "$T/apex/child/sub" "$CONT" "$T/apex/.state/x"
+echo "# HARDENING: unreadable root CLAUDE.md fails CLOSED, not open (#4)"
+check "unreadable-root: write ABOVE (apex)        -> block" 2 "$T/unr/proj/sub" "$CONT" "$T/unr/x.md"
+check "unreadable-root: write within fenced dir   -> allow" 0 "$T/unr/proj/sub" "$CONT" "$T/unr/proj/ok.md"
+
+echo "# HARDENING: a body '---' rule is NOT frontmatter, so proj is not a false root (#5)"
+check "body-fence: proj not a root, write bf/.state-> allow" 0 "$T/bf/proj" "$GRAV" "$T/bf/.state/x"
+
+echo "# HARDENING: empty/unset CLAUDE_PROJECT_DIR must not infinite-loop (#1)"
+check_nohang "empty CLAUDE_PROJECT_DIR"            ""              "$GRAV" "$T/apex/.state/x"
+
+echo "# cross-guard agreement: both guards ALLOW the true-^ write from a non-root subdir"
+check "gravity     allows ^/.state from subdir" 0 "$T/apex/child/sub" "$GRAV" "$T/apex/child/.state/x"
+check "containment allows ^ file  from subdir" 0 "$T/apex/child/sub" "$CONT" "$T/apex/child/deep/x"
+
+# --- no-root fallback: guarded for hermeticity (#10) ---------------------------
+# These require $T to have NO root:true ancestor. If TMPDIR sits under a root tree
+# (e.g. TMPDIR=/mnt/claudette/.tmp), skip rather than false-fail.
+anc="$T"; hasroot=""
+while [ "$anc" != "/" ]; do
+    anc=$(dirname "$anc")
+    if [ -f "$anc/CLAUDE.md" ] && grep -qE '^(apex-)?root:[[:space:]]*true' "$anc/CLAUDE.md" 2>/dev/null; then
+        hasroot="$anc"; break
+    fi
+done
+echo "# no-root fallback (raw launch dir; no regression)"
+if [ -z "$hasroot" ]; then
+    check "no-root fallback: write under launch dir  -> allow" 0 "$T/noroot/deep" "$GRAV" "$T/noroot/deep/.state/x"
+    check "no-root fallback: write above launch dir  -> block" 2 "$T/noroot/deep" "$GRAV" "$T/noroot/.state/x"
+else
+    echo "SKIP  no-root fallback (TMPDIR sits under root:true tree: $hasroot)"
+fi
 
 if [ "$FAILED" -eq 0 ]; then echo "ALL PASS"; else echo "SOME FAILED"; fi
 exit "$FAILED"

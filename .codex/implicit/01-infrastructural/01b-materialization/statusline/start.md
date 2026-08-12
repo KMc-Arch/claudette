@@ -49,7 +49,7 @@ Both fields are always present. At `^` they name the same folder; that repetitio
 
 ### What `^` resolves to
 
-`workspace.project_dir` — the session's launch directory, which is what `gravity-guard.sh` and `boot-inject.py` also resolve `^` to (via `CLAUDE_PROJECT_DIR`). The bar and the guards therefore always agree on where `^` is. Fallbacks: no project dir in the payload → nearest declared root; nothing there either → `cwd` itself.
+`workspace.project_dir` — the session's launch directory, and what the bar anchors `📁` to. Since BL-35 the enforcement guards (`gravity-guard.sh`, `containment-guard.sh`) resolve `^` by walking **up** from `$CLAUDE_PROJECT_DIR` to the nearest declared root — i.e. to the `🏠` target below, not to `📁`. The two coincide whenever the launch dir is itself a root (the common case); launched from a non-root subdir they differ and the guards fence at the walked-up root. (`boot-inject.py` still loads governance from the raw launch dir — see BL-38.) Fallbacks: no project dir in the payload → nearest declared root; nothing there either → `cwd` itself.
 
 Neither the `^` nor the `^/^` literal is printed. The notation is the resolution rule, not the display — the bar stays readable to someone who doesn't hold it in their head.
 
@@ -65,6 +65,6 @@ That result tints `🏠` rather than re-anchoring `📁`:
 | Beneath `^` but past a `root: true` boundary — a child project | **yellow** |
 | Outside `^` entirely | **orange** — `📁` is naming another project's folder, anchored on whatever root `cwd` sits under |
 
-Re-anchoring `📁` on the nearest root was the obvious alternative and is wrong: it renders `demo` for `zMisc/demo`, hiding the traversal, and it makes the bar's `^` disagree with the guards'. Colour carries the same fact without either cost.
+Re-anchoring `📁` on the nearest root was the obvious alternative and is wrong: it renders `demo` for `zMisc/demo`, hiding the traversal. Colour carries the same fact without that cost.
 
 Paths longer than 32 characters middle-truncate to `<first>/…/<leaf>`, keeping both informative ends.
