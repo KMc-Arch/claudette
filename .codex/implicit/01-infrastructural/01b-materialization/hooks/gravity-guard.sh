@@ -55,7 +55,7 @@ resolve_root() {
                 if awk '
                     FNR==1 { if ($0 !~ /^---[ \t]*\r?$/) exit 1; next }
                     /^---[ \t]*\r?$/ { exit 1 }
-                    /^(apex-)?root:[ \t]*"?true"?[ \t]*(#|\r|$)/ { found=1; exit }
+                    /^(apex-)?root:[ \t]*"?true"?([ \t]+#|[ \t]*\r?$)/ { found=1; exit }
                     END { exit (found ? 0 : 1) }' "$cm"; then
                     printf '%s\n' "$dir"; return 0
                 fi
@@ -70,6 +70,13 @@ resolve_root() {
 
 PROJECT_ROOT=$(resolve_root "$CLAUDE_PROJECT_DIR") \
     || PROJECT_ROOT=$(realpath -m "$CLAUDE_PROJECT_DIR" 2>/dev/null || echo "$CLAUDE_PROJECT_DIR")
+
+# Fail CLOSED if no root could be established (e.g. empty/unset CLAUDE_PROJECT_DIR):
+# an empty PROJECT_ROOT would make the "$PROJECT_ROOT"/* glob match every path.
+if [ -z "$PROJECT_ROOT" ]; then
+    echo "BLOCKED: cannot resolve project root (CLAUDE_PROJECT_DIR empty/unset)." >&2
+    exit 2
+fi
 
 # Check if the write target is within the project root
 case "$FILE_PATH" in
