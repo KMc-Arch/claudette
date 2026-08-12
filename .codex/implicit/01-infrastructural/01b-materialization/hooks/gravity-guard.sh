@@ -9,7 +9,21 @@
 
 INPUT=$(cat)
 
-FILE_PATH=$(echo "$INPUT" | grep -oE '"file_path"\s*:\s*"[^"]*"' | grep -oE '"[^"]*"$' | tr -d '"')
+# Decode file_path with a REAL JSON parser — never grep. An embedded \" in the
+# value truncates a grep match and drops a trailing ../.. traversal, letting a
+# write escape ^ while the guard sees an in-bounds prefix (a fail-open). python3
+# is a hard platform dependency (.codex/start.md) already used by boot-inject.py;
+# if the input cannot be parsed (or no decoder is present), FAIL CLOSED.
+FILE_PATH=$(printf '%s' "$INPUT" | python3 -c 'import json,sys
+d=json.load(sys.stdin)
+ti=d.get("tool_input") if isinstance(d.get("tool_input"), dict) else {}
+v=ti.get("file_path")
+if not isinstance(v, str): v=d.get("file_path")
+sys.stdout.write(v if isinstance(v, str) else "")')
+if [ $? -ne 0 ]; then
+    echo "BLOCKED: could not parse tool input for the state-gravity check (fail closed)." >&2
+    exit 2
+fi
 
 if [ -z "$FILE_PATH" ]; then
     exit 0

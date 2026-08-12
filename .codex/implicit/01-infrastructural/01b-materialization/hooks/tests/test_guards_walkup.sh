@@ -51,6 +51,12 @@ JSON
     if [ "$rc" -eq "$2" ]; then printf 'PASS  %s  (rc=%s)\n' "$1" "$rc"
     else printf 'FAIL  %s  (expected %s, got %s)\n' "$1" "$2" "$rc"; FAILED=1; fi
 }
+check_json() {  # desc expect cpd guard raw_json_payload   (control the exact bytes)
+    printf '%s' "$5" | CLAUDE_PROJECT_DIR="$3" timeout 10 bash "$4" >/dev/null 2>&1
+    local rc=$?
+    if [ "$rc" -eq "$2" ]; then printf 'PASS  %s  (rc=%s)\n' "$1" "$rc"
+    else printf 'FAIL  %s  (expected %s, got %s)\n' "$1" "$2" "$rc"; FAILED=1; fi
+}
 
 echo "# gravity-guard (.state writes)"
 check "launch-at-root: write ^/.state            -> allow" 0 "$T/apex/child"     "$GRAV" "$T/apex/child/.state/x"
@@ -84,6 +90,17 @@ check "body-fence: proj not a root, write bf/.state-> allow" 0 "$T/bf/proj" "$GR
 echo "# HARDENING: empty/unset CLAUDE_PROJECT_DIR must FAIL CLOSED (block, no hang) (#1/#1-coda)"
 check "empty CLAUDE_PROJECT_DIR (gravity)          -> block" 2 "" "$GRAV" "$T/apex/.state/x"
 check "empty CLAUDE_PROJECT_DIR (containment)      -> block" 2 "" "$CONT" "$T/apex/notes.md"
+
+echo "# SECURITY: escaped-quote in file_path must not truncate the path (containment fail-open)"
+EXPLOIT_C='{"tool_input":{"file_path":"'"$T"'/apex/child/q\"/../../../../../../etc/evil"}}'
+CONTROL_C='{"tool_input":{"file_path":"'"$T"'/apex/child/../../../../../../etc/evil"}}'
+SANE_C='{"tool_input":{"file_path":"'"$T"'/apex/child/notes.md"}}'
+EXPLOIT_G='{"tool_input":{"file_path":"'"$T"'/apex/child/.state/x\"/../../../../../../tmp/evil/.state/e"}}'
+check_json "escaped-quote traversal (containment) -> block" 2 "$T/apex/child" "$CONT" "$EXPLOIT_C"
+check_json "plain traversal control  (containment) -> block" 2 "$T/apex/child" "$CONT" "$CONTROL_C"
+check_json "normal in-^ path via JSON (containment) -> allow" 0 "$T/apex/child" "$CONT" "$SANE_C"
+check_json "escaped-quote .state traversal (gravity) -> block" 2 "$T/apex/child" "$GRAV" "$EXPLOIT_G"
+check_json "malformed JSON input                  -> block" 2 "$T/apex/child" "$CONT" '{"tool_input":{"file_path":'
 
 echo "# cross-guard agreement: both guards ALLOW the true-^ write from a non-root subdir"
 check "gravity     allows ^/.state from subdir" 0 "$T/apex/child/sub" "$GRAV" "$T/apex/child/.state/x"
