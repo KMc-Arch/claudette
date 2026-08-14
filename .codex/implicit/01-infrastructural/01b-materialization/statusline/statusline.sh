@@ -39,19 +39,25 @@ model=$(echo "$input" | jq -r '.model.display_name // .model.id // "?"')
 cwd=$(echo "$input" | jq -r '.cwd // empty')
 project_dir=$(echo "$input" | jq -r '.workspace.project_dir // empty')
 
-# Windows can hand us either separator, and can mix them between cwd and
-# project_dir even for the same real folder. Every path comparison below
-# (_elide, the "$launch_dir"/* globs, the nearest-root prefix strip) assumes
-# "/" as the join character, and the final line goes through `printf '%b'`
-# (needed to turn the \033[ color codes into real escapes) — so a stray
-# literal "\" surviving into $output can hit printf as a bad escape (e.g.
-# "\Users" -> \U) and truncate the rest of the status line. Normalize once,
-# here, before any of that logic runs.
+# --- Normalize path separators to "/" ONCE, up front, before ANY path logic. ---
+# RECURRENT PITFALL — this line keeps getting dropped when this file is copied
+# or rewritten. DO NOT remove it. On Windows / Git-Bash the harness can hand
+# cwd/project_dir with "\" separators (and can even mix "\" and "/" for the same
+# real folder). Everything below assumes "/": the _elide relativizer, the
+# "$launch_dir"/* and nearest-root prefix globs, and the final `printf '%b'`
+# (which turns \033[ colour codes into real escapes). A stray literal "\" that
+# reaches that printf is read as a bad escape (e.g. "\Users" -> \U) and
+# TRUNCATES the rest of the status line. Normalizing here is what prevents it.
 cwd="${cwd//\\//}"
 project_dir="${project_dir//\\//}"
-effort=$(jq -r '.effortLevel // empty' ~/.claude/settings.json 2>/dev/null)
-thinking=$(jq -r '.alwaysThinkingEnabled // empty' ~/.claude/settings.json 2>/dev/null)
+
+effort=$(echo "$input" | jq -r '.effort.level // empty')
+thinking=$(echo "$input" | jq -r '.thinking.enabled // empty')
 dir=$(basename "$cwd" 2>/dev/null || echo "?")
+
+# Extract 5h rate-limit window (added: quota bar)
+five_h_pct=$(echo "$input" | jq -r '.rate_limits.five_hour.used_percentage // empty')
+five_h_resets=$(echo "$input" | jq -r '.rate_limits.five_hour.resets_at // empty')
 
 # --- Location: 🏠 launch dir, 📁 path relative to it ---
 # 📁 is ^-relative, where ^ is the session's own root (workspace.project_dir) —
@@ -90,6 +96,36 @@ _elide() {
         echo "${p%%/*}/…/${p##*/}"
     else
         echo "$p"
+    fi
+}
+
+# Render a fixed-width block bar for a 0-100 percentage. Shared by every
+# budget-style metric (context window, rate-limit windows) so they read as
+# one visual family instead of separate lookalikes.
+_render_bar() {
+    local pct=$1 width=$2 bar="" i bar_start progress
+    for ((i=0; i<width; i++)); do
+        bar_start=$((i * 100 / width))
+        progress=$((pct - bar_start))
+        if [[ $progress -ge $((100 / width * 8 / 10)) ]]; then
+            bar+="${C_ACCENT}█${C_RESET}"
+        elif [[ $progress -ge $((100 / width * 3 / 10)) ]]; then
+            bar+="${C_ACCENT}▄${C_RESET}"
+        else
+            bar+="${C_BAR_EMPTY}░${C_RESET}"
+        fi
+    done
+    echo "$bar"
+}
+
+# Format a seconds count as "Xd Yh" / "Xh Ym" / "Xm Ys" depending on
+# magnitude. Shared by rate-limit reset countdowns and session duration.
+_fmt_secs() {
+    local s=$1
+    [[ $s -lt 0 ]] && s=0
+    if   [[ $s -ge 86400 ]]; then echo "$((s / 86400))d $(( (s % 86400) / 3600 ))h"
+    elif [[ $s -ge 3600 ]];  then echo "$((s / 3600))h $(( (s % 3600) / 60 ))m"
+    else                          echo "$((s / 60))m $((s % 60))s"
     fi
 }
 
@@ -218,7 +254,7 @@ fi
 # --- Git info (conditional, only if in a git repo) ---
 branch=""
 git_status=""
-if [[ -n "$cwd" && -d "$cwd" ]]; then
+if [[ -n "$cwd" && -d "$cwd" ]] && ! git -C "$cwd" check-ignore -q . 2>/dev/null; then
     branch=$(git -C "$cwd" branch --show-current 2>/dev/null)
     if [[ -n "$branch" ]]; then
         file_count=$(git -C "$cwd" --no-optional-locks status --porcelain -unormal 2>/dev/null | wc -l | tr -d ' ')
@@ -285,19 +321,7 @@ if [[ -n "$transcript_path" && -f "$transcript_path" ]]; then
 
     [[ $pct -gt 100 ]] && pct=100
 
-    bar=""
-    for ((i=0; i<bar_width; i++)); do
-        bar_start=$((i * 10))
-        progress=$((pct - bar_start))
-        if [[ $progress -ge 8 ]]; then
-            bar+="${C_ACCENT}█${C_RESET}"
-        elif [[ $progress -ge 3 ]]; then
-            bar+="${C_ACCENT}▄${C_RESET}"
-        else
-            bar+="${C_BAR_EMPTY}░${C_RESET}"
-        fi
-    done
-
+    bar=$(_render_bar "$pct" "$bar_width")
     ctx="${bar} ${C_GRAY}${pct_prefix}${pct}% of ${max_k}k tokens"
 else
     baseline=20000
@@ -305,20 +329,19 @@ else
     pct=$((baseline * 100 / max_context))
     [[ $pct -gt 100 ]] && pct=100
 
-    bar=""
-    for ((i=0; i<bar_width; i++)); do
-        bar_start=$((i * 10))
-        progress=$((pct - bar_start))
-        if [[ $progress -ge 8 ]]; then
-            bar+="${C_ACCENT}█${C_RESET}"
-        elif [[ $progress -ge 3 ]]; then
-            bar+="${C_ACCENT}▄${C_RESET}"
-        else
-            bar+="${C_BAR_EMPTY}░${C_RESET}"
-        fi
-    done
-
+    bar=$(_render_bar "$pct" "$bar_width")
     ctx="${bar} ${C_GRAY}~${pct}% of ${max_k}k tokens"
+fi
+
+# --- Budget bar: 5h rate-limit window, same style/width as the context bar ---
+# Absent pre-first-response and for non-Pro/Max accounts.
+quota_line=""
+if [[ -n "$five_h_pct" ]]; then
+    five_h_int=${five_h_pct%.*}
+    five_h_bar=$(_render_bar "$five_h_int" 10)
+    five_h_left=""
+    [[ -n "$five_h_resets" ]] && five_h_left=" (${C_GRAY}$(_fmt_secs $((five_h_resets - $(date +%s))))${C_RESET})"
+    quota_line="⏳${five_h_bar} ${C_GRAY}${five_h_int}%${C_RESET}${five_h_left}"
 fi
 
 # --- Build output ---
@@ -347,7 +370,9 @@ output="${C_ACCENT}${model}${effort_label}${thinking_label}${C_GRAY}"
 [[ -n "$dir" ]] && output+=" | 📁${dir}"
 [[ -n "$project_info" ]] && output+=" | ${project_info}"
 [[ -n "$branch" ]] && output+=" | 🔀${branch} ${git_status}"
-output+=" | ${ctx}${C_RESET}"
+output+=" | ${ctx}"
+[[ -n "$quota_line" ]] && output+=" | ${quota_line}"
+output+="${C_RESET}"
 
 printf '%b\n' "$output"
 
