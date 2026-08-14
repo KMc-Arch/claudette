@@ -1,6 +1,6 @@
 ---
-version: 6
-short-desc: Pre-milestone holistic QA — iterative blind multi-agent fan-out, fix critical/high, repeat until an independent fix-free green pass
+version: 7
+short-desc: Pre-milestone holistic QA — blind multi-lens fan-out over an ever-growing roster; repeat until a full-roster round is clean or stops converging
 isolation: inline
 reads:
   - "^/"
@@ -12,65 +12,59 @@ writes:
 
 # mileqa
 
-Meta-process: generalized, holistic, adversarial QA of a body of work **before it becomes a milestone**. Applies to any artifact set — code, codex modules, docs, schemas. Typically precedes `/milestone`; complements (never replaces) targeted suites like `/test-safe` or module test harnesses.
+Holistic, adversarial QA of a body of work **before it becomes a milestone**. Any artifact set — code, codex modules, docs, schemas. Precedes `/milestone`; complements (never replaces) targeted suites like `/test-safe`.
 
-Built on the proven QA-molecule pattern: blind multi-lens fan-out → adversarial verification of every finding → fix → prove.
+**The loop, coarsely:** fan out a blind multi-lens panel → adversarially verify every finding → fix critical/high → **grow the roster** → repeat until a full-roster round comes back clean, or the surface stops shrinking.
 
 ## Usage
 
-`mileqa` — QA the current branch's changed surface (diff vs main, plus in-scope untracked files)
-`mileqa <scope>` — QA a named subject (project, module, path set)
+`mileqa` — QA **this session's delta** (the files this session created or changed).
+`mileqa <scope>` — QA a named subject (project, module, path set).
 
-If the scope is ambiguous, enumerate the candidate surfaces and ask the user to pick before dispatching anything.
+If the scope is ambiguous, enumerate the candidates and ask before dispatching anything.
 
-## Protocol
+## The roster — grows, never shrinks
 
-### Round structure (repeat per round)
+The **roster** is the set of QA lenses you run. It starts with the mandatory two —
 
-A round = step 1 (checkpoint) + a **VERIFY** (steps 2–4: blind panel → adversarial verification → triage); it becomes a **FIX round** only if triage surfaces something to fix (steps 5–6). "Read-only VERIFY" means the panel and its verification never touch the **subject under review** — the step-1 checkpoint and the report writes are bookkeeping, not subject edits. Per **Loop control**, only a fix-free VERIFY that comes back green ends the run.
+- **Cold readers** — no conversation context; read the artifacts cold and reconstruct the functionality back. Divergence between their reconstruction and the intended design = finding.
+- **Adversaries** — push every seam: edge inputs, path escapes, malformed state, interrupts, boundary bypasses, refutation of any claimed guarantee.
 
-1. **Checkpoint commit.** If on `main`, create a feature branch first — named for the *work*, not the QA (`feature/<topic>`). If already on a branch, verify it is the *work's* feature branch (never `main`, never an unrelated branch — if it is neither, stop and ask the user where the work should land before committing). Commit all pending in-scope work so every round starts from a committed, diffable, revertible state; a clean tree makes the checkpoint a no-op — proceed. Never commit on `main`.
-2. **Fan out a blind QA panel.** Parallel, independent agents. Mandatory lenses every round:
-   - **Cold readers** — no conversation context; read the artifacts cold and *summarize detailed functionality back*. Divergence between their reconstruction and the intended design = finding.
-   - **Adversaries** — push every seam: edge inputs, path escapes, symlinks, malformed state, interrupts, guard/boundary bypasses, refutation of any claimed guarantee.
+— plus whatever the subject warrants: conformance (docs vs behavior), test-integrity (tautology hunt + mutation-prove), security/scrub, platform (9p/drvfs, ugrep-not-GNU, WSL, chmod-EPERM), regression.
 
-   Add whatever else fits the subject (never fewer than the mandatory two, and add more whenever appropriate):
-   - Conformance — docs/specs/READMEs vs actual behavior
-   - Test integrity — tautology hunt; mutation-prove that hardened checks can actually fail
-   - Security/scrub — secrets, credential classes, boundary interactions
-   - Platform — 9p/drvfs, ugrep-not-GNU, WSL, chmod-EPERM hazards
-   - Regression — green suites still green; adjacent modules unbroken
+**Remember the roster across rounds, and only ever ADD to it.** Every round re-runs the *entire* accumulated roster plus any new lens the previous round showed you needed. A lens is **never** dropped.
 
-   **Blindness rule:** panelists get artifact paths + a task, never the conversation narrative and never each other's findings. Blindness is *orchestrator discipline* — this module is `inline`, so `reads:` declarations document rather than enforce; construct panel prompts accordingly, and never point a panelist at `^/.state/traces/` or the in-flight round reports.
-3. **Adversarially verify every finding** before triage — independent verifier per finding, prompted to refute (CONFIRMED / PLAUSIBLE / refuted). Refuted findings die here.
-4. **Triage** survivors: `critical | high | medium | low` (same vocabulary as the work entry schema).
-5. **Fix all critical + high in-round**, each fix proven by a test or direct demonstration. A verified critical/high may be classed a **residual** ONLY if it is (a) **user-owned** — a guarded artifact the agent cannot edit; deliver exact fix text *plus the verification the user can run* (the proof obligation transfers, it does not vanish); (b) **user-deferred** — explicitly deferred by user ruling in this run; or (c) **out-of-subject** — pre-existing AND untouched-and-unworsened by the work under QA (if the work touched or worsened it, it is in-subject and gets fixed); file it to the correct register (the `^/.state/work/` files per their schema) with an owner, and the class-(c) claim itself is adversarially verified like any finding (an independent verifier confirms pre-existing + untouched/unworsened) before it can support HELD. Everything else critical/high gets fixed in-round, **including at the FIX-round cap; no exit state waives this step.** Medium/low: fix if trivial, else record in the session root's backlog with a deliberate-deferral note. Honor exclusions — never silently reintroduce cut scope.
-6. **Commit the round's fixes** with a round-tagged message.
+This is the regression guarantee: a clean round is clean against *every lens ever applied*, so a later fix cannot quietly reintroduce something an earlier lens already caught — and because the lens set never shrinks, a fall in findings between rounds is a **real** signal, not an artifact of looking less hard. The ever-growing roster is what makes the convergence test below trustworthy.
 
-### Loop control
+## Per round
 
-- **Two pass types, capped differently.** A **FIX round** may edit files (steps 5–6) and is **capped** — the *convergence budget* (default 3). The cap exists to detect a design that keeps generating defects, **not** to end the run. A **VERIFY pass** (steps 2–4: blind panel → adversarial verification → triage, applying no fix) is **read-only**; because it changes no state it cannot loop forever, so it is **never capped**.
-- **Terminal-green invariant — the only clean exit.** The run may be declared **CLEAN only by a VERIFY pass that applied no fixes and came back green** (nothing above medium after verification). A FIX round is **never terminal**: every fix is followed by another VERIFY, so the run is `VERIFY → (findings → FIX → VERIFY → …)` until a **fix-free green**. Your own test suite is **necessary but not sufficient** — it is the fixer's artifact; the independent blind panel is the sign-off. Never call it clean on "I applied the fixes and believe it's done."
-- **Whole-subject, fresh, independent.** Each VERIFY reads the **whole subject** (full diff vs main), not just the last fix's diff, and **rotates/expands** the panel — fresh lenses; any surface a fix touched gets a fresh cold read. A diff-scoped check misses pre-existing holes in the files the work touches (learned 2026-08-12: three diff-scoped passes missed a pre-existing containment fail-open in a guard the branch was actively hardening; the full-surface independent pass caught it).
-- **Security surfaces need two consecutive greens.** For a containment / permission / secrets boundary — or **any** surface where a fix has already introduced a regression — require **two independently-constructed green VERIFY passes back-to-back** before CLEAN. One green panel can be thin or lucky; two are evidence. It still terminates the moment the state is genuinely clean.
-- **Verdict inputs (defined):** an **open item** = a verified critical/high survivor not yet fixed-and-proven. PLAUSIBLE critical/high survivors get one targeted re-verification before exit; still-PLAUSIBLE counts as CONFIRMED (conservative). A **residual** = an open critical/high in exactly one step-5 class (user-owned / user-deferred / out-of-subject, per step 5's definitions). Residuals alone → HELD, never EXHAUSTED.
-- **Exit states** (evaluated on the last VERIFY pass; when several conditions apply at once, take them in order **ESCALATION → EXHAUSTED → HELD → CLEAN**):
-  - **CLEAN** — a fix-free VERIFY came back green: no open critical/high, no residuals, all verified findings ≤ medium (two consecutive greens for a security surface). The milestone gate is open. This is the ONLY clean exit, and it is always an independent check — never self-certification.
-  - **HELD** — the last VERIFY is green *except* properly-classed residuals (user-owned / user-deferred / out-of-subject open critical/high). The gate is closed pending the user's rulings — present them as decision items (with exact fix text + the verification to run, where user-owned); their rulings convert HELD to CLEAN or into new in-scope work.
-  - **EXHAUSTED** — the FIX-round cap is hit and a subsequent VERIFY still surfaces NEW non-residual critical/high: the fix loop is not converging. **NOT clean** — fixes were applied but are not independently verified-green; the gate stays closed and **only the user can open it** (their merge/ship decision, on your report). Step 5 is never waived — the final round's criticals/highs still get fixed in-round. **Report the defect-class trajectory** (learned 2026-08-01): a **monotonically narrowing** class (mainline defects → regressions-in-fixes → exotic-edge/pre-existing-adjacent) = converging — report residuals as bounded and point at the planned structural remedy. A **flat or widening** class — or **your own fixes repeatedly regressing** — = redesign signal: the design itself is generating defects and no further round will fix that (patch-of-patch is the tell — redesign the subsystem).
-  - **ESCALATION** — a finding exceeds the subject's scope; route per the signal taxonomy (`^/.state/start.md`) and pause the loop for the user (gate closed while paused; not terminal). On their ruling the loop resumes.
+1. **Checkpoint.** If on `main`, branch first (`feature/<topic>`, named for the *work*); else confirm you are on the work's feature branch (if it is neither, stop and ask where the work should land). Commit the session's pending in-scope work so the round starts from a committed, revertible baseline (clean tree = no-op). Never commit on `main`.
+2. **Fan out the FULL current roster, blind.** Parallel, independent agents; each gets only artifact paths + a task — never the conversation narrative, never each other's findings, never `^/.state/traces/` or the in-flight reports. (This is an `inline` module, so blindness is orchestrator discipline, not enforced — construct the prompts accordingly.) Prefer the **Workflow tool** (pipeline finders into per-finding verifiers); scale panel size to the surface.
+3. **Adversarially verify every finding** — one independent verifier per finding, prompted to refute → CONFIRMED / PLAUSIBLE / refuted. Refuted findings die here; a still-PLAUSIBLE critical/high counts as CONFIRMED (conservative).
+4. **Triage** survivors: `critical | high | medium | low`.
+5. **Fix all critical + high**, each proven by a test or direct demonstration. A verified critical/high may be held as a **residual** ONLY if (a) **user-owned** — you cannot edit it; deliver exact fix text *plus the verification the user can run* (the proof obligation transfers); (b) **user-deferred** — an explicit user ruling this run; or (c) **out-of-subject** — pre-existing AND untouched-and-unworsened by the work (if the work touched or worsened it, it is in-subject and gets fixed; the class-(c) claim is itself independently verified). File residuals to the correct `^/.state/work/` register with an owner. Medium/low: fix if trivial, else record in the backlog with a deliberate-deferral note. Honor exclusions — never silently reintroduce cut scope.
+6. **Commit the fixes, then GROW the roster.** Add any lens this round revealed you needed — a new failure mode a finding exposed, or a surface a fix newly touched (which gets a fresh cold read next round). Never remove one. Record the roster so the next round re-runs it in full.
 
-## Tooling
+## Exit
 
-Prefer the **Workflow tool** (this protocol's instruction constitutes the multi-agent opt-in): pipeline finders into per-finding verifiers (no barrier unless deduping across the whole panel), loop-until-dry within a round, structured-output schemas for findings/verdicts. Fall back to parallel subagent dispatches when Workflow is unavailable. Scale panel size to the surface under review, not to a fixed number.
+Keep looping **as long as the surface is converging** — the aggregate severity of verified findings strictly **decreasing** round over round, with **no regressions** (no fix introducing a new finding). Aggregate severity = the finding counts compared as the tuple `(criticals, highs, mediums, lows)`; "decreasing" = strictly lower this round than last. Because the roster only grows, a decrease is trustworthy, and a strict decrease is self-terminating — it cannot continue forever.
+
+Exit states:
+
+- **CLEAN (0)** — a full-roster round surfaces nothing above **medium** after verification. The roster signs it off — never your own say-so; your own tests are necessary but not sufficient. Milestone gate opens.
+- **HELD** — clean except properly-classed residuals. Gate closed; present the residuals to the user as decision items (exact fix text + the verification to run). Their rulings convert HELD → CLEAN or into new in-scope work.
+- **NOT CONVERGING** — aggregate severity stops shrinking (flat or rising), or your fixes keep regressing. Stop: the surface is generating defects roughly as fast as you close them. This is a **redesign signal**, not a round-4 problem (patch-of-patch is the tell — redesign the subsystem). Not clean; gate closed; hand to the user with the severity trajectory.
+- **ESCALATION** — a finding exceeds the subject's scope. Route per the signal taxonomy (`^/.state/start.md`), pause for the user (not terminal); resume on their ruling.
+
+When more than one applies at once: **ESCALATION → NOT CONVERGING → HELD → CLEAN**.
 
 ## Reporting
 
-- Persist per round: `^/.state/tests/mileqa/YYYYMMDD-HHMM/round-N.md` — panel composition, findings with verdicts and severities, fixes, deferrals, checkpoint + fix commit SHAs. Final `summary.md` with the exit state.
-- Final chat report: rounds run, findings by severity, fixes, residuals/deferrals, exit state — re-summarized so the last message stands alone. No error tallies.
+- Per round, persist `^/.state/tests/mileqa/YYYYMMDD-HHMM/round-N.md`: the roster run, findings with verdicts + severities, fixes, deferrals, checkpoint + fix commit SHAs, and **the round's aggregate-severity tuple** (so the convergence trend is legible at a glance). Final `summary.md` with the exit state.
+- Final chat report: rounds run, findings by severity, fixes, residuals/deferrals, exit — re-summarized so the last message stands alone. No error tallies.
 
 ## Governance interlocks
 
-- **Commits:** invoking `/mileqa` authorizes the protocol's checkpoint and round-fix commits, on the feature branch only. It does NOT authorize push, merge, or any commit on `main`. Push remains a separate, user-instructed, scrub-gated action — push never implies more.
-- **QA agents are read-only.** Only the **main session** writes — the checkpoint and round-fix commits (steps 1, 6), the reports, and the fixes (step 5); panel agents never write. Destructive functional testing (e.g. `/test-burn`) runs only under its own module's confirmation gate — never dispatched implicitly by a panelist.
+- **Commits:** invoking `/mileqa` authorizes the checkpoint + round-fix commits on the feature branch only. It does NOT authorize push, merge, or any commit on `main`. Push stays a separate, user-instructed, scrub-gated action.
+- **Panel agents are read-only.** Only the main session writes — the checkpoint/fix commits, the reports, and the fixes; panel agents never write. Destructive functional testing (e.g. `/test-burn`) is never dispatched implicitly by a panelist.
 - `_`-visibility, containment, and state gravity bind all dispatched agents. Findings/reports land in this session's `^/.state/`, never a child's, unless the user gives explicit path notation.
