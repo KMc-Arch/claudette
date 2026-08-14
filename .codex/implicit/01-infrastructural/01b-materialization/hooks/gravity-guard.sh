@@ -9,7 +9,30 @@
 
 INPUT=$(cat)
 
-FILE_PATH=$(echo "$INPUT" | grep -oE '"file_path"\s*:\s*"[^"]*"' | grep -oE '"[^"]*"$' | tr -d '"')
+# Decode the write target with a REAL JSON parser — never grep. An embedded \" in
+# the value truncates a grep match and can drop a trailing ../.. traversal, letting
+# a write escape ^ while the guard sees an in-bounds prefix (a fail-open). Read
+# BOTH file_path (Write/Edit) and notebook_path (NotebookEdit — the Write|Edit
+# matcher fires on it via substring), so a notebook write outside ^ is caught too.
+# python is a hard platform dependency (already used by boot-inject.py); on any
+# parse failure or missing interpreter, FAIL CLOSED (exit 2).
+GUARD_PY=$(command -v python3 || command -v python)
+if [ -z "$GUARD_PY" ]; then
+    echo "BLOCKED: no python interpreter for the guard's JSON decode (fail closed)." >&2
+    exit 2
+fi
+FILE_PATH=$(printf '%s' "$INPUT" | "$GUARD_PY" -c 'import json,sys
+try:
+    d = json.load(sys.stdin)
+except Exception:
+    sys.exit(3)
+ti = d.get("tool_input") if isinstance(d.get("tool_input"), dict) else {}
+v = ti.get("file_path") or ti.get("notebook_path") or d.get("file_path") or d.get("notebook_path")
+sys.stdout.write(v if isinstance(v, str) else "")')
+if [ $? -ne 0 ]; then
+    echo "BLOCKED: could not parse tool input for the state-gravity check (fail closed)." >&2
+    exit 2
+fi
 
 if [ -z "$FILE_PATH" ]; then
     exit 0
