@@ -25,7 +25,7 @@ If the scope is ambiguous, enumerate the candidates and ask before dispatching a
 
 ## The roster — grows, never shrinks
 
-The **roster** is the set of QA lenses you run. It starts with the mandatory two —
+The **roster** is the set of QA **lenses** you run — each lens a *group* of one or more agents, never a single agent. It starts with the two mandatory lens groups —
 
 - **Cold readers** — no conversation context; read the artifacts cold and reconstruct the functionality back. Divergence between their reconstruction and the intended design = finding.
 - **Adversaries** — push every seam: edge inputs, path escapes, malformed state, interrupts, boundary bypasses, refutation of any claimed guarantee.
@@ -47,13 +47,15 @@ This is the regression guarantee: a clean round is clean against *every lens eve
 
 ## Exit
 
-Keep looping **as long as the surface is converging** — the aggregate severity of verified findings strictly **decreasing** round over round, with **no regressions** (no fix introducing a new finding). Aggregate severity = the finding counts compared as the tuple `(criticals, highs, mediums, lows)`; "decreasing" = strictly lower this round than last. Because the roster only grows, a decrease is trustworthy, and a strict decrease is self-terminating — it cannot continue forever.
+Keep looping **as long as the surface is converging** — the aggregate severity of verified findings **trending down** round over round. Aggregate severity = the finding counts as the tuple `(criticals, highs, mediums, lows)`; "down" = lower than the previous round. Because the roster only grows, a fall is trustworthy, and it is self-terminating — severity cannot decrease forever.
+
+A **regression** — a fix introducing a *new* finding — is tolerated **once**: a single round that regresses is a correctable blip, so fix it and continue. But **two rounds that show regressions** means the fixes themselves are generating defects — that is dis-convergent (→ NOT CONVERGING).
 
 Exit states:
 
 - **CLEAN (0)** — a full-roster round surfaces nothing above **medium** after verification. The roster signs it off — never your own say-so; your own tests are necessary but not sufficient. Milestone gate opens.
 - **HELD** — clean except properly-classed residuals. Gate closed; present the residuals to the user as decision items (exact fix text + the verification to run). Their rulings convert HELD → CLEAN or into new in-scope work.
-- **NOT CONVERGING** — aggregate severity stops shrinking (flat or rising), or your fixes keep regressing. Stop: the surface is generating defects roughly as fast as you close them. This is a **redesign signal**, not a round-4 problem (patch-of-patch is the tell — redesign the subsystem). Not clean; gate closed; hand to the user with the severity trajectory.
+- **NOT CONVERGING** — aggregate severity stops trending down (flat or rising across rounds), or **two rounds show regressions**. Stop: the surface is generating defects roughly as fast as you close them. This is a **redesign signal**, not a round-4 problem (patch-of-patch is the tell — redesign the subsystem). Not clean; gate closed; hand to the user with the severity trajectory.
 - **ESCALATION** — a finding exceeds the subject's scope. Route per the signal taxonomy (`^/.state/start.md`), pause for the user (not terminal); resume on their ruling.
 
 When more than one applies at once: **ESCALATION → NOT CONVERGING → HELD → CLEAN**.
