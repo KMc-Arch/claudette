@@ -1,7 +1,7 @@
 # Heartbeat (HB) — Build Plan (overnight execution)
 
 Source spec: `spec.md` (this folder; moved from `~inbox/HEARTBEAT-SPEC.md` 2026-08-15).
-Status: aligned 2026-08-15 evening; not yet built. This file is the execution contract for the overnight build session.
+Status: built overnight 2026-08-15/16 on `feature/hb`; two mileqa rounds + fixes landed; see §4 for what is verified live.
 
 ---
 
@@ -10,7 +10,7 @@ Status: aligned 2026-08-15 evening; not yet built. This file is the execution co
 | # | Spec said | Decided | Why |
 |---|---|---|---|
 | D1 | one "orchestrator" that annotates GO, pops, works, writes inbox | **runner** (deterministic Python) does every live-state mutation; **worker** (`claude -p`) touches only its sandbox + its branch + remote PR | worker is hard-rooted in the sandbox — containment/gravity forbid live `.state` writes; LLM is never a state actor (extends I7; makes §5.7 structural) |
-| D2 | worktree *or* clone; sandbox "distinct location" | **git worktree in-root**: `<project>/.tmp/sandbox/hb/<item>/` | in-root = manageable/testable from a fenced session; purge-aware; branch lands directly in the live repo (spec O3 dissolves). Verified `git worktree add` works on the 9p mount 2026-08-15. |
+| D2 | worktree *or* clone; sandbox "distinct location" | **git worktree in-root**: `<project>/.hb-heartbeat/sandbox/<ITEM>/` (was `.tmp/sandbox/hb/`; moved with D13) | in-root = manageable/testable from a fenced session; purge-aware; branch lands directly in the live repo (spec O3 dissolves). Verified `git worktree add` works on the 9p mount 2026-08-15. |
 | D3 | I2 local-only, no push, no PR | **push feature branch + `gh pr create` ALLOWED — done by the RUNNER; the WORKER has no credentials; merge/close/enact DENIED** | user ruling (push+PR). mileqa round 1 (2026-08-16) showed token-shape guards are bypassable, so authority moved out of the worker: `GH_CONFIG_DIR` empty + credential helpers reset in the worker env (verified: push fails, gh logged out); runner pushes `refs/heads/hb/<ITEM>` only and creates the PR; live scrub pre-push hook is the gate. Guards remain as depth (allowlist hb-guard). Residual: same OS user → disk-readable token; GitHub cannot distinguish worker/user on one account. |
 | D4 | `.state/hb/{outbox,inflight,inbox}` at apex → (superseded: `.state/hb` → `.hb-heartbeat/state`) | **per-project mailboxes**: items in `<project>/~outbox/hb/<ITEM>.md`, claim = atomic move to `<project>/~outbox/hb/inflight/`, outcome = `<project>/~inbox/hb/<ITEM>/` (pause folder + `outcome.md`) | projects = claudette's children; each is its own repo, gets its own queue; matches the existing `~outbox/<target>/` handoff convention (`~majel/~outbox`) with target = `hb`; `~inbox` already the human-facing drop at apex. GO/quota/diag/log at apex `.hb-heartbeat/state/`. |
 | D5 | orchestrator reads fresh quota via its own statusLine | quota.json is **stale-by-nature** in v1 (headless `-p` almost certainly runs no statusLine — verify in pre-flight); gate = last reading + age + `resets_at`; **count cap governs nights 1–5** | spec §13 already count-capped; don't overbuild until measured |
@@ -25,7 +25,7 @@ Status: aligned 2026-08-15 evening; not yet built. This file is the execution co
 | D14 | permissions | worker gets the apex `settings.local.json` broad allows via `child_propagate` merge (no `--dangerously-skip-permissions`; cboot's passthrough allowlist is `--resume`/`--model` only); hooks fire in headless (verified: hb-guard block message returned by a real worker 2026-08-16) | reuse the mileqa'd dispatch channel as-is |
 | D15 | worker model + bound | per-item `model:` frontmatter, default `sonnet`; wall-clock cap = min(item `time_cap_min`, config `item_cap_min`) via `CBOOT_EXEC_TIMEOUT` + process-group kill (no `--max-turns`: not passable through cboot) | cost; mileqa's 3-round/2-coda cap is real |
 
-Deliberately unchanged from spec: I1, I3, I4, I5, I6, I7; §5 flag schema/states; §6 detector; §7 tick logic; §8.4 orphan sweep (attempts ≤3); §10.2 terminus table; §11.3 exhaustion-is-unexpected + dumb diag write; §13 rollout (count cap 1 → 2 → quota-bound).
+Deliberately unchanged from spec: I1, I3, I4, I5, I6, I7; §6 detector; §8.4 orphan sweep (attempts ≤3); §10.2 terminus table; §11.3 exhaustion-is-unexpected + dumb diag write; §13 rollout (count cap 1 → 2 → quota-bound). **Extended, not contradicted:** §5.3 gains three runner transitions (quota gate closed pre-pop → inflight→go and retry next tick; queue empty → inflight→absent; tick removes an expired `go`) and a `pid_start` field; §7 tick also touches `state/last-tick` and refuses within `item_cap_min` of close.
 
 ---
 
@@ -63,9 +63,12 @@ Unchanged: `.state/`, `.tmp/`, `.templates/`, `.codex/settings.json`, `checkWinT
 | sandbox deny overlay | `<sandbox>/.claude/settings.local.json` | prefix denies for the obvious forms (belt) |
 | hb-guard.sh/.py | same overlay, PreToolUse(Bash) | live-tree path containment; git global-option ban + subcommand allowlist; gh read-only allowlist; wrapper peeling; credential/env tokens; non-ASCII exe |
 | git worktree semantics | — | *not* claimed as a control any more (live HEAD may not be main); the branch/checkout rules in hb-guard cover it |
-| time/count caps | runner + tick | `min(item, config)` cap; process-group kill; count cap counts crashes too |
+| time/count caps | runner + tick | `min(item, config)` cap; process-group kill (also after a normal return); count cap counts crashes too |
+| PR text scrub | `runner.publish` | the worker's outcome text becomes PR title/body only after `scrub.py <file>` passes; otherwise the body is withheld (title cleaned; leading `-` stripped) |
+| worker web | sandbox overlay | `WebFetch`/`WebSearch` denied unless `worker_web: true` (exfiltration surface); only `.state/work` (not memory) is copied into the sandbox |
+| alias mounts | `runner.apex_aliases` → `HB_APEX_ALIASES` | hb-guard's containment covers `/mnt/d/claudette` etc. and refuses Windows drive paths / `.exe` interop |
 
-Honest limits: same OS user (disk-readable token); a script file that shells out is not inspected; GitHub can't tell worker from user on one account.
+Honest limits: same OS user (disk-readable token, BL-44); the credential strip is env-only (hb-guard refuses `unset/export/env -u` of protected names and git exec options, but a script *file* that shells out is not inspected); a double-forking script escapes the process-group kill; GitHub can't tell worker from user on one account.
 
 ## 3. Build order (each step: build → test → commit on `feature/hb`)
 

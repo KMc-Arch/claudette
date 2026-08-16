@@ -295,6 +295,7 @@ class TestTickWindow(Base):
         self.open()
         f = self.flag(); self.assertEqual(f["status"], "go")
         self.assertTrue(hb.NIGHT.exists())
+        f["window_closes_at"] = hb.iso(hb.now_utc() + timedelta(minutes=5)); hb.write_atomic(hb.GO, hb.dump_yaml(f))  # it is closing time
         hb.window_close(self.cfg)
         self.assertIsNone(self.flag())
         summ = list((hb.inbox(self.apex)).glob("night-*.md"))
@@ -477,10 +478,96 @@ class TestRunner(Base):
         self.assertFalse(ok); self.assertIn("seven_day", why)
 
     def test_worker_env_has_no_credentials(self):
-        env = runner.worker_env(self.cfg, self.apex / ".hb-heartbeat" / "sandbox" / "X", "X", 60)
-        self.assertNotIn("GH_TOKEN", env); self.assertEqual(env["GIT_CONFIG_KEY_0"], "credential.helper")
-        self.assertTrue(Path(env["GH_CONFIG_DIR"]).is_dir()); self.assertEqual(env["GIT_TERMINAL_PROMPT"], "0")
+        os.environ["GH_TOKEN"] = "ghp_should_be_stripped"; os.environ["GIT_SSH_COMMAND"] = "ssh -i x"
+        try:
+            env = runner.worker_env(self.cfg, self.apex / ".hb-heartbeat" / "sandbox" / "X", "X", 60)
+        finally:
+            os.environ.pop("GH_TOKEN"); os.environ.pop("GIT_SSH_COMMAND")
+        self.assertNotIn("GH_TOKEN", env); self.assertNotIn("GIT_SSH_COMMAND", env)
+        self.assertEqual(env["GIT_CONFIG_COUNT"], "2")
+        self.assertEqual((env["GIT_CONFIG_KEY_0"], env["GIT_CONFIG_VALUE_0"]), ("credential.helper", ""))
+        self.assertEqual((env["GIT_CONFIG_KEY_1"], env["GIT_CONFIG_VALUE_1"]), ("core.askPass", "/bin/false"))
+        self.assertEqual(env["GIT_CONFIG_GLOBAL"], "/dev/null"); self.assertEqual(env["GIT_CONFIG_NOSYSTEM"], "1")
+        self.assertTrue(Path(env["GH_CONFIG_DIR"]).is_dir()); self.assertFalse(list(Path(env["GH_CONFIG_DIR"]).glob("hosts.yml")))
+        self.assertTrue(env["XDG_CONFIG_HOME"].startswith(env["GH_CONFIG_DIR"]))
+        self.assertEqual(env["GIT_TERMINAL_PROMPT"], "0")
         self.assertEqual(env["HB_SANDBOX"], str(self.apex / ".hb-heartbeat" / "sandbox" / "X"))
+        self.assertIn("HB_APEX_ALIASES", env)
+        # behavioural: git under this env resolves NO credential helper for github.com
+        r = subprocess.run(["git", "config", "--get-all", "credential.helper"], env=env, capture_output=True, text=True, cwd=str(self.apex))
+        self.assertEqual(r.stdout.strip(), "")
+        r = subprocess.run(["gh", "auth", "status"], env=env, capture_output=True, text=True)
+        self.assertNotEqual(r.returncode, 0)
+
+    def test_pid_start_identity(self):
+        me = os.getpid()
+        self.assertTrue(hb.pid_alive(me, hb.proc_start(me)))
+        self.assertFalse(hb.pid_alive(me, "1"))                                # live pid, wrong start → not ours
+        self.assertTrue(hb.pid_alive(me, None))
+
+    def test_cap_reaches_worker_env(self):
+        os.environ["HB_FAKE_MODE"] = "envdump"
+        p = self.s.approve()
+        fm, body, _ = hb.parse_item(p); fm["time_cap_min"] = 500; p.write_text(hb.render_item(fm, body))
+        c = self._claim(); e = runner.run(c, self.cfg)
+        dumped = json.loads((hb.inbox(self.apex) / "BL-07" / "context.md").read_text())
+        self.assertEqual(int(dumped["CBOOT_EXEC_TIMEOUT"]), self.cfg["item_cap_min"] * 60)  # ceiling, not 500
+        self.assertEqual(dumped["GIT_CONFIG_VALUE_0"], ""); self.assertNotIn("GH_TOKEN", dumped)
+
+    def test_publish_scrubs_pr_text_and_titles(self):
+        self.assertEqual(runner._clean_title("--evil title\nsecond"), "evil title")
+        self.assertEqual(runner._clean_title("   \n  "), "")
+        self.assertEqual(runner._clean_title(None), "")
+        f = hb.STATE / "prtest.md"; hb.STATE.mkdir(exist_ok=True)
+        f.write_text("hello world\n")
+        ok, why = runner.scrub_text_file(f)
+        self.assertTrue(ok, why)
+        f.write_text("token: ghp_ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789abcd\n")   # scrub:allow — synthetic token fixture
+        ok, why = runner.scrub_text_file(f)
+        self.assertFalse(ok)
+
+    def test_scope_breach_reported(self):
+        self.assertEqual(runner.scope_breach(["a/b.md", "c.md"], ["a"]), ["c.md"])
+        self.assertEqual(runner.scope_breach(["a/b.md"], []), [])
+        os.environ["HB_FAKE_MODE"] = "converged"
+        p = self.s.approve()
+        fm, body, _ = hb.parse_item(p); fm["scope"] = [".codex"]; p.write_text(hb.render_item(fm, body))
+        c = self._claim(); e = runner.run(c, self.cfg)
+        self.assertIn("scope_breach:\n- HB_FAKE_WORK.md", (hb.inbox(self.apex) / "BL-07" / "outcome.md").read_text())
+
+    def test_read_result_hostile_shapes(self):
+        c = hb.list_candidates
+        sb = self.apex / ".hb-heartbeat" / "sandbox" / "Y"; rd = sb / runner.RESULT_REL; rd.mkdir(parents=True)
+        (rd / "outcome.md").mkdir()                                            # a directory named outcome.md
+        fm, body, extra = runner.read_result(sb); self.assertEqual(fm, {})
+        shutil.rmtree(rd / "outcome.md")
+        (rd / "outcome.md").write_bytes(b"---\nterminus: converged\n---\n\xff\xfe bad utf8")
+        fm, body, extra = runner.read_result(sb); self.assertEqual(fm.get("terminus"), "converged")
+        (rd / "outcome.md").write_bytes(b"x" * (runner.MAX_RESULT_BYTES + 100))
+        fm, body, extra = runner.read_result(sb); self.assertIn("truncated by runner", body)
+
+    def test_project_not_a_repo_root_is_invalid(self):
+        sub = self.apex / "grp"; sub.mkdir(); (sub / "CLAUDE.md").write_text("---\nroot: true\n---\n")
+        p = self.s.approve()
+        fm, body, _ = hb.parse_item(p); fm["project"] = "grp"; p.write_text(hb.render_item(fm, body))
+        valid, invalid = hb.list_candidates()
+        self.assertEqual(valid, []); self.assertTrue(any("not the top level" in e for e in invalid[0]["errors"]))
+        fm["project"] = "/tmp"; p.write_text(hb.render_item(fm, body))
+        valid, invalid = hb.list_candidates()
+        self.assertTrue(any("outside the apex" in e for e in invalid[0]["errors"]))
+
+    def test_late_close_leaves_fresh_flag(self):
+        cfg = dict(self.cfg); cfg["window"] = {"open": "00:00", "close": "23:59"}     # we are inside this window
+        hb.issue_flag(hb.now_utc() + timedelta(hours=3))
+        hb.write_night({"night": hb.night_key(), "runs": []})
+        hb.window_close(cfg)
+        self.assertEqual(self.flag()["status"], "go")                            # not revoked by a late close
+
+    def test_approve_validates(self):
+        with self.assertRaises(SystemExit):
+            hb.approve("bad id", None, None, None, None, self.cfg)
+        with self.assertRaises(SystemExit):
+            hb.approve("BL-07", None, "12", None, None, self.cfg)
 
     def test_publish_skipped_when_no_commits(self):
         os.environ["HB_FAKE_MODE"] = "nocommit"
@@ -523,7 +610,7 @@ class TestGuard(unittest.TestCase):
     SB = "/mnt/claudette/.hb-heartbeat/sandbox/BL-07"
 
     def guard(self, cmd, cwd=None):
-        env = dict(os.environ); env["CLAUDE_PROJECT_DIR"] = self.SB; env.pop("HB_SANDBOX", None)
+        env = dict(os.environ); env["CLAUDE_PROJECT_DIR"] = self.SB; env.pop("HB_SANDBOX", None); env["HB_APEX_ALIASES"] = "/mnt/d/claudette"
         r = subprocess.run(["bash", str(SRC / "hb-guard.sh")], input=json.dumps({"cwd": cwd or self.SB, "tool_input": {"command": cmd}}),
                            capture_output=True, text=True, env=env)
         return r.returncode
@@ -546,7 +633,17 @@ class TestGuard(unittest.TestCase):
                   "printf 'status: go' > /mnt/claudette/.hb-heartbeat/state/GO", "echo x >/mnt/claudette/x", "cp x ../../../.codex/foo.sh",
                   "ln -s /mnt/claudette/.codex live", "ls /mnt/claudette/~outbox/hb", "cat ~/.config/gh/hosts.yml", "GH_TOKEN=abc gh pr view 1",
                   "HB_HOME=/x python3 hb.py tick", "CLAUDE_PROJECT_DIR=/mnt/claudette ls", "GIT_CONFIG_COUNT=1 git status",
-                  "cd .. && ls"]:
+                  "cd .. && ls",
+                  "echo x > /mnt/claud*/.hb-heartbeat/state/GO", "cat /mnt/claudette/.hb-heartbeat/state/G?", "cat /home/KMc/.co*/gh/ho*.yml",
+                  "git rebase -x 'git status' HEAD~1", "git bisect run sh -c 'x'", "git difftool HEAD~1", "env -u GH_CONFIG_DIR git status",
+                  "unset GH_CONFIG_DIR GIT_CONFIG_COUNT", "export HOME=/tmp", "sh -c 'unset GH_CONFIG_DIR; gh pr list'", "git -c core.pager='cp x /tmp' log",
+                  "git -c diff.external=x diff", "dd if=/dev/zero of=/mnt/claudette/.hb-heartbeat/state/GO", "cp x --target-directory=/mnt/claudette/.codex",
+                  "wget -O/mnt/claudette/x http://e", "if true; then git push origin main; fi", "{ git update-ref refs/heads/main HEAD; }", "! git push origin main",
+                  "for i in 1; do gh pr merge 1; done", "cat <(git push origin main)", "tee >(git push origin main)", "cmd.exe /c dir", "cat D:/claudette/x",
+                  "ls /mnt/d/claudette/.hb-heartbeat", "python3 -c 'import subprocess'", "env -i git status", "git add -p", "git commit -e -m x",
+                  "cat ~/.claude/.credentials.json", "cat /home/KMc/.git-credentials", "cat ~/.ssh/id_rsa", "cat ~/.ssh/id_ed25519", "cat ~/.netrc",
+                  "declare -x GH_TOKEN=x", "ls ../*", "GITHUB_TOKEN=x gh pr view 1", "XDG_CONFIG_HOME=/tmp gh pr view 1", "PATH=/x:$PATH ls",
+                  "git --config-env=user.name=X commit -m x", "python3 -c \"__import__('os').system('gh pr merge 1')\""]:
             self.assertEqual(self.guard(c), 2, f"should block: {c}")
 
     def test_allows(self):
@@ -559,7 +656,9 @@ class TestGuard(unittest.TestCase):
                   "cat .codex/start.md", "python3 -m pytest tests/", "grep -rn foo .", "echo main", "echo 'git push origin main'",
                   "git commit -m 'fix; gh pr merge 1'", "git log --grep='push'", "cd /mnt/claudette/.hb-heartbeat/sandbox/BL-07 && ls",
                   "ls /tmp", "cat ~/.claude/settings.json", "git status; ls", "git add -A && git commit -m 'msg with | pipe'",
-                  "cat <<EOF > notes.md\ngit push origin main\nEOF", "python3 - <<'EOF'\nprint(1)\nEOF"]:
+                  "cat <<EOF > notes.md\ngit push origin main\nEOF", "python3 - <<'EOF'\nprint(1)\nEOF",
+                  "git log -p -1", "ls *.log", "for f in *.md; do echo $f; done", "cat <(echo hi)", "export FOO=bar", "unset FOO",
+                  "if true; then echo hi; fi", "curl http://example.com/x", "echo a:b", "python3 -c 'print(1)'", "git checkout -b hb/x2"]:
             self.assertEqual(self.guard(c), 0, f"should allow: {c}")
 
 

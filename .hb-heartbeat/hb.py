@@ -231,7 +231,7 @@ def claim_flag(pid: int | None = None) -> dict | None:
             return None
         d.update({"status": "inflight", "claimed_at": iso(now_utc()), "pid": pid, "pid_start": proc_start(pid),
                   "transcript_path": None, "item_id": None})
-        tmp.write_text(dump_yaml(d), encoding="utf-8")
+        write_atomic(tmp, dump_yaml(d))       # separate temp + replace: a failed write never truncates the token
         os.rename(tmp, GO)
     except Exception as e:
         # never leave the token renamed away: best-effort restore, then report
@@ -448,6 +448,26 @@ def project_root_for(item_root: Path, fm: dict) -> Path:
     return root
 
 
+def project_errors(item_root: Path, fm: dict) -> list[str]:
+    """The item's project must resolve inside the apex AND be the top level of its own git repo (or the apex).
+    Roots that are merely folders inside the apex repo (gitignored groups) cannot be worked: a worktree of the
+    apex would not even contain their files."""
+    try:
+        proj = project_root_for(item_root, fm)
+    except ValueError as e:
+        return [str(e)]
+    if not proj.is_dir():
+        return [f"project dir missing: {proj}"]
+    try:
+        top = subprocess.run(["git", "-C", str(proj), "rev-parse", "--show-toplevel"], capture_output=True,
+                             text=True, timeout=30).stdout.strip()
+    except (OSError, subprocess.TimeoutExpired):
+        return [f"project {proj}: git unavailable"]
+    if not top or Path(top).resolve() != proj.resolve():
+        return [f"project {proj} is not the top level of its own git repo (toplevel={top or 'none'}) — not workable"]
+    return []
+
+
 def pop_order(candidate: dict) -> tuple:
     fm = candidate["fm"]
     return (-int(fm["priority"]), parse_iso(fm["approved_at"]) or now_utc(), candidate["path"].name)
@@ -465,6 +485,8 @@ def list_candidates() -> tuple[list[dict], list[dict]]:
             if p.name == "start.md":
                 continue
             fm, body, errs = parse_item(p)
+            if not errs:
+                errs += project_errors(root, fm)
             c = {"path": p, "root": root, "root_name": r["name"], "fm": fm, "body": body, "errors": errs}
             (invalid if errs else valid).append(c)
     valid.sort(key=pop_order)
@@ -581,6 +603,14 @@ def approve(item_id: str, project: str | None, priority: int | None, model: str 
     dst = outbox(root) / f"{item_id}.md"
     if dst.exists() or (outbox(root) / "inflight" / f"{item_id}.md").exists():
         raise SystemExit(f"already queued: {dst}")
+    if not ID_RE.match(item_id):
+        raise SystemExit(f"invalid id {item_id!r}: must match {ID_RE.pattern}")
+    if priority is not None:
+        try:
+            if not 0 <= int(priority) <= 9:
+                raise ValueError
+        except ValueError:
+            raise SystemExit("--priority must be an integer 0..9")
     if body_file:
         body = Path(body_file).read_text(encoding="utf-8")
     else:
@@ -639,7 +669,9 @@ def window_open(cfg: dict, force: bool = False) -> None:
             return
         corpse(d, cfg)
     if not force and not in_window(cfg):
-        log(f"WARN open: {datetime.now().astimezone():%H:%M} is outside the window {cfg['window']['open']}–{cfg['window']['close']}; not issuing GO (late/replayed trigger)")
+        msg = f"open: {datetime.now().astimezone():%H:%M} is outside the window {cfg['window']['open']}–{cfg['window']['close']}; not issuing GO (late/replayed trigger). Use `hb.py window open --force` to arm by hand."
+        log("WARN " + msg)
+        print(msg, file=sys.stderr)
         return
     events = orphan_sweep(cfg)
     prune_worktrees()
@@ -660,6 +692,11 @@ def window_close(cfg: dict) -> None:
     if d is None:
         log("close: GO absent (normal)")
     elif d.get("status") == "go":
+        closes = parse_iso(d.get("window_closes_at"))
+        if closes and now_utc() < closes - timedelta(minutes=10) and in_window(cfg):
+            # a late/replayed close must not revoke a fresh window's token
+            log(f"WARN close: flag belongs to a window closing at {d.get('window_closes_at')} (still open) — leaving it")
+            return
         remove_flag("window close, quiet night end")
     elif d.get("status") == "inflight":
         if flag_alive(d):

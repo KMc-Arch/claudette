@@ -8,7 +8,7 @@ Things dropped **for this project's human / next session to read**. Visible (`~`
 
     ~inbox/<sender>/...                    # free-form drops from a person or a sibling project
     ~inbox/hb/<ITEM>/                      # Heartbeat outcome for one item (folder = pause format + outcome.md)
-    ~inbox/hb/night-<YYYY-MM-DD>.md        # Heartbeat nightly summary — written EVERY night, even when nothing ran
+    ~inbox/hb/night-<YYYY-MM-DD>.md        # Heartbeat nightly summary — APEX ~inbox only; written every night the close task runs, even when nothing ran
 
 ## Heartbeat outcome folder
 

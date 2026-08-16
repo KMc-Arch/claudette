@@ -63,18 +63,61 @@ def _env(cfg: dict | None = None) -> dict:
     return env
 
 
+def apex_aliases() -> list[str]:
+    r"""Other mount points of the same Windows directory (drvfs mounts D:\ at /mnt/d and D:\claudette at
+    /mnt/claudette). hb-guard needs them for path containment. Best effort from /proc/mounts."""
+    out = []
+    try:
+        lines = Path("/proc/mounts").read_text(encoding="utf-8", errors="replace").splitlines()
+    except OSError:
+        return out
+    apex_src = None
+    mounts = []
+    for ln in lines:
+        parts = ln.split()
+        if len(parts) < 4:
+            continue
+        mp, opts = parts[1].replace("\\040", " "), parts[3]
+        m = re.search(r"path=([^;,]+)", opts)
+        if not m:
+            continue
+        src = m.group(1).rstrip("\\").lower()
+        mounts.append((mp, src))
+        if Path(mp) == hb.APEX:
+            apex_src = src
+    if not apex_src:
+        return out
+    for mp, src in mounts:
+        if Path(mp) == hb.APEX:
+            continue
+        if src == apex_src:
+            out.append(mp)
+        elif apex_src.startswith(src + "\\") or (len(src) == 2 and src.endswith(":") and apex_src.startswith(src)):
+            rel = apex_src[len(src):].lstrip("\\").replace("\\", "/")
+            out.append(str(Path(mp) / rel))
+    return out
+
+
 def worker_env(cfg: dict, sandbox: Path, item_id: str, cap_s: int) -> dict:
-    """The worker's environment: PATH fixed, time cap, and NO git/gh credentials."""
+    """The worker's environment: PATH fixed, time cap, and NO git/gh credentials.
+    Env-only by nature (an adversarial shell child could `unset` these — hb-guard refuses unset/export/env -u
+    of protected names; the true fix is a separate OS user, backlog BL-44)."""
     env = _env(cfg)
     env["CBOOT_EXEC_TIMEOUT"] = str(cap_s)
     env["HB_ITEM_ID"] = item_id
     env["HB_SANDBOX"] = str(sandbox)
-    for k in ("GH_TOKEN", "GITHUB_TOKEN", "GH_ENTERPRISE_TOKEN", "GIT_ASKPASS", "SSH_AUTH_SOCK"):
+    env["HB_APEX_ALIASES"] = ":".join(apex_aliases())
+    for k in ("GH_TOKEN", "GITHUB_TOKEN", "GH_ENTERPRISE_TOKEN", "GIT_ASKPASS", "SSH_ASKPASS", "SSH_AUTH_SOCK",
+              "GIT_SSH", "GIT_SSH_COMMAND"):
         env.pop(k, None)
     empty_gh = sandbox / RESULT_REL.parent / "gh-empty"
     empty_gh.mkdir(parents=True, exist_ok=True)
+    (empty_gh / "xdg").mkdir(exist_ok=True)
     env["GH_CONFIG_DIR"] = str(empty_gh)               # gh: unauthenticated
+    env["XDG_CONFIG_HOME"] = str(empty_gh / "xdg")     # gh/git XDG lookups land in the sandbox
     env["GIT_TERMINAL_PROMPT"] = "0"                    # git: never prompt; a push without creds fails fast
+    env["GIT_CONFIG_GLOBAL"] = "/dev/null"              # ~/.gitconfig (URL-scoped gh helper) is not consulted
+    env["GIT_CONFIG_NOSYSTEM"] = "1"
     # reset inherited credential helpers (an empty value clears the helper list) and disable askpass
     env["GIT_CONFIG_COUNT"] = "2"
     env["GIT_CONFIG_KEY_0"] = "credential.helper"; env["GIT_CONFIG_VALUE_0"] = ""
@@ -178,8 +221,9 @@ def provision(cfg: dict, project: Path, item_id: str, fm: dict) -> dict:
         r = _git(project, "worktree", "add", "-b", branch, str(sandbox), base_sha)
     if r.returncode != 0:
         raise RuntimeError(f"worktree add failed: {r.stderr.strip()}")
-    # read-only copies (copy IS the isolation; the sandbox's .state is discarded)
-    for rel in ("memory", "work"):
+    # read-only copies (copy IS the isolation; the sandbox's .state is discarded). Only .state/work travels —
+    # memory (user profile, preferences) is not needed for an item and would only widen what a worker could leak.
+    for rel in ("work",):
         src, dst = project / ".state" / rel, sandbox / ".state" / rel
         if src.is_dir():
             shutil.copytree(src, dst, dirs_exist_ok=True)
@@ -203,8 +247,11 @@ def provision(cfg: dict, project: Path, item_id: str, fm: dict) -> dict:
     # by child propagation — existing keys survive)
     claude_dir = sandbox / ".claude"
     claude_dir.mkdir(exist_ok=True)
+    deny = list(SANDBOX_DENY)
+    if not cfg.get("worker_web", False):
+        deny += ["WebFetch", "WebSearch"]                # exfiltration surface; opt in per instance via config
     overlay = {
-        "permissions": {"deny": SANDBOX_DENY},
+        "permissions": {"deny": deny},
         "hooks": {"PreToolUse": [{"matcher": "Bash", "hooks": [
             {"type": "command", "command": f"bash \"{(hb.HB / 'hb-guard.sh').as_posix()}\""}]}]},
     }
@@ -292,6 +339,11 @@ def spawn_worker(cfg: dict, prov: dict, prompt: str, fm: dict, on_session=None) 
                 pass
             out, err = proc.communicate()
             break
+    # whatever remains of the worker's process group (detached helpers, tool servers) dies with the worker
+    try:
+        os.killpg(proc.pid, signal.SIGKILL)
+    except (ProcessLookupError, PermissionError):
+        pass
     raw = (out or "").strip()
     try:
         env_json = json.loads(raw)
@@ -315,8 +367,8 @@ def read_result(sandbox: Path) -> tuple[dict, str, dict]:
     rd = sandbox / RESULT_REL
     fm, body = {}, ""
     out = rd / "outcome.md"
-    if out.exists():
-        text = out.read_text(encoding="utf-8-sig")
+    if out.is_file() and not out.is_symlink():
+        text = _read_capped(out)
         m = hb.FM_RE.match(text)
         if m:
             try:
@@ -331,18 +383,42 @@ def read_result(sandbox: Path) -> tuple[dict, str, dict]:
     extra = {}
     for name in ("context.md", "state.md"):
         p = rd / name
-        if p.exists():
-            extra[name] = p.read_text(encoding="utf-8-sig")
+        if p.is_file() and not p.is_symlink():
+            extra[name] = _read_capped(p)
     return fm, body, extra
 
 
-def pr_url(project: Path, branch: str, cfg: dict | None = None) -> str | None:
+MAX_RESULT_BYTES = 512 * 1024
+
+
+def _read_capped(p: Path) -> str:
+    """Worker-written files: regular files only, bounded size, tolerant decoding (never hang or crash the runner)."""
     try:
-        r = subprocess.run(["gh", "pr", "view", branch, "--json", "url", "-q", ".url"], cwd=str(project),
+        with open(p, "rb") as f:
+            data = f.read(MAX_RESULT_BYTES + 1)
+    except OSError:
+        return ""
+    if len(data) > MAX_RESULT_BYTES:
+        data = data[:MAX_RESULT_BYTES] + b"\n\n[truncated by runner: RESULT file exceeded 512 KB]\n"
+    return data.decode("utf-8-sig", errors="replace")
+
+
+def pr_url(project: Path, branch: str, cfg: dict | None = None, open_only: bool = True) -> str | None:
+    """URL of the branch's PR. By default only an OPEN one counts (a merged/closed PR from an earlier run must not
+    suppress creating a new one)."""
+    try:
+        r = subprocess.run(["gh", "pr", "view", branch, "--json", "url,state"], cwd=str(project),
                            capture_output=True, text=True, timeout=60, env=_env(cfg))
-        u = r.stdout.strip()
-        return u if r.returncode == 0 and u.startswith("http") else None
-    except (OSError, subprocess.TimeoutExpired):
+        if r.returncode != 0:
+            return None
+        d = json.loads(r.stdout or "{}")
+        u = str(d.get("url") or "")
+        if not u.startswith("http"):
+            return None
+        if open_only and str(d.get("state", "")).upper() != "OPEN":
+            return None
+        return u
+    except (OSError, subprocess.TimeoutExpired, json.JSONDecodeError, ValueError):
         return None
 
 
@@ -372,7 +448,14 @@ def publish(cfg: dict, project: Path, prov: dict, item_id: str, res_fm: dict, re
         out["note"] = "publish skipped (HB_NO_PUBLISH)"
         return out
     env = _env(cfg)
-    r = _git(project, "push", "-u", "origin", f"refs/heads/{branch}:refs/heads/{branch}", env=env)
+    env["GIT_TERMINAL_PROMPT"] = "0"                    # a credential miss must fail, not hang the tick
+    try:
+        r = subprocess.run(["git", "-C", str(project), "push", "-u", "origin", f"refs/heads/{branch}:refs/heads/{branch}"],
+                           capture_output=True, text=True, env=env, timeout=600, stdin=subprocess.DEVNULL)
+    except subprocess.TimeoutExpired:
+        out["note"] = "push timed out (600s)"
+        hb.log(f"publish {item_id}: push timed out")
+        return out
     if r.returncode != 0:
         out["note"] = f"push blocked/failed (pre-push scrub or remote): {(r.stderr or r.stdout).strip()[-800:]}"
         hb.log(f"publish {item_id}: push failed rc={r.returncode}")
@@ -383,12 +466,21 @@ def publish(cfg: dict, project: Path, prov: dict, item_id: str, res_fm: dict, re
         out["pr"] = existing
         out["note"] = "PR already existed"
         return out
-    title = str(res_fm.get("summary") or f"Heartbeat {item_id}").strip().splitlines()[0][:100]
+    title = _clean_title(res_fm.get("summary")) or f"Heartbeat {item_id}"
     body_file = hb.STATE / f"pr-body-{item_id}.md"
-    body_file.write_text(
-        f"Produced unattended by Heartbeat (item `{item_id}`, branch `{branch}`, base `{prov['base_sha'][:10]}`).\n\n"
-        f"**Review before merging — nothing here has been merged or approved by a human.**\n\n---\n\n"
-        f"{res_body.strip()}\n", encoding="utf-8")
+    body_text = (f"Produced unattended by Heartbeat (item `{item_id}`, branch `{branch}`, base `{prov['base_sha'][:10]}`).\n\n"
+                 f"**Review before merging — nothing here has been merged or approved by a human.**\n\n---\n\n"
+                 f"{res_body.strip()}\n")
+    body_file.write_text(body_text, encoding="utf-8")
+    # scrub gate for the PR text (the pre-push hook only sees the commit range, not the title/body)
+    ok_scrub, why_scrub = scrub_text_file(body_file)
+    if not ok_scrub:
+        body_file.write_text(f"Produced unattended by Heartbeat (item `{item_id}`, branch `{branch}`).\n\n"
+                             f"**Outcome text withheld: scrub flagged the worker's outcome ({why_scrub}). "
+                             f"See the local `~inbox/hb/{item_id}/` for the full text.**\n", encoding="utf-8")
+        title = f"Heartbeat {item_id} (outcome text withheld — scrub)"
+        out["note"] = f"PR body withheld: scrub flagged ({why_scrub}); "
+        hb.log(f"publish {item_id}: scrub flagged PR text — body withheld")
     try:
         r = subprocess.run(["gh", "pr", "create", "--base", cfg.get("base_branch", "main"), "--head", branch,
                             "--title", f"hb/{item_id}: {title}", "--body-file", str(body_file)],
@@ -406,6 +498,45 @@ def publish(cfg: dict, project: Path, prov: dict, item_id: str, res_fm: dict, re
             body_file.unlink()
         except OSError:
             pass
+    return out
+
+
+def _clean_title(s) -> str:
+    s = str(s or "").strip()
+    first = s.splitlines()[0] if s else ""
+    first = "".join(ch for ch in first if ch.isprintable()).strip()
+    first = first.lstrip("-").strip()                     # never let a title parse as a gh option
+    return first[:100]
+
+
+def scrub_text_file(path: Path) -> tuple[bool, str]:
+    """Run the codex scrub over one file. (True, '') when clean or when scrub is unavailable (logged)."""
+    real_apex = Path(__file__).resolve().parent.parent
+    scrub = next((c for c in (hb.APEX / ".codex" / "explicit" / "scrub" / "scrub.py",
+                              real_apex / ".codex" / "explicit" / "scrub" / "scrub.py") if c.exists()), None)
+    if scrub is None:
+        hb.log("WARN scrub.py not found; PR text withheld (fail closed)")
+        return False, "scrub unavailable"
+    try:
+        r = subprocess.run([sys.executable, str(scrub), str(path), "--project-root", str(scrub.parent.parent.parent.parent)],
+                           capture_output=True, text=True, timeout=120, cwd=str(hb.APEX))
+    except (OSError, subprocess.TimeoutExpired) as e:
+        hb.log(f"WARN scrub failed to run: {e!r}; treating PR text as flagged")
+        return False, "scrub did not run"
+    if r.returncode == 0:
+        return True, ""
+    return False, (r.stdout or r.stderr).strip().splitlines()[-1][:200] if (r.stdout or r.stderr).strip() else f"rc={r.returncode}"
+
+
+def scope_breach(files: list, scope: list) -> list:
+    """Files touched outside the item's scope allowlist (prefix match). Reported, not enforced (v1)."""
+    if not scope:
+        return []
+    pats = [str(s).strip().rstrip("/") for s in scope if str(s).strip()]
+    out = []
+    for f in files:
+        if not any(f == p or f.startswith(p + "/") for p in pats):
+            out.append(f)
     return out
 
 
@@ -511,8 +642,12 @@ def run(claim: dict, cfg: dict) -> dict | None:
         pub["note"] = "no commits on the branch — nothing to publish"
     duration_min = round((time.time() - t_start) / 60, 1)
 
+    breach = scope_breach(files, fm.get("scope") or [])
+    if breach:
+        hb.log(f"item {item_id}: {len(breach)} file(s) outside scope: {breach[:5]}")
     outcome_fields = {
         "item_id": item_id, "branch": prov["branch"], "pr": pub["pr"], "pushed": pub["pushed"], "publish_note": pub["note"],
+        "scope_breach": breach,
         "terminus": terminus, "qa_result": qa_result, "summary": str(res_fm.get("summary") or "").strip()[:300] or None,
         "base_commit": prov["base_sha"], "head_commit": head, "has_commits": has_commits, "files_touched": files,
         "attempts": entry["attempts"], "session_id": env.get("session_id"),

@@ -12,6 +12,7 @@ Untracked runtime for the nightly runner. **KILL SWITCH: delete `GO`.**
 | `night.json` | hb.py | tonight's ledger: night, opened_at, closes_at, count_cap, runs[], corpses[], notes[], closed |
 | `last-tick` | hb.py tick | UTC timestamp of the last tick — proof the schedule runs even on quiet nights |
 | `RESULT/`, `PROMPT.md`, `gh-empty/` | (inside a sandbox's copy of this dir) | worker I/O — never in the live state dir |
+| `pr-body-<ITEM>.md` | runner (transient) | PR body being scrubbed/posted; deleted after `gh pr create` |
 | `quota.json` | statusline.sh (every interactive turn) | last `rate_limits` seen + `written_at` — stale-by-nature; the runner reads it pre-pop |
 | `config.json` | human (optional) | instance overrides of `../config.json` |
 | `diag/` | runner / detector | unexpected-failure records: corpse, quota-exhausted, unexpected-terminus, provision-failed, runner-crash |

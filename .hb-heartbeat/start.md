@@ -35,6 +35,7 @@ sandboxed *worker* and never touches the flag or the queues.
 python3 .hb-heartbeat/hb.py approve BL-07 [--priority 0-9] [--project <root>]   # backlog section -> ~outbox/hb/BL-07.md
 python3 .hb-heartbeat/hb.py status                                              # flag, tonight, queues, quota
 python3 .hb-heartbeat/hb.py kill                                                # = rm state/GO
+python3 .hb-heartbeat/hb.py window open --force                                 # arm by hand outside the window (plain `open` refuses)
 python3 .hb-heartbeat/hb.py install [--dry-run]                                 # mailboxes at every root in roots.db (idempotent)
 /checkWinTasks hb-                                                              # scheduler health
 ```
@@ -50,16 +51,17 @@ Morning review: `~inbox/hb/night-<date>.md` (always written, even for a quiet ni
   Verified 2026-08-16.
 - **The runner publishes**, not the worker: after an expected terminus it pushes `refs/heads/hb/<ITEM>` only (the live
   repo's scrub pre-push hook is the gate) and runs `gh pr create`. Nobody merges.
-- Hard-rooted sandbox worktree (`cboot.py --project SANDBOX --exec-file`), fresh per item, discarded after harvest.
+- Hard-rooted sandbox worktree (`cboot.py --project SANDBOX --exec-file`), fresh per item, discarded after harvest; only `.state/work` is copied in; `WebFetch`/`WebSearch` denied by default (`worker_web`).
+- PR title/body (worker text) pass the codex scrub before `gh pr create`; otherwise withheld.
 
 **Guards (defense in depth — allowlist-oriented, unknown shapes fail closed):** apex deny + `remote-guard.sh`
 (inherited); sandbox `settings.local.json` deny overlay + `hb-guard.sh` (path containment to the sandbox for any Bash
 token that resolves into the live tree; git subcommand allowlist with no global options; gh read-only `pr view|list|
-diff|status|checks`; wrapper peeling for env/command/eval/xargs/`bash -c`/`$(…)`; credential-file and env-override
-tokens; non-ASCII executables). Time cap (`CBOOT_EXEC_TIMEOUT` + process-group kill), count cap, GO flag.
+diff|status|checks`; wrapper peeling for env/command/eval/xargs/`bash -c`/`$(…)`/`<(…)`/shell keywords; glob expansion (fail closed toward the apex); alias mounts (`/mnt/d/claudette`) + Windows paths/.exe; `unset/export/env -u` of protected vars; git exec options (`rebase -x`, `bisect run`, `-c core.pager`…); credential-file tokens; non-ASCII executables). Time cap (`CBOOT_EXEC_TIMEOUT` + process-group kill), count cap, GO flag.
 
 **Honest residuals:** the worker runs as OS user KMc, so anything KMc can read on disk (e.g. `~/.config/gh/hosts.yml`)
-is readable in principle — the guard blocks the obvious spellings, a script file that shells out is not inspected.
+is readable in principle — the guard blocks the obvious spellings, a script *file* that shells out is not inspected, and the
+credential strip is environment-only (reversible by an `unset` the guard doesn't see, e.g. from inside such a script).
 Real separation = a dedicated OS user or a dedicated GitHub identity for the worker (user decision, not built).
 GitHub cannot tell worker from user on one account, so "no merge" is guard-level on the gh side and structural only via
 the credential strip.

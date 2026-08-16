@@ -40,11 +40,12 @@ $actOpen  = New-ScheduledTaskAction -Execute $wsl -Argument "-d $Distro -u $User
 $actClose = New-ScheduledTaskAction -Execute $wsl -Argument "-d $Distro -u $User -- python3 $py window close"
 $actTick  = New-ScheduledTaskAction -Execute $ps  -Argument "-NoProfile -ExecutionPolicy Bypass -File `"$tickWrapper`" -Distro $Distro -User $User -Apex $Apex -Cmd tick"
 
-$settingsTick = New-ScheduledTaskSettingsSet -MultipleInstances IgnoreNew -StartWhenAvailable `
+# tick: WakeToRun is safe here because the repetition is bounded to the window (no all-day wakeups)
+$settingsTick = New-ScheduledTaskSettingsSet -MultipleInstances IgnoreNew -WakeToRun -StartWhenAvailable `
     -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -ExecutionTimeLimit (New-TimeSpan -Minutes ($ItemCapMin + 15))
 $settingsOpen = New-ScheduledTaskSettingsSet -MultipleInstances IgnoreNew -WakeToRun -StartWhenAvailable `
     -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -ExecutionTimeLimit (New-TimeSpan -Minutes 10)
-$settingsClose = New-ScheduledTaskSettingsSet -MultipleInstances IgnoreNew -StartWhenAvailable `
+$settingsClose = New-ScheduledTaskSettingsSet -MultipleInstances IgnoreNew -WakeToRun -StartWhenAvailable `
     -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -ExecutionTimeLimit (New-TimeSpan -Minutes 10)
 # S4U = run whether the user is logged on or not, no stored password (needs "Log on as a batch job").
 # If registration is refused, re-run with -LogonType Interactive (task then needs a logged-on session).
@@ -52,9 +53,10 @@ $principal = New-ScheduledTaskPrincipal -UserId "$env:USERDOMAIN\$env:USERNAME" 
 
 $tOpen  = New-ScheduledTaskTrigger -Daily -At $Open
 $tClose = New-ScheduledTaskTrigger -Daily -At $Close
-# tick: daily at Open, repeating every TickMin for the window's length only (hb.py still gates on the GO flag)
-$tTick  = New-ScheduledTaskTrigger -Daily -At $Open
-$tTick.Repetition = (New-ScheduledTaskTrigger -Once -At $Open -RepetitionInterval (New-TimeSpan -Minutes $TickMin) -RepetitionDuration $windowLen).Repetition
+# tick: daily at Open+2min (after hb-window-open has issued GO), repeating every TickMin for the window's length only
+$tickStart = $openT.AddMinutes(2).ToString("HH:mm")
+$tTick  = New-ScheduledTaskTrigger -Daily -At $tickStart
+$tTick.Repetition = (New-ScheduledTaskTrigger -Once -At $tickStart -RepetitionInterval (New-TimeSpan -Minutes $TickMin) -RepetitionDuration ($windowLen - (New-TimeSpan -Minutes 2))).Repetition
 
 Register-ScheduledTask -TaskName "hb-window-open"  -Action $actOpen  -Trigger $tOpen  -Settings $settingsOpen  -Principal $principal -Force | Out-Null
 Register-ScheduledTask -TaskName "hb-window-close" -Action $actClose -Trigger $tClose -Settings $settingsClose -Principal $principal -Force | Out-Null

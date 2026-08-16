@@ -21,6 +21,7 @@ does push + PR); this guard is ALLOWLIST-oriented so unknown shapes fail closed:
 Residual (documented, not claimed): a script file executed via python/bash that itself shells out.
 Exit 0 = allow, exit 2 = block (message on stderr).
 """
+import glob as globmod
 import json
 import os
 import re
@@ -29,6 +30,13 @@ import sys
 from pathlib import Path
 
 APEX = Path(__file__).resolve().parent.parent          # this file lives in <apex>/.hb-heartbeat/
+# Alias mount points of the apex (drvfs mounts the same Windows dir more than once, e.g. /mnt/d/claudette);
+# runner.py computes them from /proc/mounts and passes HB_APEX_ALIASES=path1:path2.
+APEX_ROOTS = [APEX] + [Path(a) for a in os.environ.get("HB_APEX_ALIASES", "").split(":") if a]
+GLOB_CHARS = set("*?[")
+SHELL_KEYWORDS = {"if", "then", "else", "elif", "fi", "do", "done", "while", "until", "for", "case", "esac", "{", "}",
+                  "!", "function", "select", "in", "coproc", "((", "))", "[[", "]]"}
+ENV_MUTATORS = {"unset", "export", "declare", "typeset", "local", "readonly"}
 
 
 def block(msg: str):
@@ -44,14 +52,18 @@ GIT_ALLOWED_SUB = {
     "rm", "shortlog", "show", "show-branch", "show-ref", "stash", "status", "switch", "var", "version",
     "whatchanged", "--version", "--help", "config",
 }
+GIT_ALLOWED_SUB.discard("difftool")
 GIT_OK_GLOBAL_PREFIX = ("-P", "--no-pager")
-GIT_OK_C_KEYS = ("user.name", "user.email", "core.pager", "color.", "core.quotepath", "log.", "diff.", "advice.")
+GIT_OK_C_KEYS = ("user.name", "user.email")   # everything else (core.pager, diff.external, alias.*, …) can execute code
 GH_ALLOWED_PR_SUB = {"view", "list", "diff", "status", "checks"}
 WRAPPERS_DROP1 = {"env", "command", "exec", "nohup", "setsid", "nice", "time", "stdbuf", "ionice", "chronic", "unbuffer", "sudo", "doas", "caffeinate"}
 SHELLS = {"bash", "sh", "zsh", "dash", "ksh", "fish"}
 INTERPRETERS = {"python", "python3", "python2", "perl", "node", "ruby", "php", "lua", "awk", "gawk"}
 SECRET_RE = re.compile(r"(\.config/gh\b|hosts\.yml|\.claude/\.credentials|\bGH_TOKEN\b|\bGITHUB_TOKEN\b|\bGH_ENTERPRISE_TOKEN\b|\.git-credentials|\.netrc\b|id_rsa|id_ed25519)")
-ENV_ASSIGN_RE = re.compile(r"^(HB_HOME|CLAUDE_PROJECT_DIR|GH_CONFIG_DIR|GH_TOKEN|GITHUB_TOKEN|GH_HOST|GIT_CONFIG_[A-Z0-9_]+|GIT_DIR|GIT_WORK_TREE|GIT_COMMON_DIR|GIT_ASKPASS|GIT_SSH_COMMAND|GIT_TERMINAL_PROMPT|GIT_EXEC_PATH|GIT_CEILING_DIRECTORIES|GIT_ALTERNATE_OBJECT_DIRECTORIES|GIT_OBJECT_DIRECTORY|PATH|HOME|GIT_CONFIG_GLOBAL|GIT_CONFIG_SYSTEM|GIT_CONFIG_NOSYSTEM|GIT_NAMESPACE)=")
+PROTECTED_VARS = r"(HB_HOME|HB_SANDBOX|HB_APEX_ALIASES|CLAUDE_PROJECT_DIR|CLAUDE_CONFIG_DIR|GH_CONFIG_DIR|GH_TOKEN|GITHUB_TOKEN|GH_ENTERPRISE_TOKEN|GH_HOST|GIT_CONFIG_[A-Z0-9_]+|GIT_DIR|GIT_WORK_TREE|GIT_COMMON_DIR|GIT_ASKPASS|SSH_ASKPASS|GIT_SSH|GIT_SSH_COMMAND|GIT_TERMINAL_PROMPT|GIT_EXEC_PATH|GIT_CEILING_DIRECTORIES|GIT_ALTERNATE_OBJECT_DIRECTORIES|GIT_OBJECT_DIRECTORY|PATH|HOME|XDG_CONFIG_HOME|GIT_CONFIG_GLOBAL|GIT_CONFIG_SYSTEM|GIT_CONFIG_NOSYSTEM|GIT_NAMESPACE|LD_PRELOAD|LD_LIBRARY_PATH|PYTHONPATH|PYTHONSTARTUP|BASH_ENV|ENV|PROMPT_COMMAND)"
+ENV_ASSIGN_RE = re.compile(r"^" + PROTECTED_VARS + r"=")
+PROTECTED_NAME_RE = re.compile(r"^" + PROTECTED_VARS + r"$")
+WINPATH_RE = re.compile(r"^[A-Za-z]:[\\/]")
 GITGH_RE = re.compile(r"(^|[^A-Za-z0-9_./-])(git|gh)([^A-Za-z0-9_-]|$)")
 
 
@@ -92,34 +104,102 @@ def tokenize_segments(cmd: str):
     return segs
 
 
-def path_check(tok: str, cwd: Path, sandbox: Path | None):
-    """Any token resolving under APEX but not under the sandbox is a live-tree reference."""
-    t = tok
-    for pfx in ("--git-dir=", "--work-tree=", "--file=", "-f=", "--exec-path=", "--output=", "-o="):
-        if t.startswith(pfx):
-            t = t[len(pfx):]
-    if t.startswith("~"):
-        t = os.path.expanduser(t)
-    if not t or t.startswith("-") and not t.startswith("-/"):
-        return
-    if not ("/" in t or t in (".", "..")):
-        return
+def _under(rp: Path, root: Path) -> bool:
     try:
-        p = Path(t) if os.path.isabs(t) else (cwd / t)
-        rp = Path(os.path.normpath(str(p)))
-    except (ValueError, OSError):
-        return
-    try:
-        rp.relative_to(APEX)
+        rp.relative_to(root)
+        return True
     except ValueError:
-        return                                     # outside the apex entirely — not our concern here
-    if sandbox is not None:
+        return False
+
+
+def _in_apex_not_sandbox(rp: Path, sandbox) -> bool:
+    for root in APEX_ROOTS:
+        if _under(rp, root):
+            if sandbox is not None:
+                # the sandbox is <apex>/<rel>; under an alias root the same rel applies
+                rel = sandbox.relative_to(APEX) if _under(sandbox, APEX) else None
+                sb_here = (root / rel) if rel is not None else sandbox
+                if _under(rp, sb_here):
+                    return False
+            return True
+    return False
+
+
+def _candidates(tok: str):
+    """Sub-strings of a token that may be paths: the token, anything after '=', anything from the first '/' or '~'
+    in an option-looking token (-o/x, --file=/x, of=/x, --target-directory=/x)."""
+    out = {tok}
+    if "=" in tok:
+        out.add(tok.split("=", 1)[1])
+    if tok.startswith("-"):
+        for ch in ("/", "~"):
+            k = tok.find(ch)
+            if k > 0:
+                out.add(tok[k:])
+    return [c for c in out if c]
+
+
+def path_check(tok: str, cwd: Path, sandbox):
+    """Any token (or embedded path-ish substring) resolving under the live apex — or any alias mount of it —
+    but outside the sandbox is a live-tree reference → block. Globs are expanded (fail closed when the literal
+    prefix could reach the apex); Windows drive paths and .exe interop are blocked outright."""
+    if WINPATH_RE.match(tok) or WINPATH_RE.match(tok.split("=", 1)[-1]):
+        block(f"'{tok}' is a Windows path — no interop from the sandbox")
+    if "\\" in tok and re.search(r"[A-Za-z]:\\", tok):
+        block(f"'{tok}' contains a Windows drive path")
+    for t in _candidates(tok):
+        if t.startswith("~"):
+            t = os.path.expanduser(t)
+        if not t or not ("/" in t or t in (".", "..") or any(c in t for c in GLOB_CHARS)):
+            continue
+        if any(c in t for c in GLOB_CHARS):
+            _glob_check(t, cwd, sandbox, tok)
+            continue
         try:
-            rp.relative_to(sandbox)
-            return                                 # inside the sandbox — fine
-        except ValueError:
+            p = Path(t) if os.path.isabs(t) else (cwd / t)
+            rp = Path(os.path.normpath(str(p)))
+        except (ValueError, OSError):
+            continue
+        if _in_apex_not_sandbox(rp, sandbox):
+            block(f"'{tok}' resolves to the LIVE tree ({rp}) — the sandbox worker may only touch its own worktree")
+        try:
+            real = Path(os.path.realpath(str(rp)))
+            if real != rp and _in_apex_not_sandbox(real, sandbox):
+                block(f"'{tok}' resolves (via symlink) to the LIVE tree ({real})")
+        except OSError:
             pass
-    block(f"'{tok}' resolves to the LIVE tree ({rp}) — the sandbox worker may only touch its own worktree")
+
+
+def _glob_check(t: str, cwd: Path, sandbox, tok: str):
+    first = min((t.find(c) for c in GLOB_CHARS if c in t), default=len(t))
+    literal = t[:first]
+    base = Path(literal) if os.path.isabs(literal) else (cwd / literal)
+    basen = Path(os.path.normpath(str(base)))
+    if sandbox is not None and _under(basen, sandbox):
+        # a glob rooted inside the sandbox cannot climb out (globs never traverse '..'); only the secret check applies
+        for m in globmod.glob(str(base) + t[first:]):
+            if SECRET_RE.search(m):
+                block(f"glob '{tok}' expands to a credential file ({m})")
+        return
+    # could this pattern reach the apex? (its literal prefix is a prefix of an apex root, or lies inside one)
+    reach = any(str(root).startswith(str(basen).rstrip("/")) or _under(basen, root) for root in APEX_ROOTS)
+    reach = reach or literal in ("", "/", "/mnt", "/mnt/") or basen == Path("/") or str(basen).startswith("/mnt")
+    if not reach:
+        # outside the apex entirely — still expand for the secret check
+        for m in globmod.glob(str(base) + t[first:]) if os.path.isabs(t) else globmod.glob(str(cwd / t)):
+            if SECRET_RE.search(m):
+                block(f"glob '{tok}' expands to a credential file ({m})")
+        return
+    pattern = str(base) + t[first:]
+    matches = globmod.glob(pattern)
+    if not matches:
+        block(f"glob '{tok}' could reach the live tree and matches nothing — refusing (fail closed)")
+    for m in matches:
+        rp = Path(os.path.normpath(m))
+        if _in_apex_not_sandbox(rp, sandbox):
+            block(f"glob '{tok}' expands into the LIVE tree ({rp})")
+        if SECRET_RE.search(m):
+            block(f"glob '{tok}' expands to a credential file ({m})")
 
 
 def check_git(args: list, cwd: Path, sandbox):
@@ -145,6 +225,17 @@ def check_git(args: list, cwd: Path, sandbox):
         if not any(t in ("--get", "--get-all", "--get-regexp", "--list", "-l", "--show-origin", "--show-scope") for t in rest):
             block("git config: only reads (--get/--list) are allowed in the sandbox")
         return
+    # exec-capable options of otherwise-allowed subcommands (rebase -x, bisect run, difftool/mergetool, add -p, …)
+    if sub == "rebase" and any(t in ("-x", "--exec", "-i", "--interactive") or t.startswith("--exec=") for t in rest):
+        block("git rebase -x/-i: shells out — not allowed in the sandbox")
+    if sub == "bisect" and rest[:1] == ["run"]:
+        block("git bisect run: shells out — not allowed in the sandbox")
+    if sub in ("difftool", "mergetool"):
+        block(f"git {sub}: shells out — not allowed in the sandbox")
+    if any(t in ("-p", "--patch", "-i", "--interactive", "-e", "--edit") for t in rest) and sub in ("add", "commit", "reset", "checkout", "stash", "restore"):
+        block(f"git {sub} -p/-i/-e: interactive/editor forms are not allowed in the sandbox")
+    if any(t.startswith("--config-env") or t.startswith("--exec-path") for t in rest):
+        block("git --config-env/--exec-path are not allowed in the sandbox")
     if sub == "branch":
         if any(t in ("-D", "-d", "--delete", "-f", "--force", "-M", "-m", "--move", "-c", "-C", "--copy", "-u", "--set-upstream-to", "--unset-upstream", "--edit-description") for t in rest):
             block("git branch: delete/force/rename/copy/upstream edits are not allowed in the sandbox")
@@ -186,8 +277,11 @@ def strip_env_assign(toks: list):
 
 
 def inspect_tokens(toks: list, cwd: Path, sandbox, depth: int = 0):
-    if depth > 6 or not toks:
+    if depth > 8 or not toks:
         return
+    # shell keywords are transparent: `if …; then CMD`, `{ CMD; }`, `! CMD`, `for …; do CMD`
+    while toks and toks[0] in SHELL_KEYWORDS:
+        toks = toks[1:]
     toks = strip_env_assign(toks)
     if not toks:
         return
@@ -195,15 +289,32 @@ def inspect_tokens(toks: list, cwd: Path, sandbox, depth: int = 0):
     exe = exe_full.rsplit("/", 1)[-1]
     if not exe.isascii():
         block(f"non-ASCII executable name {exe!r}")
+    if exe.lower().endswith(".exe") or exe.lower() in ("cmd", "powershell", "pwsh", "wsl", "wslpath", "explorer"):
+        block(f"'{exe}' — Windows interop is not allowed from the sandbox")
     args = toks[1:]
+    if exe in ENV_MUTATORS:
+        for a in args:
+            name = a.split("=", 1)[0].lstrip("-")
+            if PROTECTED_NAME_RE.match(name):
+                block(f"{exe} {name}: protected environment variable")
+        return
+    for t in toks:
+        if SECRET_RE.search(t):
+            block(f"token '{t}' references credentials")
     # wrappers
     if exe in WRAPPERS_DROP1:
         rest = args
         if exe == "env":
             while rest and (rest[0].startswith("-") or "=" in rest[0]):
+                if rest[0] in ("-i", "--ignore-environment", "-", "-S", "--split-string", "-C", "--chdir"):
+                    block(f"env {rest[0]}: not allowed in the sandbox")
+                if rest[0] in ("-u", "--unset") and len(rest) > 1 and PROTECTED_NAME_RE.match(rest[1]):
+                    block(f"env -u {rest[1]}: protected environment variable")
+                if rest[0].startswith("--unset=") and PROTECTED_NAME_RE.match(rest[0].split("=", 1)[1]):
+                    block(f"{rest[0]}: protected environment variable")
                 if "=" in rest[0] and ENV_ASSIGN_RE.match(rest[0]):
                     block(f"env override '{rest[0]}' is not allowed")
-                rest = rest[1:] if not rest[0] in ("-u", "--unset", "-C", "--chdir", "-S", "--split-string") else rest[2:]
+                rest = rest[1:] if rest[0] not in ("-u", "--unset") else rest[2:]
         elif exe in ("nice", "ionice", "stdbuf", "sudo", "doas", "time", "timeout" ):
             while rest and rest[0].startswith("-"):
                 rest = rest[1:]
@@ -228,9 +339,12 @@ def inspect_tokens(toks: list, cwd: Path, sandbox, depth: int = 0):
                 path_check(t, cwd, sandbox)
         return
     if exe in INTERPRETERS:
+        # heuristic only (documented residual): any inline code mentioning git/gh/credentials/protected vars is refused
         for i, t in enumerate(args):
-            if t in ("-c", "-e", "-E") and i + 1 < len(args) and GITGH_RE.search(args[i + 1]):
-                block(f"{exe} one-liner referencing git/gh")
+            if t in ("-c", "-e", "-E", "-m") and i + 1 < len(args):
+                code = args[i + 1]
+                if GITGH_RE.search(code) or SECRET_RE.search(code) or re.search(PROTECTED_VARS, code) or "subprocess" in code or "os.system" in code or "popen" in code.lower():
+                    block(f"{exe} one-liner referencing git/gh/subprocess/credentials")
         for t in args:
             path_check(t, cwd, sandbox)
         return
@@ -249,13 +363,17 @@ def inspect_tokens(toks: list, cwd: Path, sandbox, depth: int = 0):
 def inspect_command(cmd: str, cwd: Path, sandbox, depth: int = 0):
     if depth > 6:
         return
-    # command substitutions and backticks: inspect inner text as its own command
-    for m in re.finditer(r"\$\((.*?)\)|`([^`]*)`", cmd, re.S):
-        inner = m.group(1) or m.group(2) or ""
+    # command substitutions, backticks, process substitutions: inspect inner text as its own command
+    for m in re.finditer(r"\$\((.*?)\)|`([^`]*)`|[<>]\((.*?)\)", cmd, re.S):
+        inner = m.group(1) or m.group(2) or m.group(3) or ""
         if inner.strip():
             inspect_command(inner, cwd, sandbox, depth + 1)
+    if re.search(r"\b(unset|export)\s+(-\w+\s+)*(?:" + PROTECTED_VARS.strip("()") + r")\b", cmd):
+        block("unset/export of a protected environment variable")
     if SECRET_RE.search(cmd):
         block("command references credential files/variables")
+    if re.search(r"(^|[\s'\"=])[A-Za-z]:[\\/](?![\\/])", cmd):
+        block("Windows drive path in command — no interop from the sandbox")
     if "gh auth" in cmd or "gh alias" in cmd:
         block("gh auth/alias are not allowed in the sandbox")
     for toks in tokenize_segments(cmd):
