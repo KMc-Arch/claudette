@@ -418,8 +418,9 @@ def strip_heredocs(cmd: str) -> str:
                 if str(root).lower() in body.lower():
                     block(f"{exe} heredoc mentions the LIVE tree")
             return head + m.group("d")
-        if exe in HEREDOC_EXEC or "$(" in line or "`" in line:
-            return head + body + "\n" + m.group("d")          # shell code: keep for inspection
+        piped = re.search(r"\|\s*(?:sudo\s+|env\s+|command\s+)?(?:bash|sh|zsh|dash|ksh|python3?|perl|node|ruby|eval|xargs|source)\b", line + m.group("rest"))
+        if exe in HEREDOC_EXEC or piped or "$(" in line or "`" in line or "$(" in body or "`" in body:
+            return head + body + "\n" + m.group("d")          # shell code (or expanded body): keep for inspection
         return head + m.group("d")
     return HEREDOC_RE.sub(sub, cmd)
 

@@ -234,7 +234,7 @@ def provision(cfg: dict, project: Path, item_id: str, fm: dict) -> dict:
             continue
         # per-file: copy what the repo does NOT track (a tracked skeleton like .state/work/start.md is already in
         # the checkout and must not be overwritten — that would show as a modification the worker might commit)
-        tracked = set(_git(sandbox, "ls-files", "--", f".state/{rel}").stdout.split())
+        tracked = set(x for x in _git(sandbox, "ls-files", "-z", "--", f".state/{rel}").stdout.split("\0") if x)
         for f in src.rglob("*"):
             if not f.is_file():
                 continue
