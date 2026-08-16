@@ -20,13 +20,13 @@ sandboxed *worker* and never touches the flag or the queues.
 | `plan.md` | decisions delta vs spec + build order + verified facts |
 | `config.json` | defaults (window 00:30–06:30, tick 5m, item cap 90m, count cap 1, model sonnet); instance override `state/config.json` |
 | `hb.py` | control plane: `tick`, `window open|close`, `install`, `approve`, `status`, `kill`, `summary` |
-| `runner.py` | one item: quota gate → pop → provision worktree → spawn worker via `cboot.py --project SANDBOX --exec-file` → harvest → release |
+| `runner.py` | one item: quota gate → pop → provision worktree → spawn credential-less worker via `cboot.py --project SANDBOX --exec-file` → harvest → **push + PR (runner-side)** → outcome → release |
 | `prompt-worker.md` | the worker's brief (rules, outcome contract); rendered per item |
-| `hb-guard.sh` / `hb-guard.py` | sandbox-only PreToolUse hook: no PR merge/close/ready, no remote branch deletion, no main checkout, no update-ref/worktree |
+| `hb-guard.sh` / `hb-guard.py` | sandbox-only PreToolUse(Bash) hook: live-tree path containment, git/gh allowlists, wrapper peeling, credential tokens |
 | `templates/` | `~outbox/start.md` (**item frontmatter spec**), `~inbox/start.md`, `item.md` — materialized to every root by `hb.py install` |
-| `win/register-tasks.ps1` | Task Scheduler: `hb-window-open`, `hb-window-close`, `hb-tick` → `wsl.exe -d claude-context -u KMc -- python3 …/hb.py …` |
-| `tests/test_hb.py` | 30 zero-quota tests (flag machine, claim race, sweeps, pop order, fake-worker E2E, guard) — `python3 .hb-heartbeat/tests/test_hb.py` |
-| `state/` | runtime (untracked): `GO`, `night.json`, `quota.json`, `diag/`, `log/hb.log` — see `state/start.md` |
+| `win/register-tasks.ps1` · `win/run-tick.ps1` | Task Scheduler: `hb-window-open` (wake), `hb-window-close`, `hb-tick` (repeats only inside the window; wrapper holds a keep-awake power request) → `wsl.exe -d claude-context -u KMc -- python3 …/hb.py …` |
+| `tests/test_hb.py` | 42 zero-quota tests (flag machine, claim race, sweeps, pop order, fake-worker E2E incl. runner push to a local bare origin, crash-as-corpse, window bounds, guard allow/block corpus) — `python3 .hb-heartbeat/tests/test_hb.py` |
+| `state/` | runtime (untracked): `GO`, `night.json`, `quota.json`, `last-tick`, `diag/`, `log/hb.log` — see `state/start.md` |
 | `sandbox/<ITEM>/` | runtime worktrees (untracked); removed after harvest, kept only on an unexpected terminus |
 
 ## Daily use
@@ -44,10 +44,25 @@ Morning review: `~inbox/hb/night-<date>.md` (always written, even for a quiet ni
 
 ## Controls on the worker (what stops a 3am disaster)
 
-apex deny + `remote-guard.sh` (inherited) · sandbox `settings.local.json` deny overlay + `hb-guard.sh` (runner-written) ·
-git worktree semantics (`main` is checked out in the live tree, so the sandbox cannot check it out or `branch -f` it) ·
-`/scrub` before push (worker rule) · time cap (`CBOOT_EXEC_TIMEOUT`) · count cap · GO flag.
-Honest limit: the worker uses your `gh` token — merge is denied by guards, not made impossible.
+**Structural (not prompt, not pattern-matching):**
+- The worker has **no git or gh credentials**: `GH_CONFIG_DIR` points at an empty dir, inherited credential helpers are
+  reset, `GIT_TERMINAL_PROMPT=0`. A push from inside the sandbox fails with "could not read Username"; `gh` is logged out.
+  Verified 2026-08-16.
+- **The runner publishes**, not the worker: after an expected terminus it pushes `refs/heads/hb/<ITEM>` only (the live
+  repo's scrub pre-push hook is the gate) and runs `gh pr create`. Nobody merges.
+- Hard-rooted sandbox worktree (`cboot.py --project SANDBOX --exec-file`), fresh per item, discarded after harvest.
+
+**Guards (defense in depth — allowlist-oriented, unknown shapes fail closed):** apex deny + `remote-guard.sh`
+(inherited); sandbox `settings.local.json` deny overlay + `hb-guard.sh` (path containment to the sandbox for any Bash
+token that resolves into the live tree; git subcommand allowlist with no global options; gh read-only `pr view|list|
+diff|status|checks`; wrapper peeling for env/command/eval/xargs/`bash -c`/`$(…)`; credential-file and env-override
+tokens; non-ASCII executables). Time cap (`CBOOT_EXEC_TIMEOUT` + process-group kill), count cap, GO flag.
+
+**Honest residuals:** the worker runs as OS user KMc, so anything KMc can read on disk (e.g. `~/.config/gh/hosts.yml`)
+is readable in principle — the guard blocks the obvious spellings, a script file that shells out is not inspected.
+Real separation = a dedicated OS user or a dedicated GitHub identity for the worker (user decision, not built).
+GitHub cannot tell worker from user on one account, so "no merge" is guard-level on the gh side and structural only via
+the credential strip.
 
 ## Rollout (spec §13)
 

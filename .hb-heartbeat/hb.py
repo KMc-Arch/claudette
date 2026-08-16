@@ -140,7 +140,19 @@ def dump_yaml(d: dict) -> str:
     return yaml.safe_dump(d, sort_keys=False, default_flow_style=False, allow_unicode=True)
 
 
-def pid_alive(pid) -> bool:
+def proc_start(pid) -> str | None:
+    """Process start time (jiffies since boot, /proc/<pid>/stat field 22) — identity beyond a reusable pid."""
+    try:
+        with open(f"/proc/{int(pid)}/stat", "rb") as f:
+            stat = f.read().decode("ascii", "replace")
+        return stat.rsplit(")", 1)[1].split()[19]
+    except (OSError, ValueError, IndexError, TypeError):
+        return None
+
+
+def pid_alive(pid, start=None) -> bool:
+    """kill -0 plus, when a start time was recorded, a /proc start-time match (pid reuse after a WSL VM
+    restart would otherwise make a corpse look alive)."""
     try:
         pid = int(pid)
     except (TypeError, ValueError):
@@ -149,11 +161,19 @@ def pid_alive(pid) -> bool:
         return False
     try:
         os.kill(pid, 0)
-        return True
     except ProcessLookupError:
         return False
     except PermissionError:
-        return True
+        pass
+    if start:
+        now_start = proc_start(pid)
+        if now_start is not None and str(now_start) != str(start):
+            return False
+    return True
+
+
+def flag_alive(d: dict | None) -> bool:
+    return bool(d) and pid_alive(d.get("pid"), d.get("pid_start"))
 
 
 # ── GO flag ──────────────────────────────────────────────────────────
@@ -201,17 +221,27 @@ def claim_flag(pid: int | None = None) -> dict | None:
     except FileNotFoundError:
         return None
     try:
-        d = yaml.safe_load(tmp.read_text(encoding="utf-8")) or {}
-    except (OSError, yaml.YAMLError):
-        d = {}
-    if not isinstance(d, dict) or d.get("status") != "go":
-        # not ours to claim — put it back untouched
+        try:
+            d = yaml.safe_load(tmp.read_text(encoding="utf-8")) or {}
+        except (OSError, yaml.YAMLError):
+            d = {}
+        if not isinstance(d, dict) or d.get("status") != "go":
+            # not ours to claim — put it back untouched
+            os.rename(tmp, GO)
+            return None
+        d.update({"status": "inflight", "claimed_at": iso(now_utc()), "pid": pid, "pid_start": proc_start(pid),
+                  "transcript_path": None, "item_id": None})
+        tmp.write_text(dump_yaml(d), encoding="utf-8")
         os.rename(tmp, GO)
+    except Exception as e:
+        # never leave the token renamed away: best-effort restore, then report
+        log(f"ERROR claim_flag failed mid-claim: {e!r}; restoring GO")
+        try:
+            if tmp.exists() and not GO.exists():
+                os.rename(tmp, GO)
+        except OSError as e2:
+            log(f"ERROR restore failed: {e2!r} — GO may be missing; window open will re-issue")
         return None
-    d.update({"status": "inflight", "claimed_at": iso(now_utc()), "pid": pid,
-              "transcript_path": None, "item_id": None})
-    tmp.write_text(dump_yaml(d), encoding="utf-8")
-    os.rename(tmp, GO)
     log(f"claimed GO (inflight, pid {pid})")
     return d
 
@@ -347,6 +377,7 @@ def install(dry_run: bool = False) -> list[str]:
 # ── items ────────────────────────────────────────────────────────────
 
 FM_RE = re.compile(r"\A---\s*\n(.*?)\n---\s*\n?(.*)\Z", re.S)
+ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
 
 
 def parse_item(path: Path) -> tuple[dict, str, list[str]]:
@@ -370,8 +401,15 @@ def parse_item(path: Path) -> tuple[dict, str, list[str]]:
             errs.append(f"missing {k}")
     if fm.get("recipient") != RECIPIENT:
         errs.append(f"recipient != {RECIPIENT}")
-    if fm.get("id") and path.stem != str(fm["id"]):
-        errs.append(f"filename {path.name} != id {fm['id']}.md")
+    if fm.get("id") is not None:
+        fm["id"] = str(fm["id"])
+        if not ID_RE.match(fm["id"]):
+            errs.append(f"id {fm['id']!r} not matching {ID_RE.pattern}")
+        if path.stem != fm["id"]:
+            errs.append(f"filename {path.name} != id {fm['id']}.md")
+    proj = str(fm.get("project", ".") or ".")
+    if ".." in Path(proj).parts or proj.startswith("^/^/.."):
+        errs.append("project must not contain '..'")
     try:
         p = int(fm.get("priority"))
         if not 0 <= p <= 9:
@@ -402,7 +440,12 @@ def project_root_for(item_root: Path, fm: dict) -> Path:
     if p.startswith("^/"):
         return (item_root / p[2:]).resolve()
     q = Path(p)
-    return q if q.is_absolute() else (item_root / q).resolve()
+    root = q if q.is_absolute() else (item_root / q).resolve()
+    try:
+        root.relative_to(APEX)
+    except ValueError:
+        raise ValueError(f"project {p!r} resolves outside the apex: {root}")
+    return root
 
 
 def pop_order(candidate: dict) -> tuple:
@@ -428,16 +471,48 @@ def list_candidates() -> tuple[list[dict], list[dict]]:
     return valid, invalid
 
 
-def claim_item(c: dict) -> Path | None:
-    """Atomic move outbox -> inflight. The move IS the claim."""
+def _pidfile(inflight_path: Path) -> Path:
+    return inflight_path.with_suffix(".pid")
+
+
+def claim_item(c: dict, pid: int | None = None) -> Path | None:
+    """Atomic move outbox -> inflight. The move IS the claim. A sidecar <ITEM>.pid (pid + start time)
+    lets the sweeps recognise a live runner even after the kill switch removed GO."""
     dst = c["path"].parent / "inflight" / c["path"].name
     dst.parent.mkdir(parents=True, exist_ok=True)
     try:
         os.rename(c["path"], dst)
     except FileNotFoundError:
         return None
+    pid = pid or os.getpid()
+    write_atomic(_pidfile(dst), json.dumps({"pid": pid, "pid_start": proc_start(pid), "claimed_at": iso(now_utc())}))
     log(f"claimed item {c['fm']['id']} from {c['root_name']}")
     return dst
+
+
+def item_live(inflight_path: Path) -> bool:
+    try:
+        d = json.loads(_pidfile(inflight_path).read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return False
+    return pid_alive(d.get("pid"), d.get("pid_start"))
+
+
+def unclaim_item(inflight_path: Path, outbox_path: Path) -> None:
+    """inflight -> outbox (content already rewritten by the caller if attempts changed)."""
+    try:
+        _pidfile(inflight_path).unlink()
+    except FileNotFoundError:
+        pass
+    os.rename(inflight_path, outbox_path)
+
+
+def finish_item(inflight_path: Path) -> None:
+    for p in (_pidfile(inflight_path), inflight_path):
+        try:
+            p.unlink()
+        except FileNotFoundError:
+            pass
 
 
 def orphan_sweep(cfg: dict, live_item_id: str | None = None) -> list[str]:
@@ -450,8 +525,8 @@ def orphan_sweep(cfg: dict, live_item_id: str | None = None) -> list[str]:
             continue
         for p in sorted(infl.glob("*.md")):
             fm, body, errs = parse_item(p)
-            item_id = fm.get("id") or p.stem
-            if live_item_id and item_id == live_item_id:
+            item_id = str(fm.get("id") or p.stem)
+            if (live_item_id and item_id == str(live_item_id)) or item_live(p):
                 continue
             attempts = int(fm.get("attempts") or 0) + 1
             fm["attempts"] = attempts
@@ -460,6 +535,10 @@ def orphan_sweep(cfg: dict, live_item_id: str | None = None) -> list[str]:
                 dst_dir = inbox(root) / item_id
                 dst_dir.mkdir(parents=True, exist_ok=True)
                 shutil.move(str(p), str(dst_dir / "item.md"))
+                try:
+                    _pidfile(p).unlink()
+                except FileNotFoundError:
+                    pass
                 write_outcome(dst_dir, {"item_id": item_id, "terminus": "failed-repeatedly", "attempts": attempts,
                                         "branch": None, "pr": None, "qa_result": "n/a"},
                               f"Orphaned {attempts} times (attempts_max {amax}). This is a bug report, not a backlog item.")
@@ -467,7 +546,7 @@ def orphan_sweep(cfg: dict, live_item_id: str | None = None) -> list[str]:
             else:
                 back = p.parent.parent / p.name
                 write_atomic(p, render_item(fm, body))
-                os.rename(p, back)
+                unclaim_item(p, back)
                 events.append(f"orphan {item_id} @{r['name']}: attempts={attempts} -> outbox")
     for e in events:
         log(e)
@@ -540,8 +619,28 @@ def compute_close(cfg: dict) -> datetime:
     return close
 
 
-def window_open(cfg: dict) -> None:
+def in_window(cfg: dict, now: datetime | None = None) -> bool:
+    """True iff local wall-clock is inside [open, close) — handles overnight windows (open > close)."""
+    now = (now or datetime.now().astimezone()).astimezone()
+    o = local_today_at(cfg["window"]["open"]).timetz().replace(tzinfo=None)
+    c = local_today_at(cfg["window"]["close"]).timetz().replace(tzinfo=None)
+    tnow = now.timetz().replace(tzinfo=None)
+    if o <= c:
+        return o <= tnow < c
+    return tnow >= o or tnow < c
+
+
+def window_open(cfg: dict, force: bool = False) -> None:
     STATE.mkdir(parents=True, exist_ok=True)
+    d = read_flag()
+    if d and d.get("status") == "inflight":
+        if flag_alive(d):
+            log(f"ERROR open: runner pid {d.get('pid')} still alive on {d.get('item_id')} — refusing to re-arm over a live run")
+            return
+        corpse(d, cfg)
+    if not force and not in_window(cfg):
+        log(f"WARN open: {datetime.now().astimezone():%H:%M} is outside the window {cfg['window']['open']}–{cfg['window']['close']}; not issuing GO (late/replayed trigger)")
+        return
     events = orphan_sweep(cfg)
     prune_worktrees()
     closes = compute_close(cfg)
@@ -551,6 +650,11 @@ def window_open(cfg: dict) -> None:
 
 
 def window_close(cfg: dict) -> None:
+    n = read_night()
+    if n.get("night") != night_key():
+        # no open recorded for tonight (machine off / trigger missed): still produce tonight's file
+        write_night({"night": night_key(), "opened_at": None, "closes_at": None, "count_cap": cfg.get("count_cap"),
+                     "runs": [], "notes": [f"close without a recorded open (previous night.json: {n.get('night')})"]})
     d = read_flag()
     live_id = None
     if d is None:
@@ -558,7 +662,7 @@ def window_close(cfg: dict) -> None:
     elif d.get("status") == "go":
         remove_flag("window close, quiet night end")
     elif d.get("status") == "inflight":
-        if pid_alive(d.get("pid")):
+        if flag_alive(d):
             # D7: never kill mid-item. Log loudly, leave the flag; the runner releases it and the
             # next tick removes an expired `go`.
             live_id = d.get("item_id")
@@ -571,8 +675,11 @@ def window_close(cfg: dict) -> None:
         log(f"ERROR close: GO in unknown state {d!r}; removing")
         remove_flag("window close, corrupt flag")
     events = orphan_sweep(cfg, live_item_id=live_id)
+    n = read_night()
     if events:
-        n = read_night(); n.setdefault("notes", []).extend(events); write_night(n)
+        n.setdefault("notes", []).extend(events)
+    n["closed"] = True
+    write_night(n)
     write_summary(cfg)
 
 
@@ -632,16 +739,17 @@ def write_summary(cfg: dict) -> Path:
     dst = dst_dir / f"night-{key}.md"
     runs = n.get("runs", [])
     q = read_quota()
+    lt = (STATE / "last-tick").read_text().strip() if (STATE / "last-tick").exists() else "never"
     lines = [f"# Heartbeat night {key}", "",
-             f"- opened: {n.get('opened_at', '—')}  closes: {n.get('closes_at', '—')}  count_cap: {n.get('count_cap', cfg.get('count_cap'))}",
+             f"- opened: {n.get('opened_at', '—')}  closes: {n.get('closes_at', '—')}  count_cap: {n.get('count_cap', cfg.get('count_cap'))}  last tick: {lt}",
              f"- runs: {len(runs)}   corpses: {len(n.get('corpses', []))}",
              f"- quota reading (last statusLine write): {json.dumps(q.get('rate_limits')) if q else 'none'} @ {q.get('written_at', '—') if q else '—'}",
              ""]
     if runs:
-        lines += ["| item | root | terminus | qa | branch | pr | min | cost |", "|---|---|---|---|---|---|---|---|"]
+        lines += ["| item | root | terminus | qa | branch | pushed | pr | min | cost |", "|---|---|---|---|---|---|---|---|---|"]
         for r in runs:
             lines.append(f"| {r.get('item_id')} | {r.get('root_name')} | {r.get('terminus')} | {r.get('qa_result')} | "
-                         f"{r.get('branch')} | {r.get('pr') or '—'} | {r.get('duration_min')} | {r.get('cost_usd')} |")
+                         f"{r.get('branch')} | {r.get('pushed')} | {r.get('pr') or '—'} | {r.get('duration_min')} | {r.get('cost_usd')} |")
         lines.append("")
     else:
         lines += ["No items ran tonight.", ""]
@@ -661,14 +769,24 @@ def write_summary(cfg: dict) -> Path:
 
 # ── tick ─────────────────────────────────────────────────────────────
 
+def touch_last_tick() -> None:
+    """Proof the schedule runs (spec O5): a timestamp, not a log line, so quiet ticks stay quiet."""
+    try:
+        STATE.mkdir(parents=True, exist_ok=True)
+        write_atomic(STATE / "last-tick", iso(now_utc()) + "\n")
+    except OSError:
+        pass
+
+
 def tick(cfg: dict) -> int:
     """Reads the flag and nothing else. Quiet when absent."""
+    touch_last_tick()
     d = read_flag()
     if d is None:
         return 0
     status = d.get("status")
     if status == "inflight":
-        if pid_alive(d.get("pid")):
+        if flag_alive(d):
             return 0
         log(f"WARN tick: dead pid {d.get('pid')} on inflight flag (item {d.get('item_id')}); leaving for close sweep")
         return 0
@@ -700,15 +818,22 @@ def tick(cfg: dict) -> int:
     import runner  # noqa: WPS433 (sibling module)
     try:
         entry = runner.run(claim, cfg)
-    except Exception as e:  # last-resort: never leave the flag inflight on our own crash
-        log(f"ERROR runner crashed: {e!r}")
+    except Exception as e:
+        # Our own crash is an UNEXPECTED terminus (spec §10.2 "anything else → leave corpse"): record it as a
+        # run (so count_cap holds), write the diag, and leave GO inflight — the close sweep logs the corpse and
+        # the orphan sweep returns the item. Do NOT release: relaunching into an unknown failure all night is
+        # exactly what §7.2 forbids.
+        log(f"ERROR runner crashed: {e!r}; leaving GO inflight for the sweep")
         DIAG.mkdir(parents=True, exist_ok=True)
         write_atomic(DIAG / f"{now_utc().strftime('%Y%m%dT%H%M%SZ')}-runner-crash.json",
                      json.dumps({"kind": "runner-crash", "error": repr(e), "claim": claim}, indent=2, default=str))
-        release_flag(os.getpid(), "go")
+        night_add_run({"item_id": (read_flag() or {}).get("item_id"), "terminus": "crash", "qa_result": "n/a",
+                       "error": repr(e), "finished_at": iso(now_utc())})
         raise
     if entry:
         night_add_run(entry)
+        if read_night().get("closed"):
+            write_summary(cfg)          # the overrun finished after close: refresh the morning file
     return 0
 
 
@@ -748,7 +873,7 @@ def main(argv: list[str]) -> int:
         return tick(cfg)
     if cmd == "window":
         if rest[:1] == ["open"]:
-            window_open(cfg); return 0
+            window_open(cfg, force="--force" in rest); return 0
         if rest[:1] == ["close"]:
             window_close(cfg); return 0
         print("usage: hb.py window open|close", file=sys.stderr); return 2

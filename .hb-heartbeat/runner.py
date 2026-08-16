@@ -6,11 +6,14 @@ Sequence (spec §10.1, split per plan D1):
 
     quota gate -> pop one approved item (atomic move to inflight/) -> annotate GO
     -> provision sandbox worktree -> spawn WORKER (headless claude, hard-rooted in the sandbox,
-       via cboot.py --project SANDBOX --exec-file PROMPT) -> harvest RESULT -> write ~inbox outcome
-    -> remove worktree (branch stays) -> release GO (inflight -> go | absent)
+       via cboot.py --project SANDBOX --exec-file PROMPT; NO git/gh credentials) -> harvest RESULT
+    -> RUNNER pushes the branch (scrub pre-push hook fires in the live repo) + `gh pr create`
+    -> write ~inbox outcome -> remove worktree (branch stays) -> release GO (inflight -> go | absent)
 
-The worker never touches GO, the queues, or the live ~inbox. Its only outputs are its
-branch (+ optional PR) and RESULT/ inside its own sandbox, which this file harvests.
+The worker never touches GO, the queues, the live ~inbox, or the remote. Its only outputs are commits
+on its branch and RESULT/ inside its own sandbox, which this file harvests. Push + PR are runner
+actions with the runner's (the user's) credentials; the worker's environment has gh unauthenticated
+(empty GH_CONFIG_DIR) and git credential helpers reset, so a push from inside the sandbox fails.
 
 Standalone dry use (no flag, no spawn):  python3 runner.py --dry-run
 Fake worker for tests:                    HB_WORKER_CMD="python3 tests/fake_worker.py" (receives SANDBOX PROMPT_FILE argv)
@@ -22,34 +25,60 @@ import json
 import os
 import re
 import shutil
+import signal
 import subprocess
 import sys
 import time
 from pathlib import Path
 
+import yaml
+
 import hb  # sibling
 
 RESULT_REL = Path(".hb-heartbeat") / "state" / "RESULT"
-QUOTA_HINT = re.compile(r"rate.?limit|usage.?limit|quota|out of (extra )?usage|429|overloaded", re.I)
+QUOTA_HINT = re.compile(r"rate.?limit|usage.?limit|quota|out of (extra )?usage|\b429\b|overloaded", re.I)
+QA_RESULTS = ("converged", "held", "exhausted", "escalation", "n/a")
 
+# Belt under the hb-guard hook: prefix denies for the obvious forms (the hook is the real check).
 SANDBOX_DENY = [
-    "Bash(gh pr merge:*)", "Bash(gh pr close:*)", "Bash(gh pr ready:*)", "Bash(gh repo:*)",
-    "Bash(git update-ref:*)", "Bash(git worktree:*)", "Bash(git branch -D:*)", "Bash(git branch -f:*)",
-    "Bash(git branch --force:*)", "Bash(git checkout main:*)", "Bash(git switch main:*)",
+    "Bash(git push:*)", "Bash(git remote:*)", "Bash(git update-ref:*)", "Bash(git worktree:*)",
+    "Bash(git tag:*)", "Bash(git branch -D:*)", "Bash(git branch -f:*)", "Bash(git checkout main:*)",
+    "Bash(git switch main:*)", "Bash(gh pr merge:*)", "Bash(gh pr close:*)", "Bash(gh pr ready:*)",
+    "Bash(gh pr create:*)", "Bash(gh pr edit:*)", "Bash(gh pr review:*)", "Bash(gh repo:*)",
+    "Bash(gh auth:*)", "Bash(gh alias:*)", "Bash(gh api:*)",
 ]
 
 
 # ── helpers ──────────────────────────────────────────────────────────
 
-def _git(root: Path, *args, check=False) -> subprocess.CompletedProcess:
-    return subprocess.run(["git", "-C", str(root), *args], capture_output=True, text=True, check=check)
+def _git(root: Path, *args, check=False, env=None) -> subprocess.CompletedProcess:
+    return subprocess.run(["git", "-C", str(root), *args], capture_output=True, text=True, check=check, env=env)
 
 
-def _env() -> dict:
+def _env(cfg: dict | None = None) -> dict:
     env = dict(os.environ)
-    cfg = hb.load_config()
+    cfg = cfg or hb.load_config()
     extra = [p for p in cfg.get("extra_path", []) if p]
     env["PATH"] = os.pathsep.join(extra + [env.get("PATH", "")])
+    return env
+
+
+def worker_env(cfg: dict, sandbox: Path, item_id: str, cap_s: int) -> dict:
+    """The worker's environment: PATH fixed, time cap, and NO git/gh credentials."""
+    env = _env(cfg)
+    env["CBOOT_EXEC_TIMEOUT"] = str(cap_s)
+    env["HB_ITEM_ID"] = item_id
+    env["HB_SANDBOX"] = str(sandbox)
+    for k in ("GH_TOKEN", "GITHUB_TOKEN", "GH_ENTERPRISE_TOKEN", "GIT_ASKPASS", "SSH_AUTH_SOCK"):
+        env.pop(k, None)
+    empty_gh = sandbox / RESULT_REL.parent / "gh-empty"
+    empty_gh.mkdir(parents=True, exist_ok=True)
+    env["GH_CONFIG_DIR"] = str(empty_gh)               # gh: unauthenticated
+    env["GIT_TERMINAL_PROMPT"] = "0"                    # git: never prompt; a push without creds fails fast
+    # reset inherited credential helpers (an empty value clears the helper list) and disable askpass
+    env["GIT_CONFIG_COUNT"] = "2"
+    env["GIT_CONFIG_KEY_0"] = "credential.helper"; env["GIT_CONFIG_VALUE_0"] = ""
+    env["GIT_CONFIG_KEY_1"] = "core.askPass"; env["GIT_CONFIG_VALUE_1"] = "/bin/false"
     return env
 
 
@@ -61,12 +90,15 @@ def branch_name(cfg: dict, root: Path, item_id: str) -> str:
     return f"{prefix}{slug}/{item_id}"
 
 
+def transcript_dir_for(sandbox: Path) -> Path:
+    slug = re.sub(r"[^A-Za-z0-9]", "-", str(sandbox))
+    return Path.home() / ".claude" / "projects" / slug
+
+
 def transcript_path_for(sandbox: Path, session_id: str | None) -> str | None:
     if not session_id:
         return None
-    slug = re.sub(r"[^A-Za-z0-9]", "-", str(sandbox))
-    p = Path.home() / ".claude" / "projects" / slug / f"{session_id}.jsonl"
-    return str(p)
+    return str(transcript_dir_for(sandbox) / f"{session_id}.jsonl")
 
 
 def diag(kind: str, payload: dict) -> Path:
@@ -78,17 +110,31 @@ def diag(kind: str, payload: dict) -> Path:
     return p
 
 
+def item_cap_min(cfg: dict, fm: dict) -> int:
+    """Per-item cap may LOWER the config ceiling, never raise it (keeps the tick's near-close check honest)."""
+    ceiling = int(cfg.get("item_cap_min", 90))
+    try:
+        want = int(float(fm.get("time_cap_min") or ceiling))
+    except (TypeError, ValueError):
+        want = ceiling
+    return max(1, min(want, ceiling))
+
+
 # ── quota gate ───────────────────────────────────────────────────────
 
 def quota_gate(cfg: dict) -> tuple[bool, str, dict]:
-    """Returns (ok, reason, reading). Stale-by-nature in v1 (statusLine sink; see plan D5)."""
+    """Returns (ok, reason, reading). Stale-by-nature in v1 (statusLine sink; plan D5): a reading older
+    than quota.max_age_hours is treated like a missing reading (missing_policy decides)."""
     q = cfg.get("quota", {})
     reading = hb.read_quota()
+    allow_missing = q.get("missing_policy", "allow") == "allow"
     if not reading:
-        ok = q.get("missing_policy", "allow") == "allow"
-        return ok, "quota.json missing" + (" (allowed by policy)" if ok else " (blocked by policy)"), {}
+        return allow_missing, "quota.json missing" + (" (allowed by policy)" if allow_missing else " (blocked by policy)"), {}
     written = hb.parse_iso(reading.get("written_at"))
     age_h = (hb.now_utc() - written).total_seconds() / 3600 if written else None
+    if age_h is None or age_h > float(q.get("max_age_hours", 12)):
+        why = f"reading stale ({age_h:.1f}h > {q.get('max_age_hours', 12)}h)" if age_h is not None else "reading has no written_at"
+        return allow_missing, why + (" (allowed by policy)" if allow_missing else " (blocked by policy)"), reading
     rl = reading.get("rate_limits") or {}
     now_ts = time.time()
     notes = []
@@ -103,8 +149,6 @@ def quota_gate(cfg: dict) -> tuple[bool, str, dict]:
         if float(pct) > float(q.get(key, 100)):
             return False, f"{win} at {pct}% > {q.get(key)}% (resets_at {resets})", reading
         notes.append(f"{win} {pct}%")
-    if age_h is not None and age_h > float(q.get("max_age_hours", 12)):
-        notes.append(f"stale {age_h:.1f}h")
     return True, "; ".join(notes) or "no windows in reading", reading
 
 
@@ -127,6 +171,9 @@ def provision(cfg: dict, project: Path, item_id: str, fm: dict) -> dict:
     exists = _git(project, "rev-parse", "--verify", f"refs/heads/{branch}").returncode == 0
     if exists:
         r = _git(project, "worktree", "add", str(sandbox), branch)          # retry: continue the branch
+        mb = _git(project, "merge-base", base_ref, branch).stdout.strip()   # the commit actually branched from
+        if mb:
+            base_sha = mb
     else:
         r = _git(project, "worktree", "add", "-b", branch, str(sandbox), base_sha)
     if r.returncode != 0:
@@ -143,7 +190,7 @@ def provision(cfg: dict, project: Path, item_id: str, fm: dict) -> dict:
             shutil.copyfile(src, sandbox / ".state" / f)
     (sandbox / RESULT_REL).mkdir(parents=True, exist_ok=True)
     # core.fileMode=false on drvfs: tracked scripts are 100644, so a fresh checkout loses the exec bit
-    # and git silently ignores the scrub pre-push hook ("ignored hook" advisory). The push gate must fire.
+    # and git silently ignores the scrub pre-push hook ("ignored hook" advisory). Keep the sandbox honest too.
     hooks_path = _git(project, "config", "core.hooksPath").stdout.strip()
     if hooks_path and not Path(hooks_path).is_absolute():
         for h in (sandbox / hooks_path).glob("*"):
@@ -168,6 +215,8 @@ def provision(cfg: dict, project: Path, item_id: str, fm: dict) -> dict:
 def render_prompt(cfg: dict, prov: dict, item_root: Path, project: Path, fm: dict, body: str) -> str:
     tpl = (hb.HB / "prompt-worker.md").read_text(encoding="utf-8")
     scope = fm.get("scope") or []
+    # the item body is untrusted-ish human text: neutralize template markers and fence it
+    safe_body = body.strip().replace("{{", "{ {").replace("}}", "} }")
     fields = {
         "ITEM_ID": str(fm["id"]),
         "BRANCH": prov["branch"],
@@ -181,9 +230,9 @@ def render_prompt(cfg: dict, prov: dict, item_root: Path, project: Path, fm: dic
         "SCOPE": ("\n".join(f"- `{s}`" for s in scope) if scope else "- (whole repo)"),
         "ATTEMPT": str(int(fm.get("attempts", 0)) + 1),
         "RESUMED": "yes — the branch already has commits from a previous attempt; continue, do not restart" if prov["resumed"] else "no",
-        "TIME_CAP_MIN": str(fm.get("time_cap_min") or cfg.get("item_cap_min", 90)),
-        "ITEM_FRONTMATTER": hb.dump_yaml(fm).rstrip(),
-        "ITEM_BODY": body.strip(),
+        "TIME_CAP_MIN": str(item_cap_min(cfg, fm)),
+        "ITEM_FRONTMATTER": hb.dump_yaml(fm).rstrip().replace("{{", "{ {"),
+        "ITEM_BODY": safe_body,
     }
     for k, v in fields.items():
         tpl = tpl.replace("{{" + k + "}}", v)
@@ -192,39 +241,71 @@ def render_prompt(cfg: dict, prov: dict, item_root: Path, project: Path, fm: dic
 
 # ── spawn ────────────────────────────────────────────────────────────
 
-def spawn_worker(cfg: dict, prov: dict, prompt: str, fm: dict) -> dict:
-    """Run the worker to completion. Returns an envelope-like dict:
-    {ok, timed_out, session_id, is_error, result, cost_usd, duration_ms, raw, stderr}."""
+def spawn_worker(cfg: dict, prov: dict, prompt: str, fm: dict, on_session=None) -> dict:
+    """Run the worker to completion (own process group; killed as a group on cap). While it runs, poll
+    the sandbox's transcript dir so the GO flag's transcript_path blank is filled as soon as the session
+    boots (spec §5.5) — `on_session(transcript_path)` is called once when it appears.
+    Returns {ok, timed_out, session_id, is_error, result, cost_usd, duration_ms, raw, stderr}."""
     sandbox: Path = prov["sandbox"]
     prompt_file = sandbox / RESULT_REL.parent / "PROMPT.md"
     prompt_file.write_text(prompt, encoding="utf-8")
-    cap_s = int(float(fm.get("time_cap_min") or cfg.get("item_cap_min", 90)) * 60)
-    env = _env()
-    env["CBOOT_EXEC_TIMEOUT"] = str(cap_s)
-    env["HB_ITEM_ID"] = str(fm["id"])
+    cap_s = item_cap_min(cfg, fm) * 60
+    env = worker_env(cfg, sandbox, str(fm["id"]), cap_s)
     fake = os.environ.get("HB_WORKER_CMD")
     if fake:
         cmd = fake.split() + [str(sandbox), str(prompt_file)]
     else:
         cmd = [cfg.get("python", "python3"), str(hb.APEX / "cboot.py"), "--project", str(sandbox),
                "--exec-file", str(prompt_file), "--model", str(fm.get("model") or cfg.get("model", "sonnet"))]
+    tdir = transcript_dir_for(sandbox)
+    before = set(p.name for p in tdir.glob("*.jsonl")) if tdir.is_dir() else set()
     t0 = time.time()
-    try:
-        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=cap_s + 120, env=env, cwd=str(hb.APEX))
-    except subprocess.TimeoutExpired:
-        return {"ok": False, "timed_out": True, "session_id": None, "is_error": True, "result": None,
-                "cost_usd": None, "duration_ms": int((time.time() - t0) * 1000), "raw": "", "stderr": "outer timeout"}
-    raw = (proc.stdout or "").strip()
+    proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, env=env,
+                            cwd=str(hb.APEX), start_new_session=True)
+    seen_transcript = None
+    timed_out = False
+    deadline = t0 + cap_s + 120
+    while True:
+        try:
+            out, err = proc.communicate(timeout=5)
+            break
+        except subprocess.TimeoutExpired:
+            pass
+        if seen_transcript is None and tdir.is_dir():
+            new = [p for p in tdir.glob("*.jsonl") if p.name not in before]
+            if new:
+                seen_transcript = str(max(new, key=lambda p: p.stat().st_mtime))
+                if on_session:
+                    try:
+                        on_session(seen_transcript)
+                    except Exception as e:  # never let annotation kill the run
+                        hb.log(f"WARN on_session: {e!r}")
+        if time.time() > deadline:
+            timed_out = True
+            try:
+                os.killpg(proc.pid, signal.SIGTERM)
+                try:
+                    proc.wait(timeout=15)
+                except subprocess.TimeoutExpired:
+                    os.killpg(proc.pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+            out, err = proc.communicate()
+            break
+    raw = (out or "").strip()
     try:
         env_json = json.loads(raw)
     except (json.JSONDecodeError, ValueError):
         env_json = {}
-    timed_out = "timed out" in str(env_json.get("error", "")).lower()
-    return {"ok": proc.returncode == 0 and not env_json.get("is_error"), "timed_out": timed_out,
-            "session_id": env_json.get("session_id"), "is_error": bool(env_json.get("is_error")),
+    timed_out = timed_out or "timed out" in str(env_json.get("error", "")).lower()
+    session_id = env_json.get("session_id")
+    if not session_id and seen_transcript:
+        session_id = Path(seen_transcript).stem
+    return {"ok": proc.returncode == 0 and not env_json.get("is_error") and not timed_out, "timed_out": timed_out,
+            "session_id": session_id, "is_error": bool(env_json.get("is_error")) or timed_out,
             "result": env_json.get("result") if env_json.get("result") is not None else env_json.get("error"),
             "cost_usd": env_json.get("cost_usd"), "duration_ms": env_json.get("duration_ms") or int((time.time() - t0) * 1000),
-            "raw": raw[:4000], "stderr": (proc.stderr or "")[-4000:]}
+            "raw": raw[:4000], "stderr": (err or "")[-4000:]}
 
 
 # ── harvest ──────────────────────────────────────────────────────────
@@ -235,15 +316,18 @@ def read_result(sandbox: Path) -> tuple[dict, str, dict]:
     fm, body = {}, ""
     out = rd / "outcome.md"
     if out.exists():
-        m = hb.FM_RE.match(out.read_text(encoding="utf-8-sig"))
+        text = out.read_text(encoding="utf-8-sig")
+        m = hb.FM_RE.match(text)
         if m:
             try:
-                fm = yaml_load(m.group(1)) or {}
-            except Exception:
+                fm = yaml.safe_load(m.group(1)) or {}
+            except yaml.YAMLError:
+                fm = {}
+            if not isinstance(fm, dict):
                 fm = {}
             body = m.group(2)
         else:
-            body = out.read_text(encoding="utf-8-sig")
+            body = text
     extra = {}
     for name in ("context.md", "state.md"):
         p = rd / name
@@ -252,15 +336,10 @@ def read_result(sandbox: Path) -> tuple[dict, str, dict]:
     return fm, body, extra
 
 
-def yaml_load(text):
-    import yaml
-    return yaml.safe_load(text)
-
-
-def pr_url(project: Path, branch: str) -> str | None:
+def pr_url(project: Path, branch: str, cfg: dict | None = None) -> str | None:
     try:
         r = subprocess.run(["gh", "pr", "view", branch, "--json", "url", "-q", ".url"], cwd=str(project),
-                           capture_output=True, text=True, timeout=60, env=_env())
+                           capture_output=True, text=True, timeout=60, env=_env(cfg))
         u = r.stdout.strip()
         return u if r.returncode == 0 and u.startswith("http") else None
     except (OSError, subprocess.TimeoutExpired):
@@ -271,14 +350,63 @@ def classify(env: dict, res_fm: dict) -> tuple[str, str]:
     """(terminus, qa_result). Only the terminus table from spec §10.2 lives here."""
     t = str(res_fm.get("terminus") or "").strip().lower()
     qa = str(res_fm.get("qa_result") or "n/a").strip().lower()
+    qa = {"clean": "converged"}.get(qa, qa)
+    if qa not in QA_RESULTS:
+        qa = "n/a"
     if t in hb.TERMINI_EXPECTED:
         return t, qa
     if env.get("timed_out"):
-        return "cap", qa if qa != "n/a" else "n/a"
-    blob = f"{env.get('result') or ''}\n{env.get('stderr') or ''}"
+        return "cap", qa
+    blob = f"{env.get('result') or ''}\n{env.get('stderr') or ''}\n{env.get('raw') or ''}"
     if env.get("is_error") and QUOTA_HINT.search(blob):
         return "quota", "n/a"
     return "unexpected", qa
+
+
+def publish(cfg: dict, project: Path, prov: dict, item_id: str, res_fm: dict, res_body: str) -> dict:
+    """RUNNER-side push + PR (the worker has no credentials). The live repo's pre-push hook (scrub) is
+    the push gate; a blocked push is reported, never forced. Returns {pushed, pr, note}."""
+    branch = prov["branch"]
+    out = {"pushed": False, "pr": None, "note": ""}
+    if os.environ.get("HB_NO_PUBLISH"):
+        out["note"] = "publish skipped (HB_NO_PUBLISH)"
+        return out
+    env = _env(cfg)
+    r = _git(project, "push", "-u", "origin", f"refs/heads/{branch}:refs/heads/{branch}", env=env)
+    if r.returncode != 0:
+        out["note"] = f"push blocked/failed (pre-push scrub or remote): {(r.stderr or r.stdout).strip()[-800:]}"
+        hb.log(f"publish {item_id}: push failed rc={r.returncode}")
+        return out
+    out["pushed"] = True
+    existing = pr_url(project, branch, cfg)
+    if existing:
+        out["pr"] = existing
+        out["note"] = "PR already existed"
+        return out
+    title = str(res_fm.get("summary") or f"Heartbeat {item_id}").strip().splitlines()[0][:100]
+    body_file = hb.STATE / f"pr-body-{item_id}.md"
+    body_file.write_text(
+        f"Produced unattended by Heartbeat (item `{item_id}`, branch `{branch}`, base `{prov['base_sha'][:10]}`).\n\n"
+        f"**Review before merging — nothing here has been merged or approved by a human.**\n\n---\n\n"
+        f"{res_body.strip()}\n", encoding="utf-8")
+    try:
+        r = subprocess.run(["gh", "pr", "create", "--base", cfg.get("base_branch", "main"), "--head", branch,
+                            "--title", f"hb/{item_id}: {title}", "--body-file", str(body_file)],
+                           cwd=str(project), capture_output=True, text=True, timeout=120, env=env)
+        url = (r.stdout or "").strip().splitlines()[-1] if r.stdout.strip() else ""
+        if r.returncode == 0 and url.startswith("http"):
+            out["pr"] = url
+        else:
+            out["pr"] = pr_url(project, branch, cfg)
+            out["note"] = f"gh pr create rc={r.returncode}: {(r.stderr or '').strip()[-500:]}"
+    except (OSError, subprocess.TimeoutExpired) as e:
+        out["note"] = f"gh pr create failed: {e!r}"
+    finally:
+        try:
+            body_file.unlink()
+        except OSError:
+            pass
+    return out
 
 
 def state_delta(project: Path, sandbox: Path, dst: Path) -> None:
@@ -336,7 +464,7 @@ def run(claim: dict, cfg: dict) -> dict | None:
         return None
 
     c = valid[0]
-    inflight_path = hb.claim_item(c)
+    inflight_path = hb.claim_item(c, pid)
     if inflight_path is None:
         hb.release_flag(pid, "go")
         return None
@@ -355,27 +483,40 @@ def run(claim: dict, cfg: dict) -> dict | None:
         diag("provision-failed", {"item_id": item_id, "error": repr(e)})
         fm["attempts"] = int(fm.get("attempts", 0)) + 1
         hb.write_atomic(inflight_path, hb.render_item(fm, body))
-        os.rename(inflight_path, c["path"])
+        hb.unclaim_item(inflight_path, c["path"])
         hb.release_flag(pid, "go")
         entry.update({"terminus": "unexpected", "qa_result": "n/a", "error": repr(e)})
         return entry
     entry.update({"branch": prov["branch"], "base_commit": prov["base_sha"], "sandbox": str(prov["sandbox"])})
 
     prompt = render_prompt(cfg, prov, item_root, project, fm, body)
-    env = spawn_worker(cfg, prov, prompt, fm)
-    hb.annotate_flag(pid, transcript_path=transcript_path_for(prov["sandbox"], env.get("session_id")))
+    env = spawn_worker(cfg, prov, prompt, fm, on_session=lambda tp: hb.annotate_flag(pid, transcript_path=tp))
+    tpath = transcript_path_for(prov["sandbox"], env.get("session_id"))
+    if tpath:
+        hb.annotate_flag(pid, transcript_path=tpath)
 
     res_fm, res_body, extra = read_result(prov["sandbox"])
     terminus, qa_result = classify(env, res_fm)
-    head = _git(project, "rev-parse", prov["branch"]).stdout.strip() or None
+    if res_fm.get("item_id") not in (None, "", item_id) and str(res_fm.get("item_id")) != item_id:
+        hb.log(f"WARN outcome item_id {res_fm.get('item_id')!r} != {item_id}")
+    head = _git(project, "rev-parse", "--verify", f"refs/heads/{prov['branch']}").stdout.strip() or None
     files = _git(project, "diff", "--name-only", f"{prov['base_sha']}..{prov['branch']}").stdout.split() if head else []
-    pr = res_fm.get("pr") or (pr_url(project, prov["branch"]) if head else None)
+    has_commits = bool(head) and head != prov["base_sha"]
+
+    pub = {"pushed": False, "pr": None, "note": "not published"}
+    want_pr = fm.get("pr", cfg.get("pr", True)) not in (False, "false", "no")
+    if terminus in hb.TERMINI_EXPECTED and want_pr and has_commits:
+        pub = publish(cfg, project, prov, item_id, res_fm, res_body)
+    elif terminus in hb.TERMINI_EXPECTED and want_pr and not has_commits:
+        pub["note"] = "no commits on the branch — nothing to publish"
     duration_min = round((time.time() - t_start) / 60, 1)
 
     outcome_fields = {
-        "item_id": item_id, "branch": prov["branch"], "pr": pr, "terminus": terminus, "qa_result": qa_result,
-        "base_commit": prov["base_sha"], "head_commit": head, "files_touched": files, "attempts": entry["attempts"],
-        "session_id": env.get("session_id"), "transcript_path": transcript_path_for(prov["sandbox"], env.get("session_id")),
+        "item_id": item_id, "branch": prov["branch"], "pr": pub["pr"], "pushed": pub["pushed"], "publish_note": pub["note"],
+        "terminus": terminus, "qa_result": qa_result, "summary": str(res_fm.get("summary") or "").strip()[:300] or None,
+        "base_commit": prov["base_sha"], "head_commit": head, "has_commits": has_commits, "files_touched": files,
+        "attempts": entry["attempts"], "session_id": env.get("session_id"),
+        "transcript_path": transcript_path_for(prov["sandbox"], env.get("session_id")),
         "cost_usd": env.get("cost_usd"), "duration_min": duration_min, "worker_is_error": env.get("is_error"),
     }
     summary = res_body.strip() or (f"Worker left no RESULT/outcome.md.\n\nWorker result text:\n\n{(env.get('result') or '')[:3000]}\n\n"
@@ -385,16 +526,16 @@ def run(claim: dict, cfg: dict) -> dict | None:
     for name, text in extra.items():
         (dst / name).write_text(text, encoding="utf-8")
     state_delta(project, prov["sandbox"], dst)
-    entry.update({"terminus": terminus, "qa_result": qa_result, "pr": pr, "head_commit": head,
+    entry.update({"terminus": terminus, "qa_result": qa_result, "pr": pub["pr"], "pushed": pub["pushed"], "head_commit": head,
                   "files_touched": len(files), "cost_usd": env.get("cost_usd"), "duration_min": duration_min,
                   "session_id": env.get("session_id"), "finished_at": hb.iso(hb.now_utc())})
 
     if terminus in hb.TERMINI_EXPECTED:
         shutil.copyfile(inflight_path, dst / "item.md")
-        inflight_path.unlink()
+        hb.finish_item(inflight_path)
         cleanup(project, prov["sandbox"])
         hb.release_flag(pid, "go")
-        hb.log(f"item {item_id} done: {terminus}/{qa_result} branch {prov['branch']} pr {pr}")
+        hb.log(f"item {item_id} done: {terminus}/{qa_result} branch {prov['branch']} pr {pub['pr']} ({pub['note'] or 'published'})")
         return entry
 
     if terminus == "quota":
@@ -404,7 +545,7 @@ def run(claim: dict, cfg: dict) -> dict | None:
         shutil.copyfile(inflight_path, dst / "item.md")
         fm["attempts"] = entry["attempts"]
         hb.write_atomic(inflight_path, hb.render_item(fm, body))
-        os.rename(inflight_path, c["path"])           # back to outbox for another night
+        hb.unclaim_item(inflight_path, c["path"])           # back to outbox for another night
         cleanup(project, prov["sandbox"])
         hb.release_flag(pid, "absent")
         return entry

@@ -11,7 +11,7 @@ Status: aligned 2026-08-15 evening; not yet built. This file is the execution co
 |---|---|---|---|
 | D1 | one "orchestrator" that annotates GO, pops, works, writes inbox | **runner** (deterministic Python) does every live-state mutation; **worker** (`claude -p`) touches only its sandbox + its branch + remote PR | worker is hard-rooted in the sandbox — containment/gravity forbid live `.state` writes; LLM is never a state actor (extends I7; makes §5.7 structural) |
 | D2 | worktree *or* clone; sandbox "distinct location" | **git worktree in-root**: `<project>/.tmp/sandbox/hb/<item>/` | in-root = manageable/testable from a fenced session; purge-aware; branch lands directly in the live repo (spec O3 dissolves). Verified `git worktree add` works on the 9p mount 2026-08-15. |
-| D3 | I2 local-only, no push, no PR | **push feature branch + `gh pr create` ALLOWED; merge/close/enact DENIED** | user ruling. Merge denial is guard-level (worker shares the user's `gh` identity — a token that can push can merge; no structural separation exists). Layers: apex deny + remote-guard + sandbox-only `hb-guard.sh` + sandbox `settings.local.json` denies. Push stays scrub-gated (worker runs `/scrub` before push). |
+| D3 | I2 local-only, no push, no PR | **push feature branch + `gh pr create` ALLOWED — done by the RUNNER; the WORKER has no credentials; merge/close/enact DENIED** | user ruling (push+PR). mileqa round 1 (2026-08-16) showed token-shape guards are bypassable, so authority moved out of the worker: `GH_CONFIG_DIR` empty + credential helpers reset in the worker env (verified: push fails, gh logged out); runner pushes `refs/heads/hb/<ITEM>` only and creates the PR; live scrub pre-push hook is the gate. Guards remain as depth (allowlist hb-guard). Residual: same OS user → disk-readable token; GitHub cannot distinguish worker/user on one account. |
 | D4 | `.state/hb/{outbox,inflight,inbox}` at apex → (superseded: `.state/hb` → `.hb-heartbeat/state`) | **per-project mailboxes**: items in `<project>/~outbox/hb/<ITEM>.md`, claim = atomic move to `<project>/~outbox/hb/inflight/`, outcome = `<project>/~inbox/hb/<ITEM>/` (pause folder + `outcome.md`) | projects = claudette's children; each is its own repo, gets its own queue; matches the existing `~outbox/<target>/` handoff convention (`~majel/~outbox`) with target = `hb`; `~inbox` already the human-facing drop at apex. GO/quota/diag/log at apex `.hb-heartbeat/state/`. |
 | D5 | orchestrator reads fresh quota via its own statusLine | quota.json is **stale-by-nature** in v1 (headless `-p` almost certainly runs no statusLine — verify in pre-flight); gate = last reading + age + `resets_at`; **count cap governs nights 1–5** | spec §13 already count-capped; don't overbuild until measured |
 | D6 | tick spawns orchestrator | **tick execs runner in-process** (foreground; PID = own PID); Task Scheduler `MultipleInstances=IgnoreNew` + `ExecutionTimeLimit` as belt | sidesteps WSL "VM exits when last client leaves" uncertainty |
@@ -22,8 +22,8 @@ Status: aligned 2026-08-15 evening; not yet built. This file is the execution co
 | D11 | night-1 item | **BL-07** (`00-preboot` row missing from `.codex/start.md` Priority Tiers table) | doc-only, one file, verifiable — plumbing test |
 | D12 | claim primitive | file rename (`GO` → `GO.claim.<pid>` → rewrite → `GO`); un-mutate only if `GO` exists AND pid matches — never recreate from absent | 9p: file rename fine, avoid hot-dir renames (memory `reference_9p_rename_ghost`) → items are single files, not folders |
 | D13 | code home | **`^/.hb-heartbeat/`** — max content in one git-tracked folder (spec, plan, code, templates, tests, win/); runtime `state/` + `sandbox/` untracked via its own `.gitignore`; `.codex/explicit/hb/start.md` is a 5-line shim so `/hb` exists (user ruling 2026-08-15, superseding `.codex/explicit/hb/`) | one place; portable; `~` mailboxes stay at project roots (children need theirs there) |
-| D14 | permissions | worker runs `--dangerously-skip-permissions` inside the sandbox; hooks still fire; deny lists still apply (verify in pre-flight) | anything narrower limps unattended |
-| D15 | worker model | per-item `model:` frontmatter, default `sonnet`; `--max-turns` + `timeout` from item/config | cost; mileqa's 3-round/2-coda cap is real |
+| D14 | permissions | worker gets the apex `settings.local.json` broad allows via `child_propagate` merge (no `--dangerously-skip-permissions`; cboot's passthrough allowlist is `--resume`/`--model` only); hooks fire in headless (verified: hb-guard block message returned by a real worker 2026-08-16) | reuse the mileqa'd dispatch channel as-is |
+| D15 | worker model + bound | per-item `model:` frontmatter, default `sonnet`; wall-clock cap = min(item `time_cap_min`, config `item_cap_min`) via `CBOOT_EXEC_TIMEOUT` + process-group kill (no `--max-turns`: not passable through cboot) | cost; mileqa's 3-round/2-coda cap is real |
 
 Deliberately unchanged from spec: I1, I3, I4, I5, I6, I7; §5 flag schema/states; §6 detector; §7 tick logic; §8.4 orphan sweep (attempts ≤3); §10.2 terminus table; §11.3 exhaustion-is-unexpected + dumb diag write; §13 rollout (count cap 1 → 2 → quota-bound).
 
@@ -53,20 +53,19 @@ Unchanged: `.state/`, `.tmp/`, `.templates/`, `.codex/settings.json`, `checkWinT
 
 ---
 
-## 2. Sandbox controls (D3)
+## 2. Sandbox controls (D3) — as built after mileqa round 1
 
-| Layer | Where | Blocks |
+| Layer | Where | What |
 |---|---|---|
-| apex deny (inherited via cboot) | `.codex/settings.json` | force push, remote add/set-url/remove, gh issue/api/release |
-| remote-guard.sh (inherited) | codex hook | push to main/master, force, remote config; allows feature push + `gh pr *` |
-| sandbox deny overlay | `<sandbox>/.claude/settings.local.json` written by runner | `Bash(gh pr merge:*)`, `Bash(gh pr close:*)`, `Bash(gh repo:*)`, `Bash(git update-ref:*)`, `Bash(git worktree:*)`, `Bash(git branch -D:*)`, `Bash(git branch -f:*)` |
-| hb-guard.sh | same overlay, PreToolUse(Bash) | same set + `git push … --delete/-d/:<ref>` (arg-position-agnostic — deny prefixes can't catch these) |
-| git itself | worktree semantics | `main` is checked out in the live tree → worker cannot check out `main`, cannot `branch -f main` |
-| scrub gate | worker protocol | `/scrub` must pass before `git push` |
+| **credential strip (structural)** | `runner.worker_env` | `GH_CONFIG_DIR`=empty dir, `GH_TOKEN`/`GITHUB_TOKEN` removed, `credential.helper=` + `core.askPass=/bin/false` via `GIT_CONFIG_*`, `GIT_TERMINAL_PROMPT=0` → worker cannot push or use gh |
+| **runner publishes** | `runner.publish` | `git push -u origin refs/heads/hb/<ITEM>:refs/heads/hb/<ITEM>` from the live repo (scrub pre-push hook fires) then `gh pr create --base main`; blocked push → reported in outcome, never forced |
+| apex deny + remote-guard (inherited) | `.codex/settings.json`, hooks | force push, main push, remote config, gh api/issue/release |
+| sandbox deny overlay | `<sandbox>/.claude/settings.local.json` | prefix denies for the obvious forms (belt) |
+| hb-guard.sh/.py | same overlay, PreToolUse(Bash) | live-tree path containment; git global-option ban + subcommand allowlist; gh read-only allowlist; wrapper peeling; credential/env tokens; non-ASCII exe |
+| git worktree semantics | — | *not* claimed as a control any more (live HEAD may not be main); the branch/checkout rules in hb-guard cover it |
+| time/count caps | runner + tick | `min(item, config)` cap; process-group kill; count cap counts crashes too |
 
-Honest limit: merge is guard-denied, not impossible (same gh token). GitHub-side branch protection can't distinguish worker from user on a single account.
-
----
+Honest limits: same OS user (disk-readable token); a script file that shells out is not inspected; GitHub can't tell worker from user on one account.
 
 ## 3. Build order (each step: build → test → commit on `feature/hb`)
 

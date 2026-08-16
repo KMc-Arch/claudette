@@ -1,18 +1,23 @@
-# Heartbeat — Windows Task Scheduler registration (run in Windows PowerShell as the logged-on user).
-# Registers three tasks that call into WSL:
-#   hb-window-open   daily at <open>   -> hb.py window open
-#   hb-window-close  daily at <close>  -> hb.py window close
-#   hb-tick          every <tick> min  -> hb.py tick   (foreground; the tick IS the runner while an item runs)
-# Re-running is idempotent (tasks are replaced). Remove with:  -Unregister
-# Monitor with:  /checkWinTasks hb-
+# Heartbeat — Windows Task Scheduler registration (run in Windows PowerShell as the logged-on user):
+#   powershell -ExecutionPolicy Bypass -File D:\claudette\.hb-heartbeat\win\register-tasks.ps1
+# Registers three tasks:
+#   hb-window-open   daily at <Open>  (wakes the machine)              -> hb.py window open
+#   hb-window-close  daily at <Close>                                  -> hb.py window close
+#   hb-tick          every <TickMin> min, ONLY between Open and Close  -> run-tick.ps1 (keep-awake) -> hb.py tick
+# The tick trigger repeats for the window duration only, so the laptop is not woken every 5 minutes all day.
+# During a run, run-tick.ps1 holds a SYSTEM_REQUIRED power request so Modern Standby does not suspend mid-item.
+# Re-running is idempotent (tasks are replaced). Remove with:  -Unregister.  Monitor with:  /checkWinTasks hb-
+# NOTE: keep -ItemCapMin equal to config.json item_cap_min (ExecutionTimeLimit = ItemCapMin + 15); re-register if you change it.
 param(
     [string]$Distro = "claude-context",
     [string]$User   = "KMc",
     [string]$Apex   = "/mnt/claudette",
+    [string]$WinApex = "D:\claudette",
     [string]$Open   = "00:30",
     [string]$Close  = "06:30",
     [int]$TickMin   = 5,
     [int]$ItemCapMin = 90,
+    [ValidateSet("S4U", "Interactive")][string]$LogonType = "S4U",
     [switch]$Unregister
 )
 $ErrorActionPreference = "Stop"
@@ -22,25 +27,37 @@ if ($Unregister) {
     Write-Output "unregistered: $($names -join ', ')"; exit 0
 }
 $wsl = "$env:SystemRoot\System32\wsl.exe"
+$ps  = "$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe"
 $py  = "$Apex/.hb-heartbeat/hb.py"
-function Act([string]$cmd) {
-    # -u runs as the WSL user; a non-login shell — hb.py/runner.py fix PATH themselves (config.extra_path)
-    New-ScheduledTaskAction -Execute $wsl -Argument "-d $Distro -u $User -- python3 $py $cmd"
-}
-$settingsTick = New-ScheduledTaskSettingsSet -MultipleInstances IgnoreNew -WakeToRun -StartWhenAvailable `
+$tickWrapper = Join-Path $WinApex ".hb-heartbeat\win\run-tick.ps1"
+if (-not (Test-Path $tickWrapper)) { throw "run-tick.ps1 not found at $tickWrapper — pass -WinApex" }
+
+$openT  = [DateTime]::ParseExact($Open,  "HH:mm", $null)
+$closeT = [DateTime]::ParseExact($Close, "HH:mm", $null)
+$windowLen = if ($closeT -gt $openT) { $closeT - $openT } else { ($closeT.AddDays(1)) - $openT }
+
+$actOpen  = New-ScheduledTaskAction -Execute $wsl -Argument "-d $Distro -u $User -- python3 $py window open"
+$actClose = New-ScheduledTaskAction -Execute $wsl -Argument "-d $Distro -u $User -- python3 $py window close"
+$actTick  = New-ScheduledTaskAction -Execute $ps  -Argument "-NoProfile -ExecutionPolicy Bypass -File `"$tickWrapper`" -Distro $Distro -User $User -Apex $Apex -Cmd tick"
+
+$settingsTick = New-ScheduledTaskSettingsSet -MultipleInstances IgnoreNew -StartWhenAvailable `
     -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -ExecutionTimeLimit (New-TimeSpan -Minutes ($ItemCapMin + 15))
-$settingsWin  = New-ScheduledTaskSettingsSet -MultipleInstances IgnoreNew -WakeToRun -StartWhenAvailable `
+$settingsOpen = New-ScheduledTaskSettingsSet -MultipleInstances IgnoreNew -WakeToRun -StartWhenAvailable `
     -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -ExecutionTimeLimit (New-TimeSpan -Minutes 10)
-# S4U = run whether the user is logged on or not, no stored password. If registration is refused
-# (needs "Log on as a batch job"), re-run with -LogonType Interactive (task then needs a logged-on session).
-$principal = New-ScheduledTaskPrincipal -UserId "$env:USERDOMAIN\$env:USERNAME" -LogonType S4U -RunLevel Limited
+$settingsClose = New-ScheduledTaskSettingsSet -MultipleInstances IgnoreNew -StartWhenAvailable `
+    -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -ExecutionTimeLimit (New-TimeSpan -Minutes 10)
+# S4U = run whether the user is logged on or not, no stored password (needs "Log on as a batch job").
+# If registration is refused, re-run with -LogonType Interactive (task then needs a logged-on session).
+$principal = New-ScheduledTaskPrincipal -UserId "$env:USERDOMAIN\$env:USERNAME" -LogonType $LogonType -RunLevel Limited
 
 $tOpen  = New-ScheduledTaskTrigger -Daily -At $Open
 $tClose = New-ScheduledTaskTrigger -Daily -At $Close
-# tick: repeat every N minutes, indefinitely (window gating happens inside hb.py via the GO flag)
-$tTick  = New-ScheduledTaskTrigger -Once -At (Get-Date).Date -RepetitionInterval (New-TimeSpan -Minutes $TickMin)
+# tick: daily at Open, repeating every TickMin for the window's length only (hb.py still gates on the GO flag)
+$tTick  = New-ScheduledTaskTrigger -Daily -At $Open
+$tTick.Repetition = (New-ScheduledTaskTrigger -Once -At $Open -RepetitionInterval (New-TimeSpan -Minutes $TickMin) -RepetitionDuration $windowLen).Repetition
 
-Register-ScheduledTask -TaskName "hb-window-open"  -Action (Act "window open")  -Trigger $tOpen  -Settings $settingsWin  -Principal $principal -Force | Out-Null
-Register-ScheduledTask -TaskName "hb-window-close" -Action (Act "window close") -Trigger $tClose -Settings $settingsWin  -Principal $principal -Force | Out-Null
-Register-ScheduledTask -TaskName "hb-tick"         -Action (Act "tick")         -Trigger $tTick  -Settings $settingsTick -Principal $principal -Force | Out-Null
+Register-ScheduledTask -TaskName "hb-window-open"  -Action $actOpen  -Trigger $tOpen  -Settings $settingsOpen  -Principal $principal -Force | Out-Null
+Register-ScheduledTask -TaskName "hb-window-close" -Action $actClose -Trigger $tClose -Settings $settingsClose -Principal $principal -Force | Out-Null
+Register-ScheduledTask -TaskName "hb-tick"         -Action $actTick  -Trigger $tTick  -Settings $settingsTick  -Principal $principal -Force | Out-Null
 Get-ScheduledTask -TaskName "hb-*" | Format-Table TaskName, State -AutoSize
+Write-Output "Pre-flight (proves the S4U/session-0 path): Start-ScheduledTask hb-tick ; then check $WinApex\.hb-heartbeat\state\last-tick"

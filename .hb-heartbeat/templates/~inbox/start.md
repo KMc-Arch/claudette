@@ -14,9 +14,11 @@ Things dropped **for this project's human / next session to read**. Visible (`~`
 
 | file | content |
 |---|---|
-| `outcome.md` | frontmatter: `item_id`, `branch`, `pr` (url or null), `terminus` (converged \| exhausted \| cap \| rejected \| failed-repeatedly \| quota \| unexpected), `qa_result` (converged \| exhausted \| n/a), `base_commit`, `head_commit`, `files_touched`, `attempts`, `session_id`, `transcript_path`, `cost_usd`, `duration_min`; body: summary — what was done and why it stopped |
-| `context.md` | pause-format: what the worker was doing, decisions, open questions |
-| `state.md` | pause-format: files viewed/modified, pending work |
+| `outcome.md` | frontmatter: `item_id`, `branch`, `pr` (url or null), `pushed` (bool), `publish_note`, `terminus` (converged \| exhausted \| cap \| rejected \| failed-repeatedly \| quota \| unexpected), `qa_result` (converged \| held \| exhausted \| escalation \| n/a), `summary` (worker's one-liner), `base_commit`, `head_commit`, `has_commits`, `files_touched`, `attempts`, `session_id`, `transcript_path`, `cost_usd`, `duration_min`, `worker_is_error`; body: what was done and why it stopped (also the PR body). Rejected / failed-repeatedly outcomes carry only the fields that exist. |
+| `context.md` | pause-format: what the worker was doing, decisions, open questions (if the worker wrote it) |
+| `state.md` | pause-format: files viewed/modified, pending work (if the worker wrote it) |
+| `item.md` | the item as claimed (copy) |
+| `state-delta.diff` | `git diff --no-index` of the sandbox's `.state/work/` vs live — a worker's backlog filings/resolutions, preserved for review, **never applied** |
 
 **The inbox is read by a human.** The next night's runner never reads it. Disposal: review the PR/branch awake;
 merge (never automated), or prune the branch / return the item to the backlog.

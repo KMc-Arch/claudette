@@ -36,6 +36,11 @@ if mode == "sleep":
     print(json.dumps({"kind": "error", "mode": "hard", "is_error": True, "error": f"headless claude timed out after {cap}s"}))
     sys.exit(1)
 
+if mode == "nocommit":
+    result_dir.mkdir(parents=True, exist_ok=True)
+    (result_dir / "outcome.md").write_text(f"---\nitem_id: {os.environ.get('HB_ITEM_ID')}\nterminus: converged\nqa_result: n/a\nsummary: nothing to do\n---\nNothing needed.\n", encoding="utf-8")
+    envelope(); sys.exit(0)
+
 # do some work on the branch
 (sandbox / "HB_FAKE_WORK.md").write_text(f"fake work for {os.environ.get('HB_ITEM_ID')} at {time.time_ns()}\n", encoding="utf-8")
 subprocess.run(["git", "-C", str(sandbox), "add", "-f", "HB_FAKE_WORK.md"], check=True, capture_output=True)
