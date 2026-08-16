@@ -21,7 +21,7 @@ Implicit entries load in a strict priority order:
 
 | Tier | Name | Purpose |
 |------|------|---------|
-| `00-preboot/` | Preboot | Python modules called by `cboot.py` -- not Claude directives. Prepares child projects before any session starts. |
+| `00-preboot/` | Preboot | Python modules called by cboot.py -- not Claude directives. Prepares child projects before any session starts. |
 | `01-infrastructural/` | Infrastructural | Must load before any output. Path resolution, hook registration, preference materialization. |
 | `02-foundational/` | Foundational | Core behavioral rules. Identity isolation, state gravity. |
 | `03-standard/` | Standard | Normal boot-time entries. (Currently empty, reserved for future use.) |
