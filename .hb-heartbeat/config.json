@@ -1,0 +1,25 @@
+{
+  "_doc": "Heartbeat defaults. Instance overrides: .hb-heartbeat/state/config.json (untracked), same keys, shallow-merged.",
+  "window": { "open": "00:30", "close": "06:30" },
+  "tick_minutes": 5,
+  "item_cap_min": 90,
+  "count_cap": 1,
+  "attempts_max": 3,
+  "model": "sonnet",
+  "qa": "mileqa",
+  "pr": true,
+  "base_branch": "main",
+  "branch_prefix": "hb/",
+  "sandbox_rel": ".hb-heartbeat/sandbox",
+  "stale_branch_days": 5,
+  "quota": {
+    "max_age_hours": 12,
+    "five_hour_max_pct": 70,
+    "seven_day_max_pct": 85,
+    "missing_policy": "allow"
+  },
+  "wsl_distro": "claude-context",
+  "wsl_user": "KMc",
+  "extra_path": ["/home/KMc/.local/bin", "/usr/local/bin", "/usr/bin", "/bin"],
+  "python": "python3"
+}

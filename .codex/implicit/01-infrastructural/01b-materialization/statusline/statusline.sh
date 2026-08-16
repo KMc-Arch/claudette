@@ -1,5 +1,9 @@
 #!/usr/bin/env bash
 
+# RECURRENT PITFALL - This file requires the execute bit set to be preserved when copied or rewritten.
+# If you see "permission denied" errors when this file is invoked, check that the execute bit is set.
+# REQUIRED - Check after every commit that touches this file, and after every copy or rewrite of this file.
+
 # Ensure jq is on PATH
 if ! command -v jq &>/dev/null; then
     JQ_DIR=$(find "$LOCALAPPDATA/Microsoft/WinGet/Packages" -maxdepth 1 -name 'jqlang.jq_*' -print -quit 2>/dev/null)
@@ -58,6 +62,16 @@ dir=$(basename "$cwd" 2>/dev/null || echo "?")
 # Extract 5h rate-limit window (added: quota bar)
 five_h_pct=$(echo "$input" | jq -r '.rate_limits.five_hour.used_percentage // empty')
 five_h_resets=$(echo "$input" | jq -r '.rate_limits.five_hour.resets_at // empty')
+
+# Heartbeat telemetry sink (.hb-heartbeat/spec.md §11.1): every turn, dump rate_limits to
+# <project_dir>/.hb-heartbeat/state/quota.json — only where that dir exists (the apex), atomic write.
+# The nightly runner reads it pre-pop; it is stale-by-nature (last interactive turn), hence written_at.
+hb_state="${project_dir:-$cwd}/.hb-heartbeat/state"
+if [[ -n "$five_h_pct" && -d "$hb_state" ]]; then
+    echo "$input" | jq -c --arg ts "$(date -u +%Y-%m-%dT%H:%M:%SZ)" --arg cwd "$cwd" \
+        '{written_at: $ts, cwd: $cwd, rate_limits: .rate_limits}' > "$hb_state/quota.json.tmp.$$" 2>/dev/null \
+        && mv -f "$hb_state/quota.json.tmp.$$" "$hb_state/quota.json" 2>/dev/null
+fi
 
 # --- Location: 🏠 launch dir, 📁 path relative to it ---
 # 📁 is ^-relative, where ^ is the session's own root (workspace.project_dir) —

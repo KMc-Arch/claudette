@@ -18,6 +18,10 @@
 !/.templates/
 !/.templates/**
 
+# ── Heartbeat (nightly unattended backlog execution; tracked by design) ──
+!/.hb-heartbeat/
+!/.hb-heartbeat/**
+
 # ── State directory (structure only, see .state/.gitignore) ──
 !/.state/
 !/.state/**

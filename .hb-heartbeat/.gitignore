@@ -1,0 +1,4 @@
+# Heartbeat runtime is never tracked; the machinery + docs + templates are (by design).
+state/*
+!state/start.md
+sandbox/
