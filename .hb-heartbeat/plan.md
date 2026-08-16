@@ -1,7 +1,7 @@
 # Heartbeat (HB) — Build Plan (overnight execution)
 
 Source spec: `spec.md` (this folder; moved from `~inbox/HEARTBEAT-SPEC.md` 2026-08-15).
-Status: built overnight 2026-08-15/16 on `feature/hb`; two mileqa rounds + fixes landed; see §4 for what is verified live.
+Status: built overnight 2026-08-15/16 on `feature/hb`; mileqa 3 rounds + 2 codas → **HELD** on BL-44 (user-owned OS-user separation); see `.state/tests/mileqa/20260815-2225/summary.md` and §4 for what is verified live. Not merged, not pushed.
 
 ---
 
