@@ -41,6 +41,11 @@ if mode == "sleep":
 subprocess.run(["git", "-C", str(sandbox), "add", "-f", "HB_FAKE_WORK.md"], check=True, capture_output=True)
 subprocess.run(["git", "-C", str(sandbox), "-c", "user.name=fake", "-c", "user.email=fake@x", "commit", "-qm", "fake worker commit"], check=True, capture_output=True)
 
+# emulate a worker filing a backlog item in its (discarded) sandbox state
+bl = sandbox / ".state" / "work" / "backlog.md"
+if bl.exists():
+    bl.write_text(bl.read_text() + "\n### BL-FAKE filed by fake worker\n", encoding="utf-8")
+
 if mode == "none":
     envelope(); sys.exit(0)
 

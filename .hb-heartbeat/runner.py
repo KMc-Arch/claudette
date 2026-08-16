@@ -142,6 +142,16 @@ def provision(cfg: dict, project: Path, item_id: str, fm: dict) -> dict:
             (sandbox / ".state").mkdir(parents=True, exist_ok=True)
             shutil.copyfile(src, sandbox / ".state" / f)
     (sandbox / RESULT_REL).mkdir(parents=True, exist_ok=True)
+    # core.fileMode=false on drvfs: tracked scripts are 100644, so a fresh checkout loses the exec bit
+    # and git silently ignores the scrub pre-push hook ("ignored hook" advisory). The push gate must fire.
+    hooks_path = _git(project, "config", "core.hooksPath").stdout.strip()
+    if hooks_path and not Path(hooks_path).is_absolute():
+        for h in (sandbox / hooks_path).glob("*"):
+            if h.is_file():
+                try:
+                    h.chmod(h.stat().st_mode | 0o111)
+                except OSError as e:
+                    hb.log(f"WARN chmod +x {h}: {e}")
     # sandbox-only controls: deny overlay + hb-guard hook (settings.local.json is merged, not replaced,
     # by child propagation — existing keys survive)
     claude_dir = sandbox / ".claude"
@@ -271,6 +281,21 @@ def classify(env: dict, res_fm: dict) -> tuple[str, str]:
     return "unexpected", qa
 
 
+def state_delta(project: Path, sandbox: Path, dst: Path) -> None:
+    """The sandbox's .state is discarded by design (amnesiac nights) — but a worker that files a backlog
+    item or resolves one did real work. Preserve it as a reviewable diff, never apply it: state-delta.diff."""
+    src_dir, box_dir = project / ".state" / "work", sandbox / ".state" / "work"
+    if not box_dir.is_dir():
+        return
+    try:
+        r = subprocess.run(["git", "diff", "--no-index", "--", str(src_dir), str(box_dir)],
+                           capture_output=True, text=True, timeout=60)
+    except (OSError, subprocess.TimeoutExpired):
+        return
+    if r.stdout.strip():
+        (dst / "state-delta.diff").write_text(r.stdout, encoding="utf-8")
+
+
 def cleanup(project: Path, sandbox: Path) -> None:
     _git(project, "worktree", "remove", "--force", str(sandbox))
     if sandbox.exists():
@@ -359,6 +384,7 @@ def run(claim: dict, cfg: dict) -> dict | None:
     hb.write_outcome(dst, outcome_fields, summary)
     for name, text in extra.items():
         (dst / name).write_text(text, encoding="utf-8")
+    state_delta(project, prov["sandbox"], dst)
     entry.update({"terminus": terminus, "qa_result": qa_result, "pr": pr, "head_commit": head,
                   "files_touched": len(files), "cost_usd": env.get("cost_usd"), "duration_min": duration_min,
                   "session_id": env.get("session_id"), "finished_at": hb.iso(hb.now_utc())})

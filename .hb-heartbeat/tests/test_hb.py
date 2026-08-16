@@ -249,6 +249,8 @@ class TestTickWindow(Base):
         out = hb.inbox(self.apex) / "BL-07"
         self.assertTrue((out / "outcome.md").exists()); self.assertTrue((out / "context.md").exists())
         self.assertTrue((out / "item.md").exists())
+        self.assertTrue((out / "state-delta.diff").exists())            # sandbox backlog edits preserved as a diff
+        self.assertIn("BL-FAKE", (out / "state-delta.diff").read_text())
         self.assertFalse((hb.outbox(self.apex) / "inflight" / "BL-07.md").exists())
         self.assertFalse((self.apex / ".hb-heartbeat" / "sandbox" / "BL-07").exists())     # worktree removed
         self.assertEqual(sh("git", "rev-parse", "--verify", "hb/BL-07", cwd=self.apex).returncode, 0)  # branch kept
