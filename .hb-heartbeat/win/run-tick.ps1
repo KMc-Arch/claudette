@@ -15,10 +15,11 @@ $k = Add-Type -MemberDefinition $sig -Name "HbPower" -Namespace "Hb" -PassThru
 # uint32 literals: in Windows PowerShell 5.1 a bare 0x80000000 is a NEGATIVE Int32 and the P/Invoke throws (silently, in a task)
 [uint32]$ES_CONTINUOUS = 2147483648; [uint32]$ES_SYSTEM_REQUIRED = 1
 $prev = $k::SetThreadExecutionState([uint32]($ES_CONTINUOUS -bor $ES_SYSTEM_REQUIRED))
+$rc = 1   # default: a launch failure must not report success to Task Scheduler
 if ($prev -eq 0) { Write-Warning "SetThreadExecutionState failed; host may sleep mid-item" }
 try {
     & "$env:SystemRoot\System32\wsl.exe" -d $Distro -u $User -- python3 "$Apex/.hb-heartbeat/hb.py" $Cmd.Split(" ")
-    $rc = $LASTEXITCODE
+    if ($null -ne $LASTEXITCODE) { $rc = $LASTEXITCODE }
 } finally {
     [void]$k::SetThreadExecutionState($ES_CONTINUOUS)
 }

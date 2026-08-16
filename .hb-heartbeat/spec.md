@@ -2,7 +2,7 @@
 
 Nightly unattended backlog execution for `claudette`.
 
-Status: design converged, unbuilt. This document is the build contract.
+Status: ORIGINAL DESIGN CONTRACT (2026-08-15). Built 2026-08-15/16 — see `plan.md` §0 for every ratified deviation (notably D3: push + PR are ALLOWED and done by the runner, so I2 and §3's 'no PR creation' are superseded; D4/D13: paths moved to `.hb-heartbeat/` and per-project `~outbox/~inbox`). Where this file and `plan.md` disagree, `plan.md` wins.
 
 ---
 

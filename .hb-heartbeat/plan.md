@@ -61,10 +61,10 @@ Unchanged: `.state/`, `.tmp/`, `.templates/`, `.codex/settings.json`, `checkWinT
 | **runner publishes** | `runner.publish` | `git push -u origin refs/heads/hb/<ITEM>:refs/heads/hb/<ITEM>` from the live repo (scrub pre-push hook fires) then `gh pr create --base main`; blocked push → reported in outcome, never forced |
 | apex deny + remote-guard (inherited) | `.codex/settings.json`, hooks | force push, main push, remote config, gh api/issue/release |
 | sandbox deny overlay | `<sandbox>/.claude/settings.local.json` | prefix denies for the obvious forms (belt) |
-| hb-guard.sh/.py | same overlay, PreToolUse(Bash) | live-tree path containment; git global-option ban + subcommand allowlist; gh read-only allowlist; wrapper peeling; credential/env tokens; non-ASCII exe |
+| hb-guard.sh/.py | same overlay, PreToolUse(Bash) | live-tree path containment (case-insensitive, alias mounts, mentions anywhere in a token, `$VAR` paths refused, globs fail-closed); git global-option ban + subcommand allowlist + exec-option bans; gh read-only allowlist; wrapper/keyword peeling; `unset/export/env -u`; credential/env tokens; Windows interop; non-ASCII exe |
 | git worktree semantics | — | *not* claimed as a control any more (live HEAD may not be main); the branch/checkout rules in hb-guard cover it |
 | time/count caps | runner + tick | `min(item, config)` cap; process-group kill (also after a normal return); count cap counts crashes too |
-| PR text scrub | `runner.publish` | the worker's outcome text becomes PR title/body only after `scrub.py <file>` passes; otherwise the body is withheld (title cleaned; leading `-` stripped) |
+| egress scrub | `runner.publish` | commit messages + touched paths + PR title scrubbed BEFORE the push (push withheld on a hit); PR body scrubbed before `gh pr create` (withheld on a hit); `scrub:allow` counts as a hit; long lines folded; `scope` breach withholds the push |
 | worker web | sandbox overlay | `WebFetch`/`WebSearch` denied unless `worker_web: true` (exfiltration surface); only `.state/work` (not memory) is copied into the sandbox |
 | alias mounts | `runner.apex_aliases` → `HB_APEX_ALIASES` | hb-guard's containment covers `/mnt/d/claudette` etc. and refuses Windows drive paths / `.exe` interop |
 

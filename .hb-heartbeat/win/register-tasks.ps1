@@ -1,4 +1,4 @@
-# Heartbeat — Windows Task Scheduler registration (run in Windows PowerShell as the logged-on user):
+# Heartbeat - Windows Task Scheduler registration (run in Windows PowerShell as the logged-on user):
 #   powershell -ExecutionPolicy Bypass -File D:\claudette\.hb-heartbeat\win\register-tasks.ps1
 # Registers three tasks:
 #   hb-window-open   daily at <Open>  (wakes the machine)              -> hb.py window open
@@ -30,7 +30,7 @@ $wsl = "$env:SystemRoot\System32\wsl.exe"
 $ps  = "$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe"
 $py  = "$Apex/.hb-heartbeat/hb.py"
 $tickWrapper = Join-Path $WinApex ".hb-heartbeat\win\run-tick.ps1"
-if (-not (Test-Path $tickWrapper)) { throw "run-tick.ps1 not found at $tickWrapper — pass -WinApex" }
+if (-not (Test-Path $tickWrapper)) { throw "run-tick.ps1 not found at $tickWrapper - pass -WinApex" }
 
 $openT  = [DateTime]::ParseExact($Open,  "HH:mm", $null)
 $closeT = [DateTime]::ParseExact($Close, "HH:mm", $null)

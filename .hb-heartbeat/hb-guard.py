@@ -5,8 +5,9 @@ Runs ONLY inside a worker sandbox (installed via the sandbox's .claude/settings.
 Defense in depth under the structural controls (the worker has no git/gh credentials and the runner
 does push + PR); this guard is ALLOWLIST-oriented so unknown shapes fail closed:
 
-  * Bash path containment: any token that resolves under the live apex but outside the sandbox → block.
-  * git: no global options (except --no-pager/-P and -c user.*/color.*/core.pager), and only a fixed
+  * Bash path containment: any token that resolves under (or mentions, anywhere, case-insensitively) the live apex or an
+    alias mount but outside the sandbox → block; globs fail closed toward the apex; `$VAR/...` paths are refused (unresolvable).
+  * git: no global options (except --no-pager/-P and -c user.name/user.email), and only a fixed
     subcommand allowlist (push, remote, config-writes, update-ref, symbolic-ref, worktree, tag, submodule,
     clone, filter-branch, replace, gc, reflog, -C … → block); branch/checkout/switch may not touch main/master
     or delete/force/rename.
@@ -56,11 +57,11 @@ GIT_ALLOWED_SUB.discard("difftool")
 GIT_OK_GLOBAL_PREFIX = ("-P", "--no-pager")
 GIT_OK_C_KEYS = ("user.name", "user.email")   # everything else (core.pager, diff.external, alias.*, …) can execute code
 GH_ALLOWED_PR_SUB = {"view", "list", "diff", "status", "checks"}
-WRAPPERS_DROP1 = {"env", "command", "exec", "nohup", "setsid", "nice", "time", "stdbuf", "ionice", "chronic", "unbuffer", "sudo", "doas", "caffeinate"}
+WRAPPERS_DROP1 = {"env", "command", "builtin", "exec", "nohup", "setsid", "nice", "time", "stdbuf", "ionice", "chronic", "unbuffer", "sudo", "doas", "caffeinate"}
 SHELLS = {"bash", "sh", "zsh", "dash", "ksh", "fish"}
 INTERPRETERS = {"python", "python3", "python2", "perl", "node", "ruby", "php", "lua", "awk", "gawk"}
 SECRET_RE = re.compile(r"(\.config/gh\b|hosts\.yml|\.claude/\.credentials|\bGH_TOKEN\b|\bGITHUB_TOKEN\b|\bGH_ENTERPRISE_TOKEN\b|\.git-credentials|\.netrc\b|id_rsa|id_ed25519)")
-PROTECTED_VARS = r"(HB_HOME|HB_SANDBOX|HB_APEX_ALIASES|CLAUDE_PROJECT_DIR|CLAUDE_CONFIG_DIR|GH_CONFIG_DIR|GH_TOKEN|GITHUB_TOKEN|GH_ENTERPRISE_TOKEN|GH_HOST|GIT_CONFIG_[A-Z0-9_]+|GIT_DIR|GIT_WORK_TREE|GIT_COMMON_DIR|GIT_ASKPASS|SSH_ASKPASS|GIT_SSH|GIT_SSH_COMMAND|GIT_TERMINAL_PROMPT|GIT_EXEC_PATH|GIT_CEILING_DIRECTORIES|GIT_ALTERNATE_OBJECT_DIRECTORIES|GIT_OBJECT_DIRECTORY|PATH|HOME|XDG_CONFIG_HOME|GIT_CONFIG_GLOBAL|GIT_CONFIG_SYSTEM|GIT_CONFIG_NOSYSTEM|GIT_NAMESPACE|LD_PRELOAD|LD_LIBRARY_PATH|PYTHONPATH|PYTHONSTARTUP|BASH_ENV|ENV|PROMPT_COMMAND)"
+PROTECTED_VARS = r"(GIT_EDITOR|EDITOR|VISUAL|PAGER|GIT_PAGER|GIT_SEQUENCE_EDITOR|GIT_EXTERNAL_DIFF|GIT_PROXY_COMMAND|GIT_SSH_VARIANT|BROWSER|LESSOPEN|LESSCLOSE|GIT_DIFF_OPTS|GIT_TEMPLATE_DIR|GIT_ATTR_NOSYSTEM|GIT_ALLOW_PROTOCOL|GIT_PROTOCOL_FROM_USER|GIT_CURL_VERBOSE|GIT_TRACE[A-Z0-9_]*|HB_HOME|HB_SANDBOX|HB_APEX_ALIASES|CLAUDE_PROJECT_DIR|CLAUDE_CONFIG_DIR|GH_CONFIG_DIR|GH_TOKEN|GITHUB_TOKEN|GH_ENTERPRISE_TOKEN|GH_HOST|GIT_CONFIG_[A-Z0-9_]+|GIT_DIR|GIT_WORK_TREE|GIT_COMMON_DIR|GIT_ASKPASS|SSH_ASKPASS|GIT_SSH|GIT_SSH_COMMAND|GIT_TERMINAL_PROMPT|GIT_EXEC_PATH|GIT_CEILING_DIRECTORIES|GIT_ALTERNATE_OBJECT_DIRECTORIES|GIT_OBJECT_DIRECTORY|PATH|HOME|XDG_CONFIG_HOME|GIT_CONFIG_GLOBAL|GIT_CONFIG_SYSTEM|GIT_CONFIG_NOSYSTEM|GIT_NAMESPACE|LD_PRELOAD|LD_LIBRARY_PATH|PYTHONPATH|PYTHONSTARTUP|BASH_ENV|ENV|PROMPT_COMMAND)"
 ENV_ASSIGN_RE = re.compile(r"^" + PROTECTED_VARS + r"=")
 PROTECTED_NAME_RE = re.compile(r"^" + PROTECTED_VARS + r"$")
 WINPATH_RE = re.compile(r"^[A-Za-z]:[\\/]")
@@ -105,11 +106,28 @@ def tokenize_segments(cmd: str):
 
 
 def _under(rp: Path, root: Path) -> bool:
-    try:
-        rp.relative_to(root)
-        return True
-    except ValueError:
-        return False
+    """Prefix test, case-insensitive: drvfs mounts (the apex and its aliases) fold case below the mount point."""
+    a, b = str(rp).lower().rstrip("/"), str(root).lower().rstrip("/")
+    return a == b or a.startswith(b + "/")
+
+
+def _mentions_live_tree(tok: str, sandbox) -> bool:
+    """A live-tree path embedded ANYWHERE in a token (quoted multi-word strings, VAR=..., sh -c payloads)."""
+    low = tok.lower()
+    apex_l = str(APEX).lower().rstrip("/")
+    sb = str(sandbox).lower().rstrip("/") if sandbox is not None else None
+    for root in APEX_ROOTS:
+        r = str(root).lower().rstrip("/")
+        sb_here = (r + sb[len(apex_l):]) if (sb and sb.startswith(apex_l + "/")) else None
+        i = low.find(r)
+        while i != -1:
+            tail = low[i + len(r):]
+            if tail == "" or tail[0] in "/'\" \t)]};|&,>":
+                seg = low[i:]
+                if not (sb_here and (seg == sb_here or seg.startswith(sb_here + "/"))):
+                    return True
+            i = low.find(r, i + 1)
+    return False
 
 
 def _in_apex_not_sandbox(rp: Path, sandbox) -> bool:
@@ -145,6 +163,10 @@ def path_check(tok: str, cwd: Path, sandbox):
     prefix could reach the apex); Windows drive paths and .exe interop are blocked outright."""
     if WINPATH_RE.match(tok) or WINPATH_RE.match(tok.split("=", 1)[-1]):
         block(f"'{tok}' is a Windows path — no interop from the sandbox")
+    if _mentions_live_tree(tok, sandbox):
+        block(f"'{tok[:80]}' mentions the LIVE tree — the sandbox worker may only touch its own worktree")
+    if "$" in tok and ("/" in tok or ".." in tok):
+        block(f"'{tok[:80]}' is a path built from a shell variable — the guard cannot resolve it (write the literal path)")
     if "\\" in tok and re.search(r"[A-Za-z]:\\", tok):
         block(f"'{tok}' contains a Windows drive path")
     for t in _candidates(tok):
@@ -232,6 +254,12 @@ def check_git(args: list, cwd: Path, sandbox):
         block("git bisect run: shells out — not allowed in the sandbox")
     if sub in ("difftool", "mergetool"):
         block(f"git {sub}: shells out — not allowed in the sandbox")
+    if sub == "grep" and any(t in ("-O", "--open-files-in-pager") or t.startswith("--open-files-in-pager=") or t.startswith("-O") for t in rest):
+        block("git grep -O: opens a pager/shell — not allowed in the sandbox")
+    if sub == "help" and any(t in ("-w", "--web") for t in rest):
+        block("git help --web: not allowed in the sandbox")
+    if sub in ("cherry-pick", "revert", "am", "rebase") and any(t in ("-e", "--edit", "-i", "--interactive") for t in rest):
+        block(f"git {sub} -e/-i: editor forms are not allowed in the sandbox")
     if any(t in ("-p", "--patch", "-i", "--interactive", "-e", "--edit") for t in rest) and sub in ("add", "commit", "reset", "checkout", "stash", "restore"):
         block(f"git {sub} -p/-i/-e: interactive/editor forms are not allowed in the sandbox")
     if any(t.startswith("--config-env") or t.startswith("--exec-path") for t in rest):
@@ -310,6 +338,8 @@ def inspect_tokens(toks: list, cwd: Path, sandbox, depth: int = 0):
                     block(f"env {rest[0]}: not allowed in the sandbox")
                 if rest[0] in ("-u", "--unset") and len(rest) > 1 and PROTECTED_NAME_RE.match(rest[1]):
                     block(f"env -u {rest[1]}: protected environment variable")
+                if rest[0].startswith("-u") and len(rest[0]) > 2 and PROTECTED_NAME_RE.match(rest[0][2:]):
+                    block(f"env {rest[0]}: protected environment variable")
                 if rest[0].startswith("--unset=") and PROTECTED_NAME_RE.match(rest[0].split("=", 1)[1]):
                     block(f"{rest[0]}: protected environment variable")
                 if "=" in rest[0] and ENV_ASSIGN_RE.match(rest[0]):
@@ -360,9 +390,18 @@ def inspect_tokens(toks: list, cwd: Path, sandbox, depth: int = 0):
         path_check(t, cwd, sandbox)
 
 
+HEREDOC_RE = re.compile(r"<<-?\s*(['\"]?)([A-Za-z_][A-Za-z0-9_]*)\1[^\n]*\n(.*?)\n\s*\2[ \t]*(?=\n|$)", re.S)
+
+
+def strip_heredocs(cmd: str) -> str:
+    """Here-document BODIES are data, not commands: drop them (the delimiter line stays so the command still parses)."""
+    return HEREDOC_RE.sub(lambda m: "<<" + m.group(1) + m.group(2) + m.group(1) + "\n" + m.group(2), cmd)
+
+
 def inspect_command(cmd: str, cwd: Path, sandbox, depth: int = 0):
     if depth > 6:
         return
+    cmd = strip_heredocs(cmd)
     # command substitutions, backticks, process substitutions: inspect inner text as its own command
     for m in re.finditer(r"\$\((.*?)\)|`([^`]*)`|[<>]\((.*?)\)", cmd, re.S):
         inner = m.group(1) or m.group(2) or m.group(3) or ""

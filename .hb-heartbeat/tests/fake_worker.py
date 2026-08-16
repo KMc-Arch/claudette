@@ -51,7 +51,10 @@ if mode == "nocommit":
 # do some work on the branch
 (sandbox / "HB_FAKE_WORK.md").write_text(f"fake work for {os.environ.get('HB_ITEM_ID')} at {time.time_ns()}\n", encoding="utf-8")
 subprocess.run(["git", "-C", str(sandbox), "add", "-f", "HB_FAKE_WORK.md"], check=True, capture_output=True)
-subprocess.run(["git", "-C", str(sandbox), "-c", "user.name=fake", "-c", "user.email=fake@x", "commit", "-qm", "fake worker commit"], check=True, capture_output=True)
+msg = "creds: ghp_ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789abcd" if mode == "secretmsg" else "fake worker commit"  # scrub:allow — synthetic token fixture
+subprocess.run(["git", "-C", str(sandbox), "-c", "user.name=fake", "-c", "user.email=fake@x", "commit", "-qm", msg], check=True, capture_output=True)
+if mode == "secretmsg":
+    mode = "converged"
 
 # emulate a worker filing a backlog item in its (discarded) sandbox state
 bl = sandbox / ".state" / "work" / "backlog.md"

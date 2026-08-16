@@ -52,7 +52,7 @@ Morning review: `~inbox/hb/night-<date>.md` (always written, even for a quiet ni
 - **The runner publishes**, not the worker: after an expected terminus it pushes `refs/heads/hb/<ITEM>` only (the live
   repo's scrub pre-push hook is the gate) and runs `gh pr create`. Nobody merges.
 - Hard-rooted sandbox worktree (`cboot.py --project SANDBOX --exec-file`), fresh per item, discarded after harvest; only `.state/work` is copied in; `WebFetch`/`WebSearch` denied by default (`worker_web`).
-- PR title/body (worker text) pass the codex scrub before `gh pr create`; otherwise withheld.
+- Egress scrub before anything leaves: commit messages + touched paths + PR title are scrubbed before the push (push withheld on a hit); the PR body is scrubbed before `gh pr create` (body withheld on a hit); `scrub:allow` pragmas in worker text count as a hit; long lines are folded so nothing hides past scrub's line cap. `scope` breaches withhold the push.
 
 **Guards (defense in depth — allowlist-oriented, unknown shapes fail closed):** apex deny + `remote-guard.sh`
 (inherited); sandbox `settings.local.json` deny overlay + `hb-guard.sh` (path containment to the sandbox for any Bash

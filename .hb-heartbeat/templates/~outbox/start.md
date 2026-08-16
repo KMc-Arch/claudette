@@ -44,7 +44,7 @@ time_cap_min: 90                 # opt  wall-clock cap for the worker; may LOWER
 qa: mileqa                       # opt  exit predicate: mileqa | tests | none  (default mileqa)
 pr: true                         # opt  the RUNNER pushes the branch + `gh pr create` on an expected terminus (default true; never merges); the worker itself has no credentials
 base: null                       # opt  pin a base commit; null = HEAD of the project's default branch at pop (runner records the SHA)
-scope:                           # opt  path allowlist the worker must stay inside; empty = whole repo
+scope:                           # opt  path allowlist; commits touching files outside it are NOT pushed/PR'd (reported as scope_breach); empty = whole repo
   - .codex/start.md
 depends_on: []                   # opt  item ids that must be in ~inbox as converged first (v1: informational only)
 tags: []                         # opt  free-form

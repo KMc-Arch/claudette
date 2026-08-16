@@ -484,7 +484,7 @@ class TestRunner(Base):
         finally:
             os.environ.pop("GH_TOKEN"); os.environ.pop("GIT_SSH_COMMAND")
         self.assertNotIn("GH_TOKEN", env); self.assertNotIn("GIT_SSH_COMMAND", env)
-        self.assertEqual(env["GIT_CONFIG_COUNT"], "2")
+        self.assertEqual(env["GIT_CONFIG_COUNT"], "4")
         self.assertEqual((env["GIT_CONFIG_KEY_0"], env["GIT_CONFIG_VALUE_0"]), ("credential.helper", ""))
         self.assertEqual((env["GIT_CONFIG_KEY_1"], env["GIT_CONFIG_VALUE_1"]), ("core.askPass", "/bin/false"))
         self.assertEqual(env["GIT_CONFIG_GLOBAL"], "/dev/null"); self.assertEqual(env["GIT_CONFIG_NOSYSTEM"], "1")
@@ -564,8 +564,10 @@ class TestRunner(Base):
         self.assertEqual(self.flag()["status"], "go")                            # not revoked by a late close
 
     def test_approve_validates(self):
-        with self.assertRaises(SystemExit):
-            hb.approve("bad id", None, None, None, None, self.cfg)
+        bf = hb.STATE / "body.md"; hb.STATE.mkdir(exist_ok=True); bf.write_text("# body\n")
+        with self.assertRaises(SystemExit) as cm:
+            hb.approve("bad id", None, None, None, str(bf), self.cfg)
+        self.assertIn("invalid id", str(cm.exception))
         with self.assertRaises(SystemExit):
             hb.approve("BL-07", None, "12", None, None, self.cfg)
 
@@ -574,6 +576,68 @@ class TestRunner(Base):
         self.s.approve(); c = self._claim(); e = runner.run(c, self.cfg)
         self.assertEqual(e["terminus"], "converged"); self.assertFalse(e["pushed"])
         self.assertIn("no commits", (hb.inbox(self.apex) / "BL-07" / "outcome.md").read_text())
+
+    def test_publish_withholds_push_on_flagged_commit_message(self):
+        os.environ["HB_FAKE_MODE"] = "secretmsg"
+        self.s.approve(); c = self._claim(); e = runner.run(c, self.cfg)
+        self.assertEqual(e["terminus"], "converged"); self.assertFalse(e["pushed"])
+        self.assertIn("push withheld", (hb.inbox(self.apex) / "BL-07" / "outcome.md").read_text())
+        self.assertNotEqual(sh("git", "rev-parse", "--verify", "hb/BL-07", cwd=self.s.origin, check=False).returncode, 0)
+
+    def test_publish_scrub_gate_helpers(self):
+        f = hb.STATE / "x.md"; hb.STATE.mkdir(exist_ok=True)
+        f.write_text("ghp_ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789abcd scrub:allow\n")
+        self.assertFalse(runner.scrub_text_file(f)[0])                          # pragma is not honoured for worker text
+        f.write_text("x" * 2500 + " ghp_ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789abcd\n")   # scrub:allow — synthetic token fixture
+        self.assertFalse(runner.scrub_text_file(f)[0])                          # long lines are folded before scanning
+
+    def test_scope_breach_withholds_publish(self):
+        os.environ["HB_FAKE_MODE"] = "converged"
+        p = self.s.approve()
+        fm, body, _ = hb.parse_item(p); fm["scope"] = [".codex"]; p.write_text(hb.render_item(fm, body))
+        c = self._claim(); e = runner.run(c, self.cfg)
+        self.assertFalse(e["pushed"])
+        oc = (hb.inbox(self.apex) / "BL-07" / "outcome.md").read_text()
+        self.assertIn("publish withheld", oc); self.assertIn("scope_breach:\n- HB_FAKE_WORK.md", oc)
+
+    def test_classify_runner_evidence_outranks_worker(self):
+        self.assertEqual(runner.classify({"timed_out": True}, {"terminus": "converged", "qa_result": "converged"}), ("cap", "converged"))
+        self.assertEqual(runner.classify({"is_error": True, "result": "usage limit reached"}, {"terminus": "converged"}), ("quota", "n/a"))
+        self.assertEqual(runner.classify({}, {"terminus": "converged", "qa_result": "held"}), ("converged", "held"))
+
+    def test_requeue_or_fail_threshold_on_runner_paths(self):
+        p = self.s.approve()
+        fm, body, _ = hb.parse_item(p); fm["attempts"] = 2; p.write_text(hb.render_item(fm, body))     # one strike left
+        real = runner.provision
+        runner.provision = lambda *a, **k: (_ for _ in ()).throw(RuntimeError("boom"))
+        try:
+            c = self._claim(); e = runner.run(c, self.cfg)
+        finally:
+            runner.provision = real
+        self.assertEqual(e["terminus"], "unexpected")
+        self.assertFalse((hb.outbox(self.apex) / "BL-07.md").exists())                       # not requeued forever
+        self.assertIn("failed-repeatedly", (hb.inbox(self.apex) / "BL-07" / "outcome.md").read_text())
+
+    def test_worker_env_has_identity(self):
+        env = runner.worker_env(self.cfg, self.apex / ".hb-heartbeat" / "sandbox" / "X", "X", 60)
+        keys = {env[f"GIT_CONFIG_KEY_{i}"]: env[f"GIT_CONFIG_VALUE_{i}"] for i in range(int(env["GIT_CONFIG_COUNT"]))}
+        self.assertIn("user.name", keys); self.assertIn("user.email", keys); self.assertTrue(keys["user.name"])
+        r = subprocess.run(["git", "config", "--get", "user.email"], env=env, capture_output=True, text=True, cwd=str(self.apex))
+        self.assertTrue(r.stdout.strip())
+
+    def test_child_sandbox_control_dir_ignored(self):
+        # a scratch "child" repo that does not track .hb-heartbeat: control files must be invisible to git add -A
+        child = self.apex / "child"; child.mkdir()
+        (child / "CLAUDE.md").write_text("---\nroot: true\n---\n"); (child / "README.md").write_text("c\n")
+        (child / ".state" / "work").mkdir(parents=True); (child / ".state" / "work" / "backlog.md").write_text("### BL-01 x\nbody\n")
+        sh("git", "init", "-q", "-b", "main", cwd=child)
+        sh("git", "-c", "user.name=t", "-c", "user.email=t@t", "add", "-A", cwd=child)
+        sh("git", "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "init", cwd=child)
+        prov = runner.provision(self.cfg, child, "BL-01", {"id": "BL-01", "attempts": 0})
+        st = sh("git", "status", "--porcelain", "--untracked-files=all", cwd=str(prov["sandbox"])).stdout
+        self.assertNotIn(".hb-heartbeat", st, st)
+        self.assertNotIn(".state/work", st, st)                                              # tracked -> not overwritten
+        runner.cleanup(child, prov["sandbox"])
 
     def test_exhausted_is_expected(self):
         os.environ["HB_FAKE_MODE"] = "exhausted"
@@ -643,7 +707,11 @@ class TestGuard(unittest.TestCase):
                   "ls /mnt/d/claudette/.hb-heartbeat", "python3 -c 'import subprocess'", "env -i git status", "git add -p", "git commit -e -m x",
                   "cat ~/.claude/.credentials.json", "cat /home/KMc/.git-credentials", "cat ~/.ssh/id_rsa", "cat ~/.ssh/id_ed25519", "cat ~/.netrc",
                   "declare -x GH_TOKEN=x", "ls ../*", "GITHUB_TOKEN=x gh pr view 1", "XDG_CONFIG_HOME=/tmp gh pr view 1", "PATH=/x:$PATH ls",
-                  "git --config-env=user.name=X commit -m x", "python3 -c \"__import__('os').system('gh pr merge 1')\""]:
+                  "git --config-env=user.name=X commit -m x", "python3 -c \"__import__('os').system('gh pr merge 1')\"",
+                  "git grep -O'sh -c x' foo", "X=/mnt/claudette; cat $X/CLAUDE.md", "cat $HOME/../../mnt/claudette/x", "cat ${X}/x",
+                  "builtin typeset -x GIT_CONFIG_GLOBAL=/x", "env -uGIT_CONFIG_GLOBAL git status", "GIT_EDITOR='cp x /tmp' git commit",
+                  "xargs -0 sh -c 'cp x /mnt/claudette/.codex/e'", "ls /mnt/d/CLAUDETTE/.hb-heartbeat", "ls /MNT/CLAUDETTE/.HB-HEARTBEAT",
+                  "git help --web commit", "git cherry-pick -e abc", "echo 'see /mnt/claudette/.codex' > x"]:
             self.assertEqual(self.guard(c), 2, f"should block: {c}")
 
     def test_allows(self):
@@ -658,7 +726,9 @@ class TestGuard(unittest.TestCase):
                   "ls /tmp", "cat ~/.claude/settings.json", "git status; ls", "git add -A && git commit -m 'msg with | pipe'",
                   "cat <<EOF > notes.md\ngit push origin main\nEOF", "python3 - <<'EOF'\nprint(1)\nEOF",
                   "git log -p -1", "ls *.log", "for f in *.md; do echo $f; done", "cat <(echo hi)", "export FOO=bar", "unset FOO",
-                  "if true; then echo hi; fi", "curl http://example.com/x", "echo a:b", "python3 -c 'print(1)'", "git checkout -b hb/x2"]:
+                  "if true; then echo hi; fi", "curl http://example.com/x", "echo a:b", "python3 -c 'print(1)'", "git checkout -b hb/x2",
+                  "cat > notes.md <<EOF\nSee /mnt/claudette/CLAUDE.md for details\nEOF", "echo $PATH", "git log --format=%h", "grep -e pattern file",
+                  "find . -name '*.md'", "sed -i 's/a/b/' x", "ls foo=bar.md", "echo D:", "git grep foo", "echo 10:30"]:
             self.assertEqual(self.guard(c), 0, f"should allow: {c}")
 
 

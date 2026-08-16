@@ -529,6 +529,33 @@ def unclaim_item(inflight_path: Path, outbox_path: Path) -> None:
     os.rename(inflight_path, outbox_path)
 
 
+def requeue_or_fail(inflight_path: Path, outbox_path: Path, fm: dict, body: str, cfg: dict, item_root: Path, reason: str) -> str:
+    """attempts += 1, then either back to ~outbox (retry another night) or - at attempts_max - to ~inbox as
+    failed-repeatedly. The single place the threshold is applied on the runner's own return paths."""
+    attempts = int(fm.get("attempts") or 0) + 1
+    fm["attempts"] = attempts
+    amax = int(fm.get("attempts_max") or cfg.get("attempts_max", 3))
+    item_id = str(fm.get("id") or inflight_path.stem)
+    if attempts >= amax:
+        dst_dir = inbox(item_root) / item_id
+        dst_dir.mkdir(parents=True, exist_ok=True)
+        write_atomic(inflight_path, render_item(fm, body))
+        shutil.move(str(inflight_path), str(dst_dir / "item.md"))
+        try:
+            _pidfile(inflight_path).unlink()
+        except FileNotFoundError:
+            pass
+        write_outcome(dst_dir, {"item_id": item_id, "terminus": "failed-repeatedly", "attempts": attempts,
+                                "branch": None, "pr": None, "qa_result": "n/a"},
+                      f"{reason}. Attempt {attempts} of {amax}: giving up - this is a bug report, not a backlog item.")
+        log(f"item {item_id}: {reason}; attempts={attempts} >= {amax} -> inbox failed-repeatedly")
+        return "failed"
+    write_atomic(inflight_path, render_item(fm, body))
+    unclaim_item(inflight_path, outbox_path)
+    log(f"item {item_id}: {reason}; attempts={attempts} -> outbox")
+    return "requeued"
+
+
 def finish_item(inflight_path: Path) -> None:
     for p in (_pidfile(inflight_path), inflight_path):
         try:

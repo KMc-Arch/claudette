@@ -119,9 +119,14 @@ def worker_env(cfg: dict, sandbox: Path, item_id: str, cap_s: int) -> dict:
     env["GIT_CONFIG_GLOBAL"] = "/dev/null"              # ~/.gitconfig (URL-scoped gh helper) is not consulted
     env["GIT_CONFIG_NOSYSTEM"] = "1"
     # reset inherited credential helpers (an empty value clears the helper list) and disable askpass
-    env["GIT_CONFIG_COUNT"] = "2"
+    env["GIT_CONFIG_COUNT"] = "4"
     env["GIT_CONFIG_KEY_0"] = "credential.helper"; env["GIT_CONFIG_VALUE_0"] = ""
     env["GIT_CONFIG_KEY_1"] = "core.askPass"; env["GIT_CONFIG_VALUE_1"] = "/bin/false"
+    # identity: the global config is off, so give the worker the project's committer identity explicitly
+    name = _git(hb.APEX, "config", "user.name").stdout.strip() or "Heartbeat worker"
+    email = _git(hb.APEX, "config", "user.email").stdout.strip() or "heartbeat@localhost"
+    env["GIT_CONFIG_KEY_2"] = "user.name"; env["GIT_CONFIG_VALUE_2"] = name
+    env["GIT_CONFIG_KEY_3"] = "user.email"; env["GIT_CONFIG_VALUE_3"] = email
     return env
 
 
@@ -225,8 +230,15 @@ def provision(cfg: dict, project: Path, item_id: str, fm: dict) -> dict:
     # memory (user profile, preferences) is not needed for an item and would only widen what a worker could leak.
     for rel in ("work",):
         src, dst = project / ".state" / rel, sandbox / ".state" / rel
-        if src.is_dir():
+        tracked = _git(sandbox, "ls-files", "--", f".state/{rel}").stdout.strip()
+        if src.is_dir() and not tracked:                  # if the repo tracks it, the checkout already has it
             shutil.copytree(src, dst, dirs_exist_ok=True)
+    # a project that does not track .hb-heartbeat/ (every child) must never see the sandbox control files as
+    # addable: an ignore-all .gitignore makes the whole dir invisible to `git add -A`
+    ctl = sandbox / ".hb-heartbeat"
+    ctl.mkdir(exist_ok=True)
+    if not _git(sandbox, "ls-files", "--", ".hb-heartbeat").stdout.strip():
+        (ctl / ".gitignore").write_text("*\n", encoding="utf-8")
     for f in ("prefs.json",):
         src = project / ".state" / f
         if src.exists():
@@ -429,13 +441,14 @@ def classify(env: dict, res_fm: dict) -> tuple[str, str]:
     qa = {"clean": "converged"}.get(qa, qa)
     if qa not in QA_RESULTS:
         qa = "n/a"
-    if t in hb.TERMINI_EXPECTED:
-        return t, qa
+    # the runner's own evidence outranks the worker's self-declaration
     if env.get("timed_out"):
         return "cap", qa
     blob = f"{env.get('result') or ''}\n{env.get('stderr') or ''}\n{env.get('raw') or ''}"
     if env.get("is_error") and QUOTA_HINT.search(blob):
         return "quota", "n/a"
+    if t in hb.TERMINI_EXPECTED:
+        return t, qa
     return "unexpected", qa
 
 
@@ -449,6 +462,21 @@ def publish(cfg: dict, project: Path, prov: dict, item_id: str, res_fm: dict, re
         return out
     env = _env(cfg)
     env["GIT_TERMINAL_PROMPT"] = "0"                    # a credential miss must fail, not hang the tick
+    # egress scrub BEFORE the push: commit messages + touched paths + PR title (the pre-push hook only sees diff lines)
+    title = _clean_title(res_fm.get("summary")) or f"Heartbeat {item_id}"
+    log_txt = _git(project, "log", "--format=%B%n--", f"{prov['base_sha']}..{branch}").stdout
+    paths_txt = _git(project, "diff", "--name-only", f"{prov['base_sha']}..{branch}").stdout
+    pre_file = hb.STATE / f"pr-pre-{item_id}.md"
+    pre_file.write_text(f"TITLE: {title}\n\nCOMMIT MESSAGES:\n{log_txt}\n\nPATHS:\n{paths_txt}\n", encoding="utf-8")
+    ok_pre, why_pre = scrub_text_file(pre_file)
+    try:
+        pre_file.unlink()
+    except OSError:
+        pass
+    if not ok_pre:
+        out["note"] = f"push withheld: scrub flagged commit messages/paths/title ({why_pre})"
+        hb.log(f"publish {item_id}: {out['note']}")
+        return out
     try:
         r = subprocess.run(["git", "-C", str(project), "push", "-u", "origin", f"refs/heads/{branch}:refs/heads/{branch}"],
                            capture_output=True, text=True, env=env, timeout=600, stdin=subprocess.DEVNULL)
@@ -466,7 +494,6 @@ def publish(cfg: dict, project: Path, prov: dict, item_id: str, res_fm: dict, re
         out["pr"] = existing
         out["note"] = "PR already existed"
         return out
-    title = _clean_title(res_fm.get("summary")) or f"Heartbeat {item_id}"
     body_file = hb.STATE / f"pr-body-{item_id}.md"
     body_text = (f"Produced unattended by Heartbeat (item `{item_id}`, branch `{branch}`, base `{prov['base_sha'][:10]}`).\n\n"
                  f"**Review before merging — nothing here has been merged or approved by a human.**\n\n---\n\n"
@@ -512,6 +539,16 @@ def _clean_title(s) -> str:
 def scrub_text_file(path: Path) -> tuple[bool, str]:
     """Run the codex scrub over one file. (True, '') when clean or when scrub is unavailable (logged)."""
     real_apex = Path(__file__).resolve().parent.parent
+    try:
+        text = path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return False, "unreadable"
+    if "scrub:allow" in text:
+        return False, "worker text carries a scrub:allow pragma"
+    # scrub skips over-long lines; fold them so nothing hides past the line cap
+    folded = "\n".join(ln[i:i + 1000] for ln in text.splitlines() for i in range(0, max(1, len(ln)), 1000))
+    if folded != text.rstrip("\n"):
+        path.write_text(folded + "\n", encoding="utf-8")
     scrub = next((c for c in (hb.APEX / ".codex" / "explicit" / "scrub" / "scrub.py",
                               real_apex / ".codex" / "explicit" / "scrub" / "scrub.py") if c.exists()), None)
     if scrub is None:
@@ -612,9 +649,7 @@ def run(claim: dict, cfg: dict) -> dict | None:
     except Exception as e:
         # provisioning failure is ours, not the worker's: unexpected -> diag, item back to outbox with attempts+1
         diag("provision-failed", {"item_id": item_id, "error": repr(e)})
-        fm["attempts"] = int(fm.get("attempts", 0)) + 1
-        hb.write_atomic(inflight_path, hb.render_item(fm, body))
-        hb.unclaim_item(inflight_path, c["path"])
+        hb.requeue_or_fail(inflight_path, c["path"], fm, body, cfg, item_root, f"provision failed: {e!r}")
         hb.release_flag(pid, "go")
         entry.update({"terminus": "unexpected", "qa_result": "n/a", "error": repr(e)})
         return entry
@@ -636,15 +671,16 @@ def run(claim: dict, cfg: dict) -> dict | None:
 
     pub = {"pushed": False, "pr": None, "note": "not published"}
     want_pr = fm.get("pr", cfg.get("pr", True)) not in (False, "false", "no")
-    if terminus in hb.TERMINI_EXPECTED and want_pr and has_commits:
+    breach = scope_breach(files, fm.get("scope") or [])
+    if terminus in hb.TERMINI_EXPECTED and want_pr and has_commits and breach:
+        pub["note"] = f"publish withheld: {len(breach)} file(s) outside the item's scope: {breach[:8]}"
+        hb.log(f"item {item_id}: {pub['note']}")
+    elif terminus in hb.TERMINI_EXPECTED and want_pr and has_commits:
         pub = publish(cfg, project, prov, item_id, res_fm, res_body)
     elif terminus in hb.TERMINI_EXPECTED and want_pr and not has_commits:
         pub["note"] = "no commits on the branch — nothing to publish"
     duration_min = round((time.time() - t_start) / 60, 1)
 
-    breach = scope_breach(files, fm.get("scope") or [])
-    if breach:
-        hb.log(f"item {item_id}: {len(breach)} file(s) outside scope: {breach[:5]}")
     outcome_fields = {
         "item_id": item_id, "branch": prov["branch"], "pr": pub["pr"], "pushed": pub["pushed"], "publish_note": pub["note"],
         "scope_breach": breach,
@@ -678,9 +714,7 @@ def run(claim: dict, cfg: dict) -> dict | None:
         diag("quota-exhausted", {"item_id": item_id, "reading_at_gate": reading, "reading_now": hb.read_quota(),
                                  "worker_result": (env.get("result") or "")[:2000]})
         shutil.copyfile(inflight_path, dst / "item.md")
-        fm["attempts"] = entry["attempts"]
-        hb.write_atomic(inflight_path, hb.render_item(fm, body))
-        hb.unclaim_item(inflight_path, c["path"])           # back to outbox for another night
+        hb.requeue_or_fail(inflight_path, c["path"], fm, body, cfg, item_root, "quota exhausted mid-run")   # another night, or failed-repeatedly
         cleanup(project, prov["sandbox"])
         hb.release_flag(pid, "absent")
         return entry
