@@ -58,3 +58,7 @@ desktop.ini
 # Must follow the whitelist block above: last matching pattern wins, and
 # !/Testing/** and !/.templates/** would otherwise re-include these.
 **/.state/tests/explicit/scrub/
+
+# ── Tilde-prefixed mailboxes (visible, never tracked) — except Heartbeat's templates ──
+**/~*/
+!/.hb-heartbeat/templates/~*/
