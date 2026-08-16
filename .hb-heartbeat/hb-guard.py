@@ -6,10 +6,11 @@ Defense in depth under the structural controls (the worker has no git/gh credent
 does push + PR); this guard is ALLOWLIST-oriented so unknown shapes fail closed:
 
   * Bash path containment: any token that resolves under (or mentions, anywhere, case-insensitively) the live apex or an
-    alias mount but outside the sandbox → block; globs fail closed toward the apex; `$VAR/...` paths are refused (unresolvable).
+    alias mount but outside the sandbox → block; globs fail closed toward the apex; `$VAR/...`-rooted paths are refused
+    (unresolvable); heredoc bodies are data (dropped) unless they feed a shell/interpreter/eval, in which case they are code.
   * git: no global options (except --no-pager/-P and -c user.name/user.email), and only a fixed
-    subcommand allowlist (push, remote, config-writes, update-ref, symbolic-ref, worktree, tag, submodule,
-    clone, filter-branch, replace, gc, reflog, -C … → block); branch/checkout/switch may not touch main/master
+    subcommand allowlist (push, remote, grep, config-writes, update-ref, symbolic-ref, worktree, tag, submodule,
+    clone, filter-branch, replace, gc, reflog, -C … → block; use plain grep/rg instead of `git grep`); branch/checkout/switch may not touch main/master
     or delete/force/rename.
   * gh: only pr view|list|diff|status|checks (read-only); everything else (create/merge/close/ready/review/
     edit, auth, alias, api, repo, release, issue, -R/--repo) → block.
@@ -47,8 +48,8 @@ def block(msg: str):
 
 GIT_ALLOWED_SUB = {
     "add", "am", "apply", "bisect", "blame", "branch", "cat-file", "check-ignore", "checkout", "cherry",
-    "cherry-pick", "clean", "commit", "count-objects", "describe", "diff", "diff-tree", "difftool", "fetch",
-    "for-each-ref", "format-patch", "fsck", "grep", "help", "log", "ls-files", "ls-tree", "merge", "merge-base",
+    "cherry-pick", "clean", "commit", "count-objects", "describe", "diff", "diff-tree", "fetch",
+    "for-each-ref", "format-patch", "fsck", "help", "log", "ls-files", "ls-tree", "merge", "merge-base",
     "mv", "name-rev", "pull", "range-diff", "rebase", "reset", "restore", "rev-list", "rev-parse", "revert",
     "rm", "shortlog", "show", "show-branch", "show-ref", "stash", "status", "switch", "var", "version",
     "whatchanged", "--version", "--help", "config",
@@ -71,6 +72,8 @@ GITGH_RE = re.compile(r"(^|[^A-Za-z0-9_./-])(git|gh)([^A-Za-z0-9_-]|$)")
 def tokenize_segments(cmd: str):
     """Quote-aware split into command segments (lists of tokens). Uses shlex punctuation mode so
     ; | || && & > < ( ) split OUTSIDE quotes only. Falls back to a naive split on lexer errors."""
+    # newlines are command separators (shlex treats them as whitespace): make them explicit
+    cmd = cmd.replace("\r\n", "\n").replace("\n", " ; ")
     try:
         lex = shlex.shlex(cmd, posix=True, punctuation_chars=True)
         lex.whitespace_split = True
@@ -165,8 +168,8 @@ def path_check(tok: str, cwd: Path, sandbox):
         block(f"'{tok}' is a Windows path — no interop from the sandbox")
     if _mentions_live_tree(tok, sandbox):
         block(f"'{tok[:80]}' mentions the LIVE tree — the sandbox worker may only touch its own worktree")
-    if "$" in tok and ("/" in tok or ".." in tok):
-        block(f"'{tok[:80]}' is a path built from a shell variable — the guard cannot resolve it (write the literal path)")
+    if re.match(r"^\$\{?[A-Za-z_]", tok) and ("/" in tok or ".." in tok) or re.search(r"\$\{?[A-Za-z_][A-Za-z0-9_]*\}?/?\.\.", tok):
+        block(f"'{tok[:80]}' is a path rooted in a shell variable — the guard cannot resolve it (write the literal path)")
     if "\\" in tok and re.search(r"[A-Za-z]:\\", tok):
         block(f"'{tok}' contains a Windows drive path")
     for t in _candidates(tok):
@@ -254,8 +257,6 @@ def check_git(args: list, cwd: Path, sandbox):
         block("git bisect run: shells out — not allowed in the sandbox")
     if sub in ("difftool", "mergetool"):
         block(f"git {sub}: shells out — not allowed in the sandbox")
-    if sub == "grep" and any(t in ("-O", "--open-files-in-pager") or t.startswith("--open-files-in-pager=") or t.startswith("-O") for t in rest):
-        block("git grep -O: opens a pager/shell — not allowed in the sandbox")
     if sub == "help" and any(t in ("-w", "--web") for t in rest):
         block("git help --web: not allowed in the sandbox")
     if sub in ("cherry-pick", "revert", "am", "rebase") and any(t in ("-e", "--edit", "-i", "--interactive") for t in rest):
@@ -390,12 +391,37 @@ def inspect_tokens(toks: list, cwd: Path, sandbox, depth: int = 0):
         path_check(t, cwd, sandbox)
 
 
-HEREDOC_RE = re.compile(r"<<-?\s*(['\"]?)([A-Za-z_][A-Za-z0-9_]*)\1[^\n]*\n(.*?)\n\s*\2[ \t]*(?=\n|$)", re.S)
+HEREDOC_RE = re.compile(r"(?P<line>[^\n]*?)<<-?\s*(?P<q>['\"]?)(?P<d>[A-Za-z_][A-Za-z0-9_]*)(?P=q)(?P<rest>[^\n]*)\n(?P<body>.*?)\n[ \t]*(?P=d)[ \t]*(?=\n|$)", re.S)
+HEREDOC_EXEC = SHELLS | INTERPRETERS | {"eval", "source", ".", "xargs", "env", "exec", "command", "sudo", "builtin", "nohup", "setsid", "timeout"}
 
 
 def strip_heredocs(cmd: str) -> str:
-    """Here-document BODIES are data, not commands: drop them (the delimiter line stays so the command still parses)."""
-    return HEREDOC_RE.sub(lambda m: "<<" + m.group(1) + m.group(2) + m.group(1) + "\n" + m.group(2), cmd)
+    """Here-document BODIES are data when they feed cat/tee/a file — drop those (the operator line, including any
+    command chained on it, is kept intact). When the receiver is a shell/interpreter/eval, the body IS code:
+    keep it so it gets tokenized and inspected like everything else (fail closed)."""
+    def sub(m):
+        line = m.group("line")
+        try:
+            toks = shlex.split(line)
+        except ValueError:
+            toks = line.split()
+        while toks and (toks[0] in SHELL_KEYWORDS or re.match(r"^[A-Za-z_][A-Za-z0-9_]*=", toks[0])):
+            toks = toks[1:]
+        exe = toks[0].rsplit("/", 1)[-1] if toks else ""
+        head = line + "<<" + m.group("q") + m.group("d") + m.group("q") + m.group("rest") + "\n"
+        body = m.group("body")
+        if exe in INTERPRETERS:
+            # the body is interpreter code: apply the one-liner rules, then drop it
+            if GITGH_RE.search(body) or SECRET_RE.search(body) or re.search(PROTECTED_VARS, body) or "subprocess" in body or "os.system" in body or "popen" in body.lower():
+                block(f"{exe} heredoc referencing git/gh/subprocess/credentials")
+            for root in APEX_ROOTS:
+                if str(root).lower() in body.lower():
+                    block(f"{exe} heredoc mentions the LIVE tree")
+            return head + m.group("d")
+        if exe in HEREDOC_EXEC or "$(" in line or "`" in line:
+            return head + body + "\n" + m.group("d")          # shell code: keep for inspection
+        return head + m.group("d")
+    return HEREDOC_RE.sub(sub, cmd)
 
 
 def inspect_command(cmd: str, cwd: Path, sandbox, depth: int = 0):

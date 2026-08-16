@@ -625,6 +625,20 @@ class TestRunner(Base):
         r = subprocess.run(["git", "config", "--get", "user.email"], env=env, capture_output=True, text=True, cwd=str(self.apex))
         self.assertTrue(r.stdout.strip())
 
+    def test_apex_like_sandbox_gets_untracked_state_work(self):
+        # apex layout: .state/work/start.md is TRACKED, backlog.md is not -> backlog must still be copied in
+        (self.apex / ".state" / "work" / "start.md").write_text("skeleton\n")
+        (self.apex / ".state" / ".gitignore").write_text("*\n!*/\n!start.md\n!.gitignore\n")
+        (self.apex / ".gitignore").write_text("*\n!/.gitignore\n!/CLAUDE.md\n!/README.md\n!/.state/\n!/.state/**\n")
+        sh("git", "-c", "user.name=t", "-c", "user.email=t@t", "add", "-A", cwd=self.apex)
+        sh("git", "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "track skeleton", cwd=self.apex)
+        prov = runner.provision(self.cfg, self.apex, "BL-07", {"id": "BL-07", "attempts": 0})
+        sb = prov["sandbox"]
+        self.assertTrue((sb / ".state" / "work" / "backlog.md").exists())          # untracked file copied
+        st = sh("git", "status", "--porcelain", cwd=str(sb)).stdout
+        self.assertNotIn("start.md", st)                                             # tracked skeleton untouched
+        runner.cleanup(self.apex, sb)
+
     def test_child_sandbox_control_dir_ignored(self):
         # a scratch "child" repo that does not track .hb-heartbeat: control files must be invisible to git add -A
         child = self.apex / "child"; child.mkdir()
@@ -711,7 +725,10 @@ class TestGuard(unittest.TestCase):
                   "git grep -O'sh -c x' foo", "X=/mnt/claudette; cat $X/CLAUDE.md", "cat $HOME/../../mnt/claudette/x", "cat ${X}/x",
                   "builtin typeset -x GIT_CONFIG_GLOBAL=/x", "env -uGIT_CONFIG_GLOBAL git status", "GIT_EDITOR='cp x /tmp' git commit",
                   "xargs -0 sh -c 'cp x /mnt/claudette/.codex/e'", "ls /mnt/d/CLAUDETTE/.hb-heartbeat", "ls /MNT/CLAUDETTE/.HB-HEARTBEAT",
-                  "git help --web commit", "git cherry-pick -e abc", "echo 'see /mnt/claudette/.codex' > x"]:
+                  "git help --web commit", "git cherry-pick -e abc", "echo 'see /mnt/claudette/.codex' > x",
+                  "git grep -nO'touch /tmp/x #' foo", "git grep foo", "cat <<EOF > x; cat /mnt/claudette/CLAUDE.md\nbody\nEOF",
+                  "bash <<EOF\ncat /mnt/claudette/CLAUDE.md\nEOF", "python3 <<EOF\nimport subprocess\nEOF", "sh -s <<'EOF'\ngh pr merge 1\nEOF",
+                  "git status\ngh pr merge 1", "cp x $f/../../live", "cat ${X}/x"]:
             self.assertEqual(self.guard(c), 2, f"should block: {c}")
 
     def test_allows(self):
@@ -728,7 +745,10 @@ class TestGuard(unittest.TestCase):
                   "git log -p -1", "ls *.log", "for f in *.md; do echo $f; done", "cat <(echo hi)", "export FOO=bar", "unset FOO",
                   "if true; then echo hi; fi", "curl http://example.com/x", "echo a:b", "python3 -c 'print(1)'", "git checkout -b hb/x2",
                   "cat > notes.md <<EOF\nSee /mnt/claudette/CLAUDE.md for details\nEOF", "echo $PATH", "git log --format=%h", "grep -e pattern file",
-                  "find . -name '*.md'", "sed -i 's/a/b/' x", "ls foo=bar.md", "echo D:", "git grep foo", "echo 10:30"]:
+                  "find . -name '*.md'", "sed -i 's/a/b/' x", "ls foo=bar.md", "echo D:", "echo 10:30",
+                  "sed -i 's/[[:space:]]*$//' file.py", "awk '/^#/ {print $1}' file", "for f in *.md; do cp \"$f\" \"bak/$f\"; done",
+                  "git commit -m \"fix: expand \\$HOME/config path\"", "grep -E 'foo/[0-9]+$' x", "cat <<EOF > x; echo done\nSee /mnt/claudette/CLAUDE.md\nEOF",
+                  "python3 <<'PY'\nprint('/tmp/x')\nPY", "git commit -m \"line1\nline2\"", "git status\nls", "grep -rn foo ."]:
             self.assertEqual(self.guard(c), 0, f"should allow: {c}")
 
 

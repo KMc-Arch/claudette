@@ -230,9 +230,20 @@ def provision(cfg: dict, project: Path, item_id: str, fm: dict) -> dict:
     # memory (user profile, preferences) is not needed for an item and would only widen what a worker could leak.
     for rel in ("work",):
         src, dst = project / ".state" / rel, sandbox / ".state" / rel
-        tracked = _git(sandbox, "ls-files", "--", f".state/{rel}").stdout.strip()
-        if src.is_dir() and not tracked:                  # if the repo tracks it, the checkout already has it
-            shutil.copytree(src, dst, dirs_exist_ok=True)
+        if not src.is_dir():
+            continue
+        # per-file: copy what the repo does NOT track (a tracked skeleton like .state/work/start.md is already in
+        # the checkout and must not be overwritten — that would show as a modification the worker might commit)
+        tracked = set(_git(sandbox, "ls-files", "--", f".state/{rel}").stdout.split())
+        for f in src.rglob("*"):
+            if not f.is_file():
+                continue
+            relp = f.relative_to(project).as_posix()
+            if relp in tracked:
+                continue
+            target = sandbox / relp
+            target.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(f, target)
     # a project that does not track .hb-heartbeat/ (every child) must never see the sandbox control files as
     # addable: an ignore-all .gitignore makes the whole dir invisible to `git add -A`
     ctl = sandbox / ".hb-heartbeat"
