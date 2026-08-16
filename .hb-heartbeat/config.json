@@ -1,6 +1,9 @@
 {
-  "_doc": "Heartbeat defaults. Instance overrides: .hb-heartbeat/state/config.json (untracked), same keys, shallow-merged.",
-  "window": { "open": "00:30", "close": "06:30" },
+  "_doc": "Heartbeat defaults. Instance overrides: .hb-heartbeat/state/config.json (untracked), same keys, shallow-merged. Read by hb.py/runner.py: window.open+close (in-window check, close computation), item_cap_min (ceiling; per-item time_cap_min may only lower it; the tick's near-close refusal uses it), count_cap, attempts_max, model, qa, pr, base_branch, branch_prefix, sandbox_rel, stale_branch_days, quota.*, extra_path, python. INFORMATIONAL ONLY (the schedule lives in win/register-tasks.ps1 parameters \u2014 re-register if you change them): tick_minutes, wsl_distro, wsl_user.",
+  "window": {
+    "open": "00:30",
+    "close": "06:30"
+  },
   "tick_minutes": 5,
   "item_cap_min": 90,
   "count_cap": 1,
@@ -20,6 +23,11 @@
   },
   "wsl_distro": "claude-context",
   "wsl_user": "KMc",
-  "extra_path": ["/home/KMc/.local/bin", "/usr/local/bin", "/usr/bin", "/bin"],
+  "extra_path": [
+    "/home/KMc/.local/bin",
+    "/usr/local/bin",
+    "/usr/bin",
+    "/bin"
+  ],
   "python": "python3"
 }
