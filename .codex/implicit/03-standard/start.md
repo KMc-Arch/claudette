@@ -9,3 +9,4 @@ Normal boot entries. Loaded after 01-infrastructural and 02-foundational. These 
 ## Entries
 
 - [plan-format.md](plan-format.md) — Progressive-disclosure plan format (3 layers, assumptions at L1)
+- [writing-voice.md](writing-voice.md) — Directive voice for maintained artifacts; rewrite-not-patch for anything synthesized; enforcement boundaries stay negative

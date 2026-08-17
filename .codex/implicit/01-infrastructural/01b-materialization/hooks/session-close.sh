@@ -5,7 +5,9 @@
 cat <<'CLOSE'
 SESSION CLOSING — before ending, complete these governance tasks:
 
-1. UPDATE .state/memory/state-abstract.md — rewrite from scratch with current project state (rolling abstract convention).
+1. UPDATE .state/memory/state-abstract.md — rewrite from scratch with current project state (rolling
+   abstract convention). From scratch, not by patching: the rewrite is what forces synthesis and drops
+   what no longer matters. Directive voice — what is so and what to do.
 2. COMPLIANCE CHECK — review the session for boundary adherence (state gravity, path containment, identity isolation, enforcement tiers). Note any violations in .state/tests/compliance/.
 3. TRACE FINALIZATION — ensure .state/traces/ session log is complete.
 

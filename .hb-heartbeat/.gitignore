@@ -2,3 +2,4 @@
 state/*
 !state/start.md
 sandbox/
+designs/.$*.bkp

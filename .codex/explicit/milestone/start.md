@@ -56,7 +56,7 @@ Survey the session for knowledge that should be durable:
 
 Then:
 - Update `MEMORY.md` index for any new or renamed files.
-- Rewrite `state-abstract.md` from scratch — synthesize all memory files, active work items, and this session's contributions into a single orientation document. A reader of the abstract alone must understand the full project state.
+- Rewrite `state-abstract.md` from scratch — synthesize all memory files, active work items, and this session's contributions into a single orientation document. A reader of the abstract alone must understand the full project state. **From scratch, never by patching**: a rewrite forces synthesis and drops what no longer matters, while incremental edits accrete history and caveats until the abstract is a changelog (measured elsewhere: one session's patching took an abstract from 16.6 KB to 19.2 KB, all of it narrative). Write it in the directive voice per `^/.codex/implicit/03-standard/writing-voice.md`.
 
 ### 2. work/
 
