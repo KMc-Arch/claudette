@@ -12,6 +12,9 @@ repeated here.
 |---|---|
 | `heartbeat-01.drawio` | seven pages: deployment · actors and acts · one night end to end · the flag and the queue · the records · controls and the boundary · designed then built |
 
+Drawn against the standard as of `drawio@a30a4de` — theme-adaptive, so it reads in either app theme.
+When the standard revises a device, this file is re-passed to match rather than left on the old one.
+
 ## Standing rules for this folder
 
 - **The file is the design, not a picture of it.** Read the XML; do not read a render or a summary of
