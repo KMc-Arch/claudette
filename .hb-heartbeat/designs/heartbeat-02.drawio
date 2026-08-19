@@ -1,0 +1,1014 @@
+<mxfile host="Electron" pages="7">
+  <diagram id="hb-deploy" name="1 · Deployment">
+    <mxGraphModel dx="1800" dy="1212" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="1600" pageHeight="1000" math="0" shadow="0">
+      <root>
+        <mxCell id="0" />
+        <mxCell id="1" parent="0" />
+        <mxCell id="p1_title" parent="1" style="text;html=1;whiteSpace=wrap;align=center;verticalAlign=middle;fontSize=18;" value="&lt;b&gt;heartbeat &amp;middot; deployment&lt;/b&gt;&amp;nbsp;&amp;nbsp;&lt;font color=&quot;#666666&quot;&gt;where the thing lives and what runs where &amp;middot; as built 2026-08-16, branch feature/hb&lt;/font&gt;" vertex="1">
+          <mxGeometry height="40" width="1900" x="80" y="20" as="geometry" />
+        </mxCell>
+        <mxCell id="p1_self" parent="1" style="whiteSpace=wrap;html=1;shape=note;fillColor=#8c8c8c;strokeColor=default;fontColor=default;align=left;verticalAlign=top;fontSize=11;spacingLeft=10;spacingRight=22;spacingTop=8;shadow=1;" value="&lt;b&gt;this page&lt;/b&gt;&lt;br&gt;&lt;br&gt;&lt;i&gt;Altitude: the machine and the tree. Boxes here are places and things, not doers &amp;mdash; no agent appears, so no act is drawn.&lt;/i&gt;&lt;br&gt;&lt;br&gt;&lt;i&gt;Deliberately off this page: who does what (page 2), the ordered night (page 3), the flag and the queue (page 4), the records (page 5), the controls (page 6), the decisions (page 7).&lt;/i&gt;&lt;br&gt;&lt;br&gt;&lt;i&gt;The seam: a deployment is the one register where the drawing can be wrong and the running host right. Re-read the host before trusting a version below.&lt;/i&gt;" vertex="1">
+          <mxGeometry height="290" width="420" x="80" y="80" as="geometry" />
+        </mxCell>
+        <mxCell id="p1_versions" parent="1" style="whiteSpace=wrap;html=1;fillColor=default;strokeColor=default;fontColor=default;align=left;verticalAlign=top;spacing=8;fontSize=11;" value="&lt;b&gt;VERSIONS AS BUILT&lt;/b&gt;&amp;nbsp;&amp;nbsp;&lt;font color=&quot;#666666&quot;&gt;&lt;i&gt;measured on the host, 2026-08-16&lt;/i&gt;&lt;/font&gt;&lt;br&gt;&lt;br&gt;Windows PowerShell 5.1 &amp;middot; ANSI code page 1252&lt;br&gt;WSL2 kernel 6.6.87.2 &amp;middot; distro &lt;b&gt;claude-context&lt;/b&gt;&lt;br&gt;python 3.12.3 &amp;middot; PyYAML 6.0.1&lt;br&gt;git 2.43 &amp;middot; &lt;b&gt;core.fileMode = false&lt;/b&gt; on this mount&lt;br&gt;claude 2.1.233 &amp;middot; gh authenticated as KMc-Arch&lt;br&gt;&lt;br&gt;&lt;i&gt;Two consequences already paid for: a tracked script loses its execute bit on checkout (the scrub pre-push hook was silently ignored until the runner chmod&#39;d it), and a non-ASCII byte in a .ps1 stops Windows PowerShell parsing the file at all.&lt;/i&gt;" vertex="1">
+          <mxGeometry height="290" width="420" x="80" y="410" as="geometry" />
+        </mxCell>
+        <mxCell id="p1_host" parent="1" style="swimlane;html=1;startSize=26;whiteSpace=wrap;fillColor=default;strokeColor=default;fontColor=default;swimlaneFillColor=default;align=center;verticalAlign=middle;fontSize=11;" value="&lt;b&gt;WINDOWS HOST&lt;/b&gt;&amp;nbsp;&amp;nbsp;Task Scheduler &amp;middot; S4U principal, no logged-on session" vertex="1">
+          <mxGeometry height="330" width="620" x="560" y="80" as="geometry" />
+        </mxCell>
+        <mxCell id="p1_t_open" parent="p1_host" style="whiteSpace=wrap;html=1;shape=process;size=0.05;spacingLeft=22;spacingRight=22;fillColor=default;strokeColor=default;fontColor=default;align=center;verticalAlign=middle;fontSize=11;" value="&lt;b&gt;hb-window-open&lt;/b&gt;&lt;br&gt;daily 00:30 &amp;middot; WakeToRun" vertex="1">
+          <mxGeometry height="64" width="280" x="20" y="40" as="geometry" />
+        </mxCell>
+        <mxCell id="p1_t_close" parent="p1_host" style="whiteSpace=wrap;html=1;shape=process;size=0.05;spacingLeft=22;spacingRight=22;fillColor=default;strokeColor=default;fontColor=default;align=center;verticalAlign=middle;fontSize=11;" value="&lt;b&gt;hb-window-close&lt;/b&gt;&lt;br&gt;daily 06:30 &amp;middot; WakeToRun" vertex="1">
+          <mxGeometry height="64" width="280" x="320" y="40" as="geometry" />
+        </mxCell>
+        <mxCell id="p1_t_tick" parent="p1_host" style="whiteSpace=wrap;html=1;shape=process;size=0.024;spacingLeft=22;spacingRight=22;fillColor=default;strokeColor=default;fontColor=default;align=center;verticalAlign=middle;fontSize=11;" value="&lt;b&gt;hb-tick&lt;/b&gt;&amp;nbsp;&amp;nbsp;every 5 min, repeating &lt;b&gt;only for the window&#39;s length&lt;/b&gt; from 00:32&lt;br&gt;ExecutionTimeLimit = item cap + 15 min &amp;middot; MultipleInstances = IgnoreNew" vertex="1">
+          <mxGeometry height="64" width="580" x="20" y="124" as="geometry" />
+        </mxCell>
+        <mxCell id="p1_runtick" parent="p1_host" style="whiteSpace=wrap;html=1;shape=process;size=0.024;spacingLeft=22;spacingRight=22;fillColor=default;strokeColor=default;fontColor=default;align=center;verticalAlign=middle;fontSize=11;" value="&lt;b&gt;win/run-tick.ps1&lt;/b&gt;&amp;nbsp;&amp;nbsp;&lt;i&gt;the tick&#39;s action&lt;/i&gt;&lt;br&gt;holds SetThreadExecutionState(SYSTEM_REQUIRED) so Modern Standby cannot suspend the host mid-item&lt;br&gt;then: wsl.exe -d claude-context -u KMc -- python3 hb.py tick &amp;middot; exit code relayed, default 1" vertex="1">
+          <mxGeometry height="96" width="580" x="20" y="208" as="geometry" />
+        </mxCell>
+        <mxCell id="p1_wsl" parent="1" style="swimlane;html=1;startSize=26;whiteSpace=wrap;fillColor=default;strokeColor=default;fontColor=default;swimlaneFillColor=default;align=center;verticalAlign=middle;fontSize=11;" value="&lt;b&gt;WSL2&lt;/b&gt;&amp;nbsp;&amp;nbsp;distro claude-context &amp;middot; a fresh instance per wsl.exe call when nobody is logged in" vertex="1">
+          <mxGeometry height="330" width="740" x="1240" y="80" as="geometry" />
+        </mxCell>
+        <mxCell id="p1_py" parent="p1_wsl" style="whiteSpace=wrap;html=1;shape=process;size=0.041;spacingLeft=22;spacingRight=22;fillColor=default;strokeColor=default;fontColor=default;align=center;verticalAlign=middle;fontSize=11;" value="&lt;b&gt;python3&lt;/b&gt;&lt;br&gt;the whole control plane runs here" vertex="1">
+          <mxGeometry height="64" width="340" x="20" y="40" as="geometry" />
+        </mxCell>
+        <mxCell id="p1_claude" parent="p1_wsl" style="whiteSpace=wrap;html=1;shape=process;size=0.041;spacingLeft=22;spacingRight=22;fillColor=default;strokeColor=default;fontColor=default;align=center;verticalAlign=middle;fontSize=11;" value="&lt;b&gt;claude&lt;/b&gt;&amp;nbsp;&amp;nbsp;headless&lt;br&gt;spawned only by cboot.py, rooted at the sandbox" vertex="1">
+          <mxGeometry height="64" width="340" x="380" y="40" as="geometry" />
+        </mxCell>
+        <mxCell id="p1_git" parent="p1_wsl" style="whiteSpace=wrap;html=1;shape=process;size=0.041;spacingLeft=22;spacingRight=22;fillColor=default;strokeColor=default;fontColor=default;align=center;verticalAlign=middle;fontSize=11;" value="&lt;b&gt;git&lt;/b&gt;&lt;br&gt;worktrees &amp;middot; the pre-push hook lives in the repo, not here" vertex="1">
+          <mxGeometry height="64" width="340" x="20" y="124" as="geometry" />
+        </mxCell>
+        <mxCell id="p1_gh" parent="p1_wsl" style="whiteSpace=wrap;html=1;shape=process;size=0.041;spacingLeft=22;spacingRight=22;fillColor=default;strokeColor=default;fontColor=default;align=center;verticalAlign=middle;fontSize=11;" value="&lt;b&gt;gh&lt;/b&gt;&amp;nbsp;&amp;nbsp;authenticated as the human&lt;br&gt;&lt;i&gt;reachable by the runner; the worker is handed an empty GH_CONFIG_DIR&lt;/i&gt;" vertex="1">
+          <mxGeometry height="64" width="340" x="380" y="124" as="geometry" />
+        </mxCell>
+        <mxCell id="p1_home" parent="p1_wsl" style="whiteSpace=wrap;html=1;shape=process;size=0.02;spacingLeft=22;spacingRight=22;fillColor=default;strokeColor=default;fontColor=default;align=center;verticalAlign=middle;fontSize=11;" value="&lt;b&gt;/home/KMc&lt;/b&gt;&amp;nbsp;&amp;nbsp;&lt;i&gt;one OS user for human and worker alike&lt;/i&gt;&lt;br&gt;~/.claude/projects/&amp;lt;sandbox-slug&amp;gt;/&amp;lt;session&amp;gt;.jsonl &amp;mdash; the worker&#39;s transcript&lt;br&gt;~/.config/gh/hosts.yml &amp;middot; ~/.claude/.credentials &amp;mdash; readable by anything this user runs" vertex="1">
+          <mxGeometry height="96" width="700" x="20" y="208" as="geometry" />
+        </mxCell>
+        <mxCell id="p1_mount" parent="1" style="swimlane;html=1;startSize=26;whiteSpace=wrap;fillColor=default;strokeColor=default;fontColor=default;swimlaneFillColor=default;align=center;verticalAlign=middle;fontSize=11;" value="&lt;b&gt;drvfs / 9p&lt;/b&gt;&amp;nbsp;&amp;nbsp;D:\claudette&amp;nbsp;&amp;nbsp;&amp;#8646;&amp;nbsp;&amp;nbsp;/mnt/claudette&amp;nbsp;&amp;nbsp;&lt;i&gt;and the same bytes again at /mnt/d/claudette &amp;mdash; case-insensitive, so a containment check must fold case and know both roots&lt;/i&gt;" vertex="1">
+          <mxGeometry height="500" width="1420" x="560" y="470" as="geometry" />
+        </mxCell>
+        <mxCell id="p1_apex" parent="p1_mount" style="swimlane;html=1;startSize=26;whiteSpace=wrap;fillColor=default;strokeColor=default;fontColor=default;swimlaneFillColor=default;align=center;verticalAlign=middle;fontSize=11;" value="&lt;b&gt;APEX REPO&lt;/b&gt;&amp;nbsp;&amp;nbsp;/mnt/claudette &amp;middot; git &amp;middot; branch feature/hb &amp;middot; origin = github.com/KMc-Arch/claudette" vertex="1">
+          <mxGeometry height="440" width="1380" x="20" y="40" as="geometry" />
+        </mxCell>
+        <mxCell id="p1_hb" parent="p1_apex" style="whiteSpace=wrap;html=1;shape=process;size=0.021;spacingLeft=22;spacingRight=22;fillColor=default;strokeColor=default;fontColor=default;align=center;verticalAlign=middle;fontSize=11;" value="&lt;b&gt;.hb-heartbeat/&lt;/b&gt;&amp;nbsp;&amp;nbsp;&lt;i&gt;tracked &amp;mdash; the machinery and its own contract&lt;/i&gt;&lt;br&gt;start.md &amp;middot; spec.md &amp;middot; plan.md &amp;middot; config.json &amp;middot; hb.py &amp;middot; runner.py&lt;br&gt;hb-guard.sh + hb-guard.py &amp;middot; prompt-worker.md &amp;middot; templates/ &amp;middot; win/ &amp;middot; tests/ &amp;middot; designs/" vertex="1">
+          <mxGeometry height="110" width="660" x="20" y="40" as="geometry" />
+        </mxCell>
+        <mxCell id="p1_state" parent="p1_apex" style="whiteSpace=wrap;html=1;shape=process;size=0.021;spacingLeft=22;spacingRight=22;fillColor=default;strokeColor=default;fontColor=default;align=center;verticalAlign=middle;fontSize=11;" value="&lt;b&gt;.hb-heartbeat/state/&lt;/b&gt;&amp;nbsp;&amp;nbsp;&lt;i&gt;untracked &amp;mdash; the runtime&lt;/i&gt;&lt;br&gt;GO &amp;middot; night.json &amp;middot; quota.json &amp;middot; last-tick&lt;br&gt;diag/ &amp;middot; log/hb.log &amp;middot; config.json (instance override)" vertex="1">
+          <mxGeometry height="110" width="660" x="700" y="40" as="geometry" />
+        </mxCell>
+        <mxCell id="p1_codex" parent="p1_apex" style="whiteSpace=wrap;html=1;shape=process;size=0.021;spacingLeft=22;spacingRight=22;fillColor=default;strokeColor=default;fontColor=default;align=center;verticalAlign=middle;fontSize=11;" value="&lt;b&gt;.codex/&lt;/b&gt;&amp;nbsp;&amp;nbsp;&lt;i&gt;the governance the sandbox inherits&lt;/i&gt;&lt;br&gt;hooks: visibility &amp;middot; containment &amp;middot; gravity &amp;middot; remote-guard&lt;br&gt;explicit/scrub (patterns + the pre-push hook) &amp;middot; explicit/hb (the /hb shim) &amp;middot; statusline" vertex="1">
+          <mxGeometry height="110" width="660" x="20" y="166" as="geometry" />
+        </mxCell>
+        <mxCell id="p1_mail" parent="p1_apex" style="whiteSpace=wrap;html=1;shape=process;size=0.021;spacingLeft=22;spacingRight=22;fillColor=default;strokeColor=default;fontColor=default;align=center;verticalAlign=middle;fontSize=11;" value="&lt;b&gt;~outbox/hb/&lt;/b&gt; &amp;middot; &lt;b&gt;~inbox/hb/&lt;/b&gt;&amp;nbsp;&amp;nbsp;&lt;i&gt;untracked; ~ is never tracked anywhere&lt;/i&gt;&lt;br&gt;the queue in, the outcomes out &amp;mdash; one pair at every root&lt;br&gt;materialized idempotently by hb.py install" vertex="1">
+          <mxGeometry height="110" width="660" x="700" y="166" as="geometry" />
+        </mxCell>
+        <mxCell id="p1_sandbox" parent="p1_apex" style="swimlane;html=1;startSize=26;whiteSpace=wrap;fillColor=default;strokeColor=default;fontColor=default;swimlaneFillColor=default;align=center;verticalAlign=middle;fontSize=11;strokeWidth=3;" value="&lt;b&gt;SANDBOX&lt;/b&gt;&amp;nbsp;&amp;nbsp;.hb-heartbeat/sandbox/&amp;lt;ITEM&amp;gt;/ &amp;middot; a git worktree on hb/&amp;lt;ITEM&amp;gt; from a pinned base &amp;middot; made per item, removed at harvest &amp;mdash; kept only when the terminus was unexpected" vertex="1">
+          <mxGeometry height="128" width="1340" x="20" y="292" as="geometry" />
+        </mxCell>
+        <mxCell id="p1_sb_io" parent="p1_sandbox" style="whiteSpace=wrap;html=1;shape=process;size=0.022;spacingLeft=22;spacingRight=22;fillColor=default;strokeColor=default;fontColor=default;align=center;verticalAlign=middle;fontSize=11;" value="&lt;b&gt;the worker&#39;s I/O&lt;/b&gt;&amp;nbsp;&amp;nbsp;.hb-heartbeat/state/PROMPT.md &amp;middot; RESULT/ &amp;middot; gh-empty/&lt;br&gt;.state/work/ &amp;mdash; the untracked half of the live work register, copied in read-only" vertex="1">
+          <mxGeometry height="72" width="640" x="20" y="36" as="geometry" />
+        </mxCell>
+        <mxCell id="p1_sb_claude" parent="p1_sandbox" style="whiteSpace=wrap;html=1;shape=process;size=0.022;spacingLeft=22;spacingRight=22;fillColor=default;strokeColor=default;fontColor=default;align=center;verticalAlign=middle;fontSize=11;" value="&lt;b&gt;.claude/settings.local.json&lt;/b&gt;&amp;nbsp;&amp;nbsp;&lt;i&gt;written per item by the runner&lt;/i&gt;&lt;br&gt;the deny overlay and the hb-guard hook line&lt;br&gt;&lt;i&gt;the hook line names the LIVE guard scripts, not the copies beside it&lt;/i&gt;" vertex="1">
+          <mxGeometry height="72" width="640" x="680" y="36" as="geometry" />
+        </mxCell>
+        <mxCell id="p1_cl_gh" parent="1" style="whiteSpace=wrap;html=1;ellipse;shape=cloud;fillColor=default;strokeColor=default;fontColor=default;align=center;verticalAlign=middle;fontSize=11;" value="&lt;b&gt;GitHub&lt;/b&gt;&lt;br&gt;KMc-Arch/claudette&lt;br&gt;branches hb/* &amp;middot; PRs&lt;br&gt;&lt;i&gt;fetched by anyone, written only by the runner&lt;/i&gt;" vertex="1">
+          <mxGeometry height="140" width="320" x="560" y="1030" as="geometry" />
+        </mxCell>
+        <mxCell id="p1_cl_api" parent="1" style="whiteSpace=wrap;html=1;ellipse;shape=cloud;fillColor=default;strokeColor=default;fontColor=default;align=center;verticalAlign=middle;fontSize=11;" value="&lt;b&gt;Anthropic API&lt;/b&gt;&lt;br&gt;the worker&#39;s model &amp;middot; the subscription window the quota gate is about" vertex="1">
+          <mxGeometry height="140" width="320" x="940" y="1030" as="geometry" />
+        </mxCell>
+        <mxCell id="p1_cl_roots" parent="1" style="whiteSpace=wrap;html=1;ellipse;shape=cloud;fillColor=default;strokeColor=default;fontColor=default;align=center;verticalAlign=middle;fontSize=11;" value="&lt;b&gt;28 child projects&lt;/b&gt;&lt;br&gt;each a root of its own &amp;middot; sixteen are not separate repos, and those cannot be worked" vertex="1">
+          <mxGeometry height="140" width="320" x="1320" y="1030" as="geometry" />
+        </mxCell>
+        <mxCell id="p1_e_prop" edge="1" parent="1" source="p1_sb_claude" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=open;endFill=0;fontSize=10;dashed=1;dashPattern=8 8;strokeWidth=3;exitX=0.5;exitY=0;exitDx=0;exitDy=0;entryX=1;entryY=0.5;entryDx=0;entryDy=0;" target="p1_codex" value="">
+          <mxGeometry relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="1300" y="770" />
+              <mxPoint x="1300" y="721" />
+            </Array>
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="p1_e_roots" edge="1" parent="1" source="p1_mail" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;startArrow=ERmandatoryOne;startFill=0;endArrow=ERoneToMany;endFill=0;fontSize=10;exitX=1;exitY=0.5;exitDx=0;exitDy=0;entryX=0.5;entryY=0;entryDx=0;entryDy=0;" target="p1_cl_roots" value="one pair per root">
+          <mxGeometry relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="2020" y="721" />
+              <mxPoint x="2020" y="1000" />
+              <mxPoint x="1480" y="1000" />
+            </Array>
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="p1_e_origin" edge="1" parent="1" source="p1_apex" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=open;endFill=0;fontSize=10;dashed=1;dashPattern=8 8;exitX=0.25;exitY=1;exitDx=0;exitDy=0;entryX=0.5;entryY=0;entryDx=0;entryDy=0;" target="p1_cl_gh" value="origin">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="p1_e_api" edge="1" parent="1" source="p1_claude" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=open;endFill=0;fontSize=10;dashed=1;dashPattern=8 8;exitX=1;exitY=0.5;exitDx=0;exitDy=0;" target="p1_cl_api" value="resolves here">
+          <mxGeometry relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="1960.05" y="184" />
+              <mxPoint x="2060.05" y="184" />
+              <mxPoint x="2060.05" y="1200" />
+              <mxPoint x="1110.05" y="1200" />
+            </Array>
+          </mxGeometry>
+        </mxCell>
+      </root>
+    </mxGraphModel>
+  </diagram>
+  <diagram id="hb-actors" name="2 · Actors &amp; acts">
+    <mxGraphModel dx="2550" dy="1717" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="1600" pageHeight="1000" math="0" shadow="0">
+      <root>
+        <mxCell id="0" />
+        <mxCell id="1" parent="0" />
+        <mxCell id="p2_title" parent="1" style="text;html=1;whiteSpace=wrap;align=center;verticalAlign=middle;fontSize=18;" value="&lt;b&gt;heartbeat &amp;middot; actors and acts&lt;/b&gt;&amp;nbsp;&amp;nbsp;&lt;font color=&quot;#666666&quot;&gt;seven doers, what each one makes, and the two things the worker is barred from&lt;/font&gt;" vertex="1">
+          <mxGeometry height="40" width="2280" x="80" y="20" as="geometry" />
+        </mxCell>
+        <mxCell id="p2_self" parent="1" style="whiteSpace=wrap;html=1;shape=note;fillColor=#8c8c8c;strokeColor=default;fontColor=default;align=left;verticalAlign=top;fontSize=11;spacingLeft=10;spacingRight=22;spacingTop=8;shadow=1;" value="&lt;b&gt;this page&lt;/b&gt;&lt;br&gt;&lt;i&gt;Every doer in the system and every artifact it writes. Ordering is off this page (page 3); the flag&#39;s states are off it too (page 4).&lt;/i&gt;&lt;br&gt;&lt;i&gt;A column holds what the agent above it makes. An arrow that crosses columns is an agent reaching another agent&#39;s artifact.&lt;/i&gt;" vertex="1">
+          <mxGeometry height="140" width="420" x="80" y="70" as="geometry" />
+        </mxCell>
+        <mxCell id="p2_thesis" parent="1" style="whiteSpace=wrap;html=1;fillColor=default;strokeColor=default;fontColor=default;align=left;verticalAlign=top;spacing=8;fontSize=11;" value="&lt;b&gt;THE ASYMMETRY THIS PAGE EXISTS TO SHOW&lt;/b&gt;&lt;br&gt;&lt;i&gt;Six of the seven doers are deterministic programs. One &amp;mdash; the worker &amp;mdash; is a model, and it is the only doer that is not trusted: it holds no credential, writes nothing outside its own worktree, and reaches the outside world only through what the runner harvests from it. The runner does every live-state write and every remote write on its behalf; the human does the two acts no machine may do &amp;mdash; &lt;b&gt;approve&lt;/b&gt; and &lt;b&gt;merge&lt;/b&gt;.&lt;/i&gt;" vertex="1">
+          <mxGeometry height="140" width="880" x="540" y="70" as="geometry" />
+        </mxCell>
+        <mxCell id="p2_human" parent="1" style="whiteSpace=wrap;html=1;ellipse;fillColor=default;strokeColor=default;fontColor=default;align=center;verticalAlign=middle;fontSize=11;" value="&lt;b&gt;the human&lt;/b&gt;&lt;br&gt;&lt;i&gt;awake, in the morning&lt;/i&gt;" vertex="1">
+          <mxGeometry height="90" width="240" x="80" y="300" as="geometry" />
+        </mxCell>
+        <mxCell id="p2_sched" parent="1" style="whiteSpace=wrap;html=1;ellipse;fillColor=default;strokeColor=default;fontColor=default;align=center;verticalAlign=middle;fontSize=11;" value="&lt;b&gt;Task Scheduler&lt;/b&gt;&lt;br&gt;&lt;i&gt;the clock; the only thing that wakes the machine&lt;/i&gt;" vertex="1">
+          <mxGeometry height="90" width="240" x="420" y="300" as="geometry" />
+        </mxCell>
+        <mxCell id="p2_det" parent="1" style="whiteSpace=wrap;html=1;ellipse;fillColor=default;strokeColor=default;fontColor=default;align=center;verticalAlign=middle;fontSize=11;" value="&lt;b&gt;window detector&lt;/b&gt;&lt;br&gt;&lt;i&gt;hb.py window open|close&lt;/i&gt;" vertex="1">
+          <mxGeometry height="90" width="240" x="760" y="300" as="geometry" />
+        </mxCell>
+        <mxCell id="p2_tick" parent="1" style="whiteSpace=wrap;html=1;ellipse;fillColor=default;strokeColor=default;fontColor=default;align=center;verticalAlign=middle;fontSize=11;" value="&lt;b&gt;heartbeat tick&lt;/b&gt;&lt;br&gt;&lt;i&gt;hb.py tick &amp;mdash; reads the flag and nothing else&lt;/i&gt;&lt;br&gt;&lt;i&gt;every 5 min, and only for the window&#39;s length&lt;/i&gt;" vertex="1">
+          <mxGeometry height="90" width="240" x="1100" y="300" as="geometry" />
+        </mxCell>
+        <mxCell id="p2_run" parent="1" style="whiteSpace=wrap;html=1;ellipse;fillColor=default;strokeColor=default;fontColor=default;align=center;verticalAlign=middle;fontSize=11;strokeWidth=3;" value="&lt;b&gt;the runner&lt;/b&gt;&lt;br&gt;&lt;i&gt;runner.py &amp;mdash; every live-state and remote write happens here&lt;/i&gt;" vertex="1">
+          <mxGeometry height="90" width="240" x="1440" y="300" as="geometry" />
+        </mxCell>
+        <mxCell id="p2_work" parent="1" style="whiteSpace=wrap;html=1;ellipse;fillColor=default;strokeColor=default;fontColor=default;align=center;verticalAlign=middle;fontSize=11;strokeWidth=3;" value="&lt;b&gt;the worker&lt;/b&gt;&lt;br&gt;&lt;i&gt;a model, hard-rooted in the sandbox, holding no credential&lt;/i&gt;" vertex="1">
+          <mxGeometry height="90" width="240" x="1780" y="300" as="geometry" />
+        </mxCell>
+        <mxCell id="p2_sl" parent="1" style="whiteSpace=wrap;html=1;ellipse;fillColor=default;strokeColor=default;fontColor=default;align=center;verticalAlign=middle;fontSize=11;" value="&lt;b&gt;statusLine&lt;/b&gt;&lt;br&gt;&lt;i&gt;fires on every turn of every interactive session&lt;/i&gt;" vertex="1">
+          <mxGeometry height="90" width="240" x="2120" y="300" as="geometry" />
+        </mxCell>
+        <mxCell id="p2_a_item" parent="1" style="whiteSpace=wrap;html=1;shape=document;size=0.18;spacingBottom=10;fillColor=default;strokeColor=default;fontColor=default;align=center;verticalAlign=middle;fontSize=11;" value="&lt;b&gt;an approved item&lt;/b&gt;&lt;br&gt;~outbox/hb/&amp;lt;ID&amp;gt;.md &amp;mdash; frontmatter plus a brief written for a cold reader&lt;br&gt;&lt;i&gt;approved by hand; popped by an atomic move, which is the claim&lt;/i&gt;" vertex="1">
+          <mxGeometry height="110" width="280" x="50" y="470" as="geometry" />
+        </mxCell>
+        <mxCell id="p2_a_night" parent="1" style="whiteSpace=wrap;html=1;shape=document;size=0.18;spacingBottom=10;fillColor=default;strokeColor=default;fontColor=default;align=center;verticalAlign=middle;fontSize=11;" value="&lt;b&gt;the nightly summary&lt;/b&gt;&lt;br&gt;~inbox/hb/night-&amp;lt;date&amp;gt;.md &amp;mdash; written every night, so a quiet night and a dead scheduler stop looking alike" vertex="1">
+          <mxGeometry height="110" width="280" x="390" y="630" as="geometry" />
+        </mxCell>
+        <mxCell id="p2_a_diag" parent="1" style="whiteSpace=wrap;html=1;shape=document;size=0.18;spacingBottom=10;fillColor=default;strokeColor=default;fontColor=default;align=center;verticalAlign=middle;fontSize=11;" value="&lt;b&gt;a diagnostic&lt;/b&gt;&lt;br&gt;state/diag/ &amp;mdash; corpse &amp;middot; quota-exhausted &amp;middot; unexpected-terminus &amp;middot; provision-failed &amp;middot; runner-crash&lt;br&gt;&lt;i&gt;a corpse is recorded loudly &amp;mdash; a swept night must not read like a quiet one&lt;/i&gt;" vertex="1">
+          <mxGeometry height="110" width="280" x="390" y="790" as="geometry" />
+        </mxCell>
+        <mxCell id="p2_a_go" parent="1" style="whiteSpace=wrap;html=1;shape=document;size=0.18;spacingBottom=10;fillColor=default;strokeColor=default;fontColor=default;align=center;verticalAlign=middle;fontSize=11;strokeWidth=3;" value="&lt;b&gt;the GO flag&lt;/b&gt;&lt;br&gt;state/GO &amp;mdash; the permission token. No flag, no orchestration. Deleting it is the kill switch.&lt;br&gt;&lt;i&gt;claimed atomically before any spawn; released only by the process that claimed it; deleted, it re-arms at no point before the next scheduled open&lt;/i&gt;" vertex="1">
+          <mxGeometry height="150" width="280" x="730" y="470" as="geometry" />
+        </mxCell>
+        <mxCell id="p2_a_lasttick" parent="1" style="whiteSpace=wrap;html=1;shape=document;size=0.18;spacingBottom=10;fillColor=default;strokeColor=default;fontColor=default;align=center;verticalAlign=middle;fontSize=11;" value="&lt;b&gt;last-tick&lt;/b&gt;&lt;br&gt;state/last-tick &amp;mdash; a timestamp, not a log line: proof the schedule fired" vertex="1">
+          <mxGeometry height="110" width="280" x="1070" y="470" as="geometry" />
+        </mxCell>
+        <mxCell id="p2_c_sandbox" parent="1" style="whiteSpace=wrap;html=1;ellipse;shape=cloud;fillColor=default;strokeColor=default;fontColor=default;align=center;verticalAlign=middle;fontSize=11;" value="&lt;b&gt;the sandbox worktree&lt;/b&gt;&lt;br&gt;&lt;i&gt;see 1 &amp;middot; Deployment&lt;/i&gt;" vertex="1">
+          <mxGeometry height="130" width="280" x="1410" y="460" as="geometry" />
+        </mxCell>
+        <mxCell id="p2_a_prompt" parent="1" style="whiteSpace=wrap;html=1;shape=document;size=0.18;spacingBottom=10;fillColor=default;strokeColor=default;fontColor=default;align=center;verticalAlign=middle;fontSize=11;" value="&lt;b&gt;the worker&#39;s brief&lt;/b&gt;&lt;br&gt;PROMPT.md &amp;mdash; rules, the outcome contract, and the item fenced as data" vertex="1">
+          <mxGeometry height="110" width="280" x="1410" y="630" as="geometry" />
+        </mxCell>
+        <mxCell id="p2_a_outcome" parent="1" style="whiteSpace=wrap;html=1;shape=document;size=0.18;spacingBottom=10;fillColor=default;strokeColor=default;fontColor=default;align=center;verticalAlign=middle;fontSize=11;" value="&lt;b&gt;the outcome folder&lt;/b&gt;&lt;br&gt;~inbox/hb/&amp;lt;ID&amp;gt;/ &amp;mdash; outcome.md &amp;middot; context.md &amp;middot; state.md &amp;middot; item.md &amp;middot; state-delta.diff&lt;br&gt;&lt;i&gt;written before the flag is released, and read by a person &amp;mdash; never by the next night&lt;/i&gt;" vertex="1">
+          <mxGeometry height="110" width="280" x="1410" y="790" as="geometry" />
+        </mxCell>
+        <mxCell id="p2_c_github" parent="1" style="whiteSpace=wrap;html=1;ellipse;shape=cloud;fillColor=default;strokeColor=default;fontColor=default;align=center;verticalAlign=middle;fontSize=11;" value="&lt;b&gt;GitHub&lt;/b&gt;&lt;br&gt;the branch and the pull request&lt;br&gt;&lt;i&gt;reached only after the scrub passes on the messages, the paths, the title and the body. The worker cannot push here, and nothing merges.&lt;/i&gt;" vertex="1">
+          <mxGeometry height="140" width="280" x="1410" y="950" as="geometry" />
+        </mxCell>
+        <mxCell id="p2_a_commits" parent="1" style="whiteSpace=wrap;html=1;shape=document;size=0.18;spacingBottom=10;fillColor=default;strokeColor=default;fontColor=default;align=center;verticalAlign=middle;fontSize=11;" value="&lt;b&gt;commits&lt;/b&gt;&lt;br&gt;on hb/&amp;lt;ID&amp;gt;, in the worktree &amp;mdash; early and often, so a kill at the cap still leaves a reviewable branch" vertex="1">
+          <mxGeometry height="110" width="280" x="1750" y="470" as="geometry" />
+        </mxCell>
+        <mxCell id="p2_a_result" parent="1" style="whiteSpace=wrap;html=1;shape=document;size=0.18;spacingBottom=10;fillColor=default;strokeColor=default;fontColor=default;align=center;verticalAlign=middle;fontSize=11;" value="&lt;b&gt;RESULT&lt;/b&gt;&lt;br&gt;outcome.md (terminus &amp;middot; qa_result &amp;middot; summary) &amp;middot; context.md &amp;middot; state.md &amp;mdash; the only thing harvested besides the branch" vertex="1">
+          <mxGeometry height="110" width="280" x="1750" y="630" as="geometry" />
+        </mxCell>
+        <mxCell id="p2_c_live" parent="1" style="whiteSpace=wrap;html=1;ellipse;shape=cloud;fillColor=default;strokeColor=default;fontColor=default;align=center;verticalAlign=middle;fontSize=11;" value="&lt;b&gt;live state&lt;/b&gt;&lt;br&gt;the flag, the queues, the tree outside the sandbox&lt;br&gt;&lt;i&gt;see 4 and 6&lt;/i&gt;" vertex="1">
+          <mxGeometry height="120" width="280" x="1750" y="790" as="geometry" />
+        </mxCell>
+        <mxCell id="p2_a_quota" parent="1" style="whiteSpace=wrap;html=1;shape=document;size=0.18;spacingBottom=10;fillColor=default;strokeColor=default;fontColor=default;align=center;verticalAlign=middle;fontSize=11;" value="&lt;b&gt;the quota reading&lt;/b&gt;&lt;br&gt;state/quota.json &amp;mdash; rate_limits plus written_at. Stale by nature: nothing headless writes it.&lt;br&gt;&lt;i&gt;read before the pop, never after&lt;/i&gt;" vertex="1">
+          <mxGeometry height="110" width="280" x="2090" y="470" as="geometry" />
+        </mxCell>
+        <mxCell id="p2_e1" edge="1" parent="1" source="p2_sched" target="p2_det" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=block;endFill=1;fontSize=10;" value="fires">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="p2_e2" edge="1" parent="1" source="p2_sched" target="p2_tick" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=block;endFill=1;fontSize=10;exitX=0.5;exitY=0;exitDx=0;exitDy=0;entryX=0.5;entryY=0;entryDx=0;entryDy=0;" value="fires">
+          <mxGeometry relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="540" y="250" />
+              <mxPoint x="1220" y="250" />
+            </Array>
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="p2_e3" edge="1" parent="1" source="p2_tick" target="p2_run" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=block;endFill=1;fontSize=10;" value="runs">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="p2_e4" edge="1" parent="1" source="p2_run" target="p2_work" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=block;endFill=1;fontSize=10;" value="spawns">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="p2_e5" edge="1" parent="1" source="p2_human" target="p2_a_item" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=block;endFill=1;fontSize=10;" value="approves">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="p2_e6" edge="1" parent="1" source="p2_det" target="p2_a_go" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=block;endFill=1;fontSize=10;" value="issues &amp;middot; revokes">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="p2_e7" edge="1" parent="1" source="p2_det" target="p2_a_night" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=block;endFill=1;fontSize=10;exitX=0;exitY=0.5;exitDx=0;exitDy=0;entryX=1;entryY=0.5;entryDx=0;entryDy=0;" value="writes">
+          <mxGeometry relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="700" y="345" />
+              <mxPoint x="700" y="685" />
+            </Array>
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="p2_e8" edge="1" parent="1" source="p2_det" target="p2_a_diag" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=block;endFill=1;fontSize=10;exitX=0;exitY=0.75;exitDx=0;exitDy=0;entryX=1;entryY=0.5;entryDx=0;entryDy=0;" value="records">
+          <mxGeometry relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="686" y="368" />
+              <mxPoint x="686" y="845" />
+            </Array>
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="p2_e9" edge="1" parent="1" source="p2_tick" target="p2_a_go" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=block;endFill=1;fontSize=10;exitX=0;exitY=0.5;exitDx=0;exitDy=0;entryX=1;entryY=0.5;entryDx=0;entryDy=0;" value="claims">
+          <mxGeometry relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="1040" y="345" />
+              <mxPoint x="1040" y="525" />
+            </Array>
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="p2_e10" edge="1" parent="1" source="p2_tick" target="p2_a_lasttick" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=block;endFill=1;fontSize=10;" value="touches">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="p2_e11" edge="1" parent="1" source="p2_run" target="p2_c_sandbox" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=block;endFill=1;fontSize=10;" value="provisions">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="p2_e12" edge="1" parent="1" source="p2_run" target="p2_a_prompt" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=block;endFill=1;fontSize=10;exitX=0;exitY=0.5;exitDx=0;exitDy=0;entryX=0;entryY=0.5;entryDx=0;entryDy=0;" value="renders">
+          <mxGeometry relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="1380" y="345" />
+              <mxPoint x="1380" y="685" />
+            </Array>
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="p2_e13" edge="1" parent="1" source="p2_run" target="p2_a_outcome" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=block;endFill=1;fontSize=10;exitX=0;exitY=0.75;exitDx=0;exitDy=0;entryX=0;entryY=0.5;entryDx=0;entryDy=0;" value="writes">
+          <mxGeometry relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="1366" y="368" />
+              <mxPoint x="1366" y="845" />
+            </Array>
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="p2_e14" edge="1" parent="1" source="p2_run" target="p2_c_github" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=block;endFill=1;fontSize=10;exitX=0;exitY=0.25;exitDx=0;exitDy=0;entryX=0;entryY=0.5;entryDx=0;entryDy=0;" value="publishes">
+          <mxGeometry relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="1352" y="322" />
+              <mxPoint x="1352" y="1020" />
+            </Array>
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="p2_e15" edge="1" parent="1" source="p2_run" target="p2_a_go" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=block;endFill=1;fontSize=10;exitX=0;exitY=0.9;exitDx=0;exitDy=0;entryX=0.5;entryY=1;entryDx=0;entryDy=0;" value="releases">
+          <mxGeometry relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="1394" y="381" />
+              <mxPoint x="1394" y="1120" />
+              <mxPoint x="870" y="1120" />
+            </Array>
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="p2_e16" edge="1" parent="1" source="p2_run" target="p2_a_item" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=block;endFill=1;fontSize=10;exitX=0.5;exitY=0;exitDx=0;exitDy=0;entryX=0;entryY=0.5;entryDx=0;entryDy=0;" value="pops">
+          <mxGeometry relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="1560" y="236" />
+              <mxPoint x="20" y="236" />
+              <mxPoint x="20" y="525" />
+            </Array>
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="p2_e17" edge="1" parent="1" source="p2_run" target="p2_a_quota" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=block;endFill=1;fontSize=10;exitX=0.75;exitY=0;exitDx=0;exitDy=0;entryX=0;entryY=0.5;entryDx=0;entryDy=0;" value="reads">
+          <mxGeometry relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="1620" y="264" />
+              <mxPoint x="2060" y="264" />
+              <mxPoint x="2060" y="525" />
+            </Array>
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="p2_e18" edge="1" parent="1" source="p2_work" target="p2_a_commits" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=block;endFill=1;fontSize=10;" value="commits">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="p2_e19" edge="1" parent="1" source="p2_work" target="p2_a_result" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=block;endFill=1;fontSize=10;exitX=0;exitY=0.5;exitDx=0;exitDy=0;entryX=0;entryY=0.5;entryDx=0;entryDy=0;" value="writes">
+          <mxGeometry relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="1706" y="345" />
+              <mxPoint x="1706" y="685" />
+            </Array>
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="p2_e20" edge="1" parent="1" source="p2_work" target="p2_c_github" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=cross;fontSize=10;exitX=0;exitY=0.75;exitDx=0;exitDy=0;entryX=1;entryY=0.5;entryDx=0;entryDy=0;" value="">
+          <mxGeometry relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="1734" y="368" />
+              <mxPoint x="1734" y="1020" />
+            </Array>
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="p2_e21" edge="1" parent="1" source="p2_work" target="p2_c_live" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=cross;fontSize=10;exitX=1;exitY=0.5;exitDx=0;exitDy=0;entryX=1;entryY=0.5;entryDx=0;entryDy=0;" value="touch">
+          <mxGeometry relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="2074" y="345" />
+              <mxPoint x="2074" y="850" />
+            </Array>
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="p2_e22" edge="1" parent="1" source="p2_sl" target="p2_a_quota" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=block;endFill=1;fontSize=10;" value="writes">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="p2_e23" edge="1" parent="1" source="p2_human" target="p2_a_go" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=block;endFill=1;fontSize=10;exitX=0.5;exitY=0;exitDx=0;exitDy=0;entryX=0;entryY=0.5;entryDx=0;entryDy=0;" value="deletes">
+          <mxGeometry relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="200" y="222" />
+              <mxPoint x="714" y="222" />
+              <mxPoint x="714" y="525" />
+            </Array>
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="p2_e24" edge="1" parent="1" source="p2_human" target="p2_a_outcome" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=block;endFill=1;fontSize=10;exitX=0.5;exitY=1;exitDx=0;exitDy=0;entryX=0;entryY=0.5;entryDx=0;entryDy=0;" value="reads">
+          <mxGeometry relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="200" y="1240" />
+              <mxPoint x="1340" y="1240" />
+              <mxPoint x="1340" y="845" />
+            </Array>
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="p2_e25" edge="1" parent="1" source="p2_human" target="p2_c_github" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=block;endFill=1;fontSize=10;exitX=0.75;exitY=1;exitDx=0;exitDy=0;entryX=0.5;entryY=1;entryDx=0;entryDy=0;" value="merges">
+          <mxGeometry relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="260" y="1290" />
+              <mxPoint x="1550" y="1290" />
+            </Array>
+          </mxGeometry>
+        </mxCell>
+      </root>
+    </mxGraphModel>
+  </diagram>
+  <diagram id="hb-flow" name="3 · One night, end to end">
+    <mxGraphModel dx="2550" dy="1717" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="1600" pageHeight="1000" math="0" shadow="0">
+      <root>
+        <mxCell id="0" />
+        <mxCell id="1" parent="0" />
+        <mxCell id="p3_title" parent="1" style="text;html=1;whiteSpace=wrap;align=center;verticalAlign=middle;fontSize=18;" value="&lt;b&gt;heartbeat &amp;middot; one night, end to end&lt;/b&gt;&amp;nbsp;&amp;nbsp;&lt;font color=&quot;#666666&quot;&gt;two chains &amp;mdash; the night, and the single item that runs inside one tick of it&lt;/font&gt;" vertex="1">
+          <mxGeometry height="40" width="2380" x="80" y="20" as="geometry" />
+        </mxCell>
+        <mxCell id="p3_self" parent="1" style="whiteSpace=wrap;html=1;shape=note;fillColor=#8c8c8c;strokeColor=default;fontColor=default;align=left;verticalAlign=top;fontSize=11;spacingLeft=10;spacingRight=22;spacingTop=8;shadow=1;" value="&lt;b&gt;this page&lt;/b&gt;&lt;br&gt;&lt;i&gt;Order and outcome. The chevrons carry the sequence, so they take no arrows between them.&lt;/i&gt;&lt;br&gt;&lt;i&gt;Who performs each stage is on page 2; what each stage writes is on page 5. The rollout is capped at one item a night, so the second chain runs once, then the caps stop the night.&lt;/i&gt;" vertex="1">
+          <mxGeometry height="150" width="420" x="80" y="70" as="geometry" />
+        </mxCell>
+        <mxCell id="p3_reading" parent="1" style="whiteSpace=wrap;html=1;fillColor=default;strokeColor=default;fontColor=default;align=left;verticalAlign=top;spacing=8;fontSize=11;" value="&lt;b&gt;WHAT MAKES A TICK CHEAP&lt;/b&gt;&lt;br&gt;&lt;i&gt;A tick that finds no flag exits without reading the queue, the quota or the backlog, and writes nothing but a timestamp. That is the whole point of the flag: exhaustion, a closed window and a kill switch all cost the same nothing, because the expensive machinery is only reached through a token that something else had to grant.&lt;/i&gt;&lt;br&gt;&lt;br&gt;&lt;b&gt;AND WHAT KEEPS IT SERIAL&lt;/b&gt;&lt;br&gt;&lt;i&gt;The claim is a rename, so exactly one tick can win it; the runner then holds it for the item&#39;s whole life. Nothing schedules a second item beside the first.&lt;/i&gt;" vertex="1">
+          <mxGeometry height="150" width="900" x="560" y="70" as="geometry" />
+        </mxCell>
+        <mxCell id="p3_bandA" parent="1" style="text;html=1;whiteSpace=wrap;align=left;verticalAlign=middle;fontSize=15;" value="&lt;b&gt;THE NIGHT&lt;/b&gt;&amp;nbsp;&amp;nbsp;&lt;font color=&quot;#666666&quot;&gt;deterministic from end to end &amp;mdash; not one model call in this chain&lt;/font&gt;" vertex="1">
+          <mxGeometry height="36" width="900" x="80" y="264" as="geometry" />
+        </mxCell>
+        <mxCell id="p3_a1" parent="1" style="whiteSpace=wrap;html=1;shape=step;perimeter=stepPerimeter;size=0.133;spacingLeft=50;spacingRight=50;fillColor=default;strokeColor=default;fontColor=default;align=center;verticalAlign=middle;fontSize=11;" value="&lt;b&gt;window open&lt;/b&gt;&lt;br&gt;issue GO, sweep orphans, prune worktrees, start a fresh ledger &amp;mdash; and refuse if the clock is outside the window" vertex="1">
+          <mxGeometry height="100" width="300" x="80" y="310" as="geometry" />
+        </mxCell>
+        <mxCell id="p3_a2" parent="1" style="whiteSpace=wrap;html=1;shape=step;perimeter=stepPerimeter;size=0.133;spacingLeft=50;spacingRight=50;fillColor=default;strokeColor=default;fontColor=default;align=center;verticalAlign=middle;fontSize=11;" value="&lt;b&gt;tick&lt;/b&gt;&lt;br&gt;read the flag and nothing else; absent means exit in silence" vertex="1">
+          <mxGeometry height="100" width="300" x="340" y="310" as="geometry" />
+        </mxCell>
+        <mxCell id="p3_a3" parent="1" style="whiteSpace=wrap;html=1;shape=step;perimeter=stepPerimeter;size=0.133;spacingLeft=50;spacingRight=50;fillColor=default;strokeColor=default;fontColor=default;align=center;verticalAlign=middle;fontSize=11;" value="&lt;b&gt;claim&lt;/b&gt;&lt;br&gt;go &amp;#8594; inflight by rename, before anything is spawned &amp;mdash; the tick claims, the runner only annotates" vertex="1">
+          <mxGeometry height="100" width="300" x="600" y="310" as="geometry" />
+        </mxCell>
+        <mxCell id="p3_a4" parent="1" style="whiteSpace=wrap;html=1;shape=step;perimeter=stepPerimeter;size=0.133;spacingLeft=50;spacingRight=50;fillColor=default;strokeColor=default;fontColor=default;align=center;verticalAlign=middle;fontSize=11;" value="&lt;b&gt;one item runs&lt;/b&gt;&lt;br&gt;&lt;i&gt;the chain below happens here, inside this one tick&lt;/i&gt;" vertex="1">
+          <mxGeometry height="100" width="300" x="860" y="310" as="geometry" />
+        </mxCell>
+        <mxCell id="p3_a5" parent="1" style="whiteSpace=wrap;html=1;shape=step;perimeter=stepPerimeter;size=0.133;spacingLeft=50;spacingRight=50;fillColor=default;strokeColor=default;fontColor=default;align=center;verticalAlign=middle;fontSize=11;" value="&lt;b&gt;later ticks&lt;/b&gt;&lt;br&gt;count cap reached? within an item cap of the close? past the close? &amp;mdash; then do nothing, quietly" vertex="1">
+          <mxGeometry height="100" width="300" x="1120" y="310" as="geometry" />
+        </mxCell>
+        <mxCell id="p3_a6" parent="1" style="whiteSpace=wrap;html=1;shape=step;perimeter=stepPerimeter;size=0.133;spacingLeft=50;spacingRight=50;fillColor=default;strokeColor=default;fontColor=default;align=center;verticalAlign=middle;fontSize=11;" value="&lt;b&gt;window close&lt;/b&gt;&lt;br&gt;corpse sweep, orphan sweep &amp;mdash; but a runner still alive is left to finish; nothing is killed mid-item" vertex="1">
+          <mxGeometry height="100" width="300" x="1380" y="310" as="geometry" />
+        </mxCell>
+        <mxCell id="p3_a7" parent="1" style="whiteSpace=wrap;html=1;shape=step;perimeter=stepPerimeter;size=0.133;spacingLeft=50;spacingRight=50;fillColor=default;strokeColor=default;fontColor=default;align=center;verticalAlign=middle;fontSize=11;" value="&lt;b&gt;the summary&lt;/b&gt;&lt;br&gt;one file per night into the inbox, whatever happened &amp;mdash; including nothing" vertex="1">
+          <mxGeometry height="100" width="300" x="1640" y="310" as="geometry" />
+        </mxCell>
+        <mxCell id="p3_bandB" parent="1" style="text;html=1;whiteSpace=wrap;align=left;verticalAlign=middle;fontSize=15;" value="&lt;b&gt;ONE ITEM&lt;/b&gt;&amp;nbsp;&amp;nbsp;&lt;font color=&quot;#666666&quot;&gt;the only stage where a model runs is the fourth&lt;/font&gt;" vertex="1">
+          <mxGeometry height="36" width="900" x="80" y="474" as="geometry" />
+        </mxCell>
+        <mxCell id="p3_b1" parent="1" style="whiteSpace=wrap;html=1;shape=step;perimeter=stepPerimeter;size=0.133;spacingLeft=50;spacingRight=50;fillColor=default;strokeColor=default;fontColor=default;align=center;verticalAlign=middle;fontSize=11;" value="&lt;b&gt;quota gate&lt;/b&gt;&lt;br&gt;a reading older than its age limit counts as no reading at all" vertex="1">
+          <mxGeometry height="100" width="300" x="80" y="520" as="geometry" />
+        </mxCell>
+        <mxCell id="p3_b2" parent="1" style="whiteSpace=wrap;html=1;shape=step;perimeter=stepPerimeter;size=0.133;spacingLeft=50;spacingRight=50;fillColor=default;strokeColor=default;fontColor=default;align=center;verticalAlign=middle;fontSize=11;" value="&lt;b&gt;pop&lt;/b&gt;&lt;br&gt;highest priority, oldest approval first; anything malformed is rejected, never guessed at" vertex="1">
+          <mxGeometry height="100" width="300" x="340" y="520" as="geometry" />
+        </mxCell>
+        <mxCell id="p3_b3" parent="1" style="whiteSpace=wrap;html=1;shape=step;perimeter=stepPerimeter;size=0.133;spacingLeft=50;spacingRight=50;fillColor=default;strokeColor=default;fontColor=default;align=center;verticalAlign=middle;fontSize=11;" value="&lt;b&gt;provision&lt;/b&gt;&lt;br&gt;worktree from a pinned base, untracked work state copied in, the deny overlay written" vertex="1">
+          <mxGeometry height="100" width="300" x="600" y="520" as="geometry" />
+        </mxCell>
+        <mxCell id="p3_b4" parent="1" style="whiteSpace=wrap;html=1;shape=step;perimeter=stepPerimeter;size=0.133;spacingLeft=50;spacingRight=50;fillColor=default;strokeColor=default;fontColor=default;align=center;verticalAlign=middle;fontSize=11;" value="&lt;b&gt;spawn the worker&lt;/b&gt;&lt;br&gt;its own process group, no credentials, capped at min(item, config) &amp;mdash; killed as a group at the wall" vertex="1">
+          <mxGeometry height="100" width="300" x="860" y="520" as="geometry" />
+        </mxCell>
+        <mxCell id="p3_b5" parent="1" style="whiteSpace=wrap;html=1;shape=step;perimeter=stepPerimeter;size=0.133;spacingLeft=50;spacingRight=50;fillColor=default;strokeColor=default;fontColor=default;align=center;verticalAlign=middle;fontSize=11;" value="&lt;b&gt;harvest&lt;/b&gt;&lt;br&gt;the worker&#39;s files are read as data: regular files only, bounded, decoded leniently" vertex="1">
+          <mxGeometry height="100" width="300" x="1120" y="520" as="geometry" />
+        </mxCell>
+        <mxCell id="p3_b6" parent="1" style="whiteSpace=wrap;html=1;shape=step;perimeter=stepPerimeter;size=0.133;spacingLeft=50;spacingRight=50;fillColor=default;strokeColor=default;fontColor=default;align=center;verticalAlign=middle;fontSize=11;" value="&lt;b&gt;classify&lt;/b&gt;&lt;br&gt;a kill at the cap, or a wall hit, outranks whatever the worker wrote about itself" vertex="1">
+          <mxGeometry height="100" width="300" x="1380" y="520" as="geometry" />
+        </mxCell>
+        <mxCell id="p3_b7" parent="1" style="whiteSpace=wrap;html=1;shape=step;perimeter=stepPerimeter;size=0.133;spacingLeft=50;spacingRight=50;fillColor=default;strokeColor=default;fontColor=default;align=center;verticalAlign=middle;fontSize=11;" value="&lt;b&gt;publish&lt;/b&gt;&lt;br&gt;scrub the messages, the paths and the title, then push; scrub the body, then open the PR" vertex="1">
+          <mxGeometry height="100" width="300" x="1640" y="520" as="geometry" />
+        </mxCell>
+        <mxCell id="p3_b8" parent="1" style="whiteSpace=wrap;html=1;shape=step;perimeter=stepPerimeter;size=0.133;spacingLeft=50;spacingRight=50;fillColor=default;strokeColor=default;fontColor=default;align=center;verticalAlign=middle;fontSize=11;" value="&lt;b&gt;outcome&lt;/b&gt;&lt;br&gt;write the folder a person will read tomorrow &amp;mdash; before the flag moves" vertex="1">
+          <mxGeometry height="100" width="300" x="1900" y="520" as="geometry" />
+        </mxCell>
+        <mxCell id="p3_b9" parent="1" style="whiteSpace=wrap;html=1;shape=step;perimeter=stepPerimeter;size=0.133;spacingLeft=50;spacingRight=50;fillColor=default;strokeColor=default;fontColor=default;align=center;verticalAlign=middle;fontSize=11;" value="&lt;b&gt;release&lt;/b&gt;&lt;br&gt;hand the token back, or hand it in &amp;mdash; see the six ways this ends, below" vertex="1">
+          <mxGeometry height="100" width="300" x="2160" y="520" as="geometry" />
+        </mxCell>
+        <mxCell id="p3_runner" parent="1" style="whiteSpace=wrap;html=1;ellipse;fillColor=default;strokeColor=default;fontColor=default;align=center;verticalAlign=middle;fontSize=11;" value="&lt;b&gt;the runner&lt;/b&gt;&lt;br&gt;&lt;i&gt;its only control-flow question: did I reach an expected terminus?&lt;/i&gt;" vertex="1">
+          <mxGeometry height="110" width="260" x="80" y="740" as="geometry" />
+        </mxCell>
+        <mxCell id="p3_t1" parent="1" style="whiteSpace=wrap;html=1;shape=document;size=0.15;spacingBottom=10;fillColor=default;strokeColor=default;fontColor=default;align=center;verticalAlign=middle;fontSize=11;" value="&lt;b&gt;converged&lt;/b&gt;&lt;br&gt;&lt;i&gt;expected&lt;/i&gt;&lt;br&gt;branch pushed, PR opened, item filed in the inbox, worktree removed&lt;br&gt;&lt;b&gt;flag &amp;#8594; go&lt;/b&gt;" vertex="1">
+          <mxGeometry height="150" width="300" x="420" y="1000" as="geometry" />
+        </mxCell>
+        <mxCell id="p3_t2" parent="1" style="whiteSpace=wrap;html=1;shape=document;size=0.15;spacingBottom=10;fillColor=default;strokeColor=default;fontColor=default;align=center;verticalAlign=middle;fontSize=11;" value="&lt;b&gt;exhausted&lt;/b&gt;&lt;br&gt;&lt;i&gt;expected&lt;/i&gt;&lt;br&gt;QA hit its bound instead of converging &amp;mdash; handled identically, and the outcome says which it was&lt;br&gt;&lt;b&gt;flag &amp;#8594; go&lt;/b&gt;" vertex="1">
+          <mxGeometry height="150" width="300" x="760" y="1000" as="geometry" />
+        </mxCell>
+        <mxCell id="p3_t3" parent="1" style="whiteSpace=wrap;html=1;shape=document;size=0.15;spacingBottom=10;fillColor=default;strokeColor=default;fontColor=default;align=center;verticalAlign=middle;fontSize=11;" value="&lt;b&gt;cap&lt;/b&gt;&lt;br&gt;&lt;i&gt;expected&lt;/i&gt;&lt;br&gt;the worker was killed at the wall clock; whatever it had committed still publishes&lt;br&gt;&lt;b&gt;flag &amp;#8594; go&lt;/b&gt;" vertex="1">
+          <mxGeometry height="150" width="300" x="1100" y="1000" as="geometry" />
+        </mxCell>
+        <mxCell id="p3_t4" parent="1" style="whiteSpace=wrap;html=1;shape=document;size=0.15;spacingBottom=10;fillColor=default;strokeColor=default;fontColor=default;align=center;verticalAlign=middle;fontSize=11;" value="&lt;b&gt;quota&lt;/b&gt;&lt;br&gt;&lt;i&gt;&lt;b&gt;not&lt;/b&gt; expected &amp;mdash; the gate cleared and the wall was hit anyway, so the sizing was wrong&lt;/i&gt;&lt;br&gt;a diagnostic written with no model call, item requeued&lt;br&gt;&lt;b&gt;flag &amp;#8594; absent: the night stops&lt;/b&gt;" vertex="1">
+          <mxGeometry height="150" width="300" x="1440" y="1000" as="geometry" />
+        </mxCell>
+        <mxCell id="p3_t5" parent="1" style="whiteSpace=wrap;html=1;shape=document;size=0.15;spacingBottom=10;fillColor=default;strokeColor=default;fontColor=default;align=center;verticalAlign=middle;fontSize=11;strokeWidth=3;" value="&lt;b&gt;unexpected&lt;/b&gt;&lt;br&gt;&lt;i&gt;no terminus written, or the runner itself died&lt;/i&gt;&lt;br&gt;sandbox kept for forensics, item left in flight, &lt;b&gt;flag left in flight&lt;/b&gt; &amp;mdash; the sweep at close is what clears it, and it is loud" vertex="1">
+          <mxGeometry height="150" width="300" x="1780" y="1000" as="geometry" />
+        </mxCell>
+        <mxCell id="p3_t6" parent="1" style="whiteSpace=wrap;html=1;shape=document;size=0.15;spacingBottom=10;fillColor=default;strokeColor=default;fontColor=default;align=center;verticalAlign=middle;fontSize=11;" value="&lt;b&gt;rejected&lt;/b&gt; &amp;middot; &lt;b&gt;failed-repeatedly&lt;/b&gt;&lt;br&gt;malformed frontmatter, or the attempt ceiling reached&lt;br&gt;straight to the inbox as a bug report &amp;mdash; nothing retries for ever" vertex="1">
+          <mxGeometry height="150" width="300" x="2120" y="1000" as="geometry" />
+        </mxCell>
+        <mxCell id="p3_rule" parent="1" style="whiteSpace=wrap;html=1;shape=parallelogram;perimeter=parallelogramPerimeter;flipH=1;size=0.044;spacingLeft=50;spacingRight=50;fillColor=default;strokeColor=default;fontColor=default;align=center;verticalAlign=middle;fontSize=11;strokeWidth=3;" value="&lt;b&gt;Every path ends with the token handed back, handed in, or left as a corpse the sweep will clear.&lt;/b&gt;&amp;nbsp;&amp;nbsp;&lt;i&gt;No path leaves the night armed and idle, and no path relaunches into a failure it cannot explain.&lt;/i&gt;" vertex="1">
+          <mxGeometry height="120" width="900" x="80" y="1240" as="geometry" />
+        </mxCell>
+        <mxCell id="p3_e1" edge="1" parent="1" source="p3_runner" target="p3_t1" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=block;endFill=1;fontSize=10;exitX=0.2;exitY=1;exitDx=0;exitDy=0;entryX=0.5;entryY=0;entryDx=0;entryDy=0;" value="worker said so">
+          <mxGeometry relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="132" y="880" />
+              <mxPoint x="570" y="880" />
+            </Array>
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="p3_e2" edge="1" parent="1" source="p3_runner" target="p3_t2" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=block;endFill=1;fontSize=10;exitX=0.35;exitY=1;exitDx=0;exitDy=0;entryX=0.5;entryY=0;entryDx=0;entryDy=0;" value="worker said so">
+          <mxGeometry relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="171" y="896" />
+              <mxPoint x="910" y="896" />
+            </Array>
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="p3_e3" edge="1" parent="1" source="p3_runner" target="p3_t3" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=block;endFill=1;fontSize=10;exitX=0.5;exitY=1;exitDx=0;exitDy=0;entryX=0.5;entryY=0;entryDx=0;entryDy=0;" value="killed at the cap">
+          <mxGeometry relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="210" y="912" />
+              <mxPoint x="1250" y="912" />
+            </Array>
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="p3_e4" edge="1" parent="1" source="p3_runner" target="p3_t4" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=block;endFill=1;fontSize=10;exitX=0.65;exitY=1;exitDx=0;exitDy=0;entryX=0.5;entryY=0;entryDx=0;entryDy=0;" value="hit the wall">
+          <mxGeometry relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="249" y="928" />
+              <mxPoint x="1590" y="928" />
+            </Array>
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="p3_e5" edge="1" parent="1" source="p3_runner" target="p3_t5" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=block;endFill=1;fontSize=10;exitX=0.8;exitY=1;exitDx=0;exitDy=0;entryX=0.5;entryY=0;entryDx=0;entryDy=0;strokeWidth=3;" value="anything else">
+          <mxGeometry relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="288" y="944" />
+              <mxPoint x="1930" y="944" />
+            </Array>
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="p3_e6" edge="1" parent="1" source="p3_runner" target="p3_t6" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=block;endFill=1;fontSize=10;exitX=0.95;exitY=1;exitDx=0;exitDy=0;entryX=0.5;entryY=0;entryDx=0;entryDy=0;" value="invalid / 3rd try">
+          <mxGeometry relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="327" y="960" />
+              <mxPoint x="2270" y="960" />
+            </Array>
+          </mxGeometry>
+        </mxCell>
+      </root>
+    </mxGraphModel>
+  </diagram>
+  <diagram id="hb-flag" name="4 · The flag &amp; the queue">
+    <mxGraphModel dx="2550" dy="1717" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="1600" pageHeight="1000" math="0" shadow="0">
+      <root>
+        <mxCell id="0" />
+        <mxCell id="1" parent="0" />
+        <mxCell id="p4_title" parent="1" style="text;html=1;whiteSpace=wrap;align=center;verticalAlign=middle;fontSize=18;" value="&lt;b&gt;heartbeat &amp;middot; the flag and the queue&lt;/b&gt;&amp;nbsp;&amp;nbsp;&lt;font color=&quot;#666666&quot;&gt;one token with three states, and a job channel where the move is the claim&lt;/font&gt;" vertex="1">
+          <mxGeometry height="40" width="2000" x="80" y="20" as="geometry" />
+        </mxCell>
+        <mxCell id="p4_self" parent="1" style="whiteSpace=wrap;html=1;shape=note;fillColor=#8c8c8c;strokeColor=default;fontColor=default;align=left;verticalAlign=top;fontSize=11;spacingLeft=10;spacingRight=22;spacingTop=8;shadow=1;" value="&lt;b&gt;this page&lt;/b&gt;&lt;br&gt;&lt;i&gt;A mixed page on purpose: the three states and the three stores are structure; the transitions between them are acts, and an act needs a doer, so the four doers stand at the left.&lt;/i&gt;&lt;br&gt;&lt;i&gt;There is no fourth state. Exhaustion and a closed window both mean absent.&lt;/i&gt;" vertex="1">
+          <mxGeometry height="150" width="420" x="80" y="70" as="geometry" />
+        </mxCell>
+        <mxCell id="p4_why" parent="1" style="whiteSpace=wrap;html=1;fillColor=default;strokeColor=default;fontColor=default;align=left;verticalAlign=top;spacing=8;fontSize=11;" value="&lt;b&gt;WHY A FILE, AND WHY A RENAME&lt;/b&gt;&lt;br&gt;&lt;i&gt;A file is the one primitive both authors of this system can operate: the machine writes it, and a person can end the night by deleting it from a file manager. A rename is the one filesystem operation that cannot half-happen, so it carries the claim &amp;mdash; on the token and on the item alike. Everything else about concurrency here follows from those two choices rather than from a lock.&lt;/i&gt;" vertex="1">
+          <mxGeometry height="150" width="900" x="560" y="70" as="geometry" />
+        </mxCell>
+        <mxCell id="p4_go_ent" parent="1" style="whiteSpace=wrap;html=1;shape=process;size=0.016;spacingLeft=22;spacingRight=22;fillColor=default;strokeColor=default;fontColor=default;align=center;verticalAlign=middle;fontSize=11;" value="&lt;b&gt;the GO flag&lt;/b&gt;&amp;nbsp;&amp;nbsp;state/GO &amp;mdash; one file, read as of the moment you read it&lt;br&gt;&lt;b&gt;status&lt;/b&gt; (one of the three below) &amp;middot; issued_at &amp;middot; window_closes_at&lt;br&gt;&lt;b&gt;claimed_at &amp;middot; pid &amp;middot; pid_start&lt;/b&gt; &amp;middot; item_id &amp;middot; transcript_path&lt;br&gt;&lt;i&gt;transcript_path stays null until the worker&#39;s session appears on disk &amp;mdash; so null on a corpse means it died before it ever booted, and that is a different bug from dying mid-item&lt;/i&gt;" vertex="1">
+          <mxGeometry height="150" width="880" x="700" y="250" as="geometry" />
+        </mxCell>
+        <mxCell id="p4_absent" parent="1" style="whiteSpace=wrap;html=1;shape=internalStorage;dx=16;dy=16;fillColor=default;strokeColor=default;fontColor=default;align=center;verticalAlign=middle;fontSize=11;" value="&lt;b&gt;absent&lt;/b&gt;&lt;br&gt;no file &amp;mdash; no permission&lt;br&gt;&lt;i&gt;the tick reads nothing else and exits&lt;/i&gt;&lt;br&gt;&lt;i&gt;revoked at the close &amp;mdash; unless a runner is alive, which is left to finish and logged as an overrun; or dropped by a tick that outlived its window; or handed in on a quota stop or an empty queue&lt;/i&gt;" vertex="1">
+          <mxGeometry height="150" width="300" x="560" y="520" as="geometry" />
+        </mxCell>
+        <mxCell id="p4_go" parent="1" style="whiteSpace=wrap;html=1;shape=internalStorage;dx=16;dy=16;fillColor=default;strokeColor=default;fontColor=default;align=center;verticalAlign=middle;fontSize=11;" value="&lt;b&gt;go&lt;/b&gt;&lt;br&gt;granted, nothing running&lt;br&gt;&lt;i&gt;the only state a tick may claim from&lt;/i&gt;&lt;br&gt;&lt;i&gt;issued from absent only, and only with the clock inside the window; handed back after an expected terminus&lt;/i&gt;" vertex="1">
+          <mxGeometry height="150" width="300" x="940" y="520" as="geometry" />
+        </mxCell>
+        <mxCell id="p4_inflight" parent="1" style="whiteSpace=wrap;html=1;shape=internalStorage;dx=16;dy=16;fillColor=default;strokeColor=default;fontColor=default;align=center;verticalAlign=middle;fontSize=11;" value="&lt;b&gt;inflight&lt;/b&gt;&lt;br&gt;a named process holds it&lt;br&gt;&lt;i&gt;pid alone is not identity: the process start time is stored with it, because pids come round again&lt;/i&gt;&lt;br&gt;&lt;i&gt;claimed before anything is spawned, so exactly one tick can win; then annotated with the item and, once its session exists, the transcript&lt;/i&gt;" vertex="1">
+          <mxGeometry height="150" width="300" x="1320" y="520" as="geometry" />
+        </mxCell>
+        <mxCell id="p4_det" parent="1" style="whiteSpace=wrap;html=1;ellipse;fillColor=default;strokeColor=default;fontColor=default;align=center;verticalAlign=middle;fontSize=11;" value="&lt;b&gt;window detector&lt;/b&gt;" vertex="1">
+          <mxGeometry height="90" width="240" x="100" y="300" as="geometry" />
+        </mxCell>
+        <mxCell id="p4_tick" parent="1" style="whiteSpace=wrap;html=1;ellipse;fillColor=default;strokeColor=default;fontColor=default;align=center;verticalAlign=middle;fontSize=11;" value="&lt;b&gt;heartbeat tick&lt;/b&gt;" vertex="1">
+          <mxGeometry height="90" width="240" x="100" y="440" as="geometry" />
+        </mxCell>
+        <mxCell id="p4_run" parent="1" style="whiteSpace=wrap;html=1;ellipse;fillColor=default;strokeColor=default;fontColor=default;align=center;verticalAlign=middle;fontSize=11;" value="&lt;b&gt;the runner&lt;/b&gt;" vertex="1">
+          <mxGeometry height="90" width="240" x="100" y="580" as="geometry" />
+        </mxCell>
+        <mxCell id="p4_human" parent="1" style="whiteSpace=wrap;html=1;ellipse;fillColor=default;strokeColor=default;fontColor=default;align=center;verticalAlign=middle;fontSize=11;" value="&lt;b&gt;the human&lt;/b&gt;" vertex="1">
+          <mxGeometry height="90" width="240" x="100" y="720" as="geometry" />
+        </mxCell>
+        <mxCell id="p4_outbox" parent="1" style="swimlane;html=1;startSize=26;whiteSpace=wrap;fillColor=default;strokeColor=default;fontColor=default;swimlaneFillColor=default;align=center;verticalAlign=middle;fontSize=11;" value="&lt;b&gt;~outbox/hb/&lt;/b&gt;&amp;nbsp;&amp;nbsp;approved, waiting" vertex="1">
+          <mxGeometry height="220" width="420" x="560" y="800" as="geometry" />
+        </mxCell>
+        <mxCell id="p4_out_item" parent="p4_outbox" style="whiteSpace=wrap;html=1;shape=process;size=0.037;spacingLeft=22;spacingRight=22;fillColor=default;strokeColor=default;fontColor=default;align=center;verticalAlign=middle;fontSize=11;" value="&lt;b&gt;an item&lt;/b&gt;&amp;nbsp;&amp;nbsp;&amp;lt;ID&amp;gt;.md&lt;br&gt;&lt;i&gt;one file, so the claim can be a rename&lt;/i&gt;" vertex="1">
+          <mxGeometry height="70" width="380" x="20" y="46" as="geometry" />
+        </mxCell>
+        <mxCell id="p4_out_order" parent="p4_outbox" style="whiteSpace=wrap;html=1;shape=internalStorage;dx=16;dy=16;fillColor=default;strokeColor=default;fontColor=default;align=center;verticalAlign=middle;fontSize=11;" value="&lt;b&gt;pop order&lt;/b&gt; &amp;mdash; priority 9 down to 0, then oldest approval first" vertex="1">
+          <mxGeometry height="70" width="380" x="20" y="130" as="geometry" />
+        </mxCell>
+        <mxCell id="p4_inflightbox" parent="1" style="swimlane;html=1;startSize=26;whiteSpace=wrap;fillColor=default;strokeColor=default;fontColor=default;swimlaneFillColor=default;align=center;verticalAlign=middle;fontSize=11;" value="&lt;b&gt;~outbox/hb/inflight/&lt;/b&gt;&amp;nbsp;&amp;nbsp;taken" vertex="1">
+          <mxGeometry height="220" width="420" x="1040" y="800" as="geometry" />
+        </mxCell>
+        <mxCell id="p4_inf_item" parent="p4_inflightbox" style="whiteSpace=wrap;html=1;shape=process;size=0.037;spacingLeft=22;spacingRight=22;fillColor=default;strokeColor=default;fontColor=default;align=center;verticalAlign=middle;fontSize=11;" value="&lt;b&gt;the same file&lt;/b&gt;&lt;br&gt;&lt;i&gt;moved, not copied &amp;mdash; there is never a second truth about who holds it&lt;/i&gt;" vertex="1">
+          <mxGeometry height="70" width="380" x="20" y="46" as="geometry" />
+        </mxCell>
+        <mxCell id="p4_inf_pid" parent="p4_inflightbox" style="whiteSpace=wrap;html=1;shape=process;size=0.037;spacingLeft=22;spacingRight=22;fillColor=default;strokeColor=default;fontColor=default;align=center;verticalAlign=middle;fontSize=11;" value="&lt;b&gt;&amp;lt;ID&amp;gt;.pid&lt;/b&gt;&amp;nbsp;&amp;nbsp;pid + process start time&lt;br&gt;&lt;i&gt;so a sweep can tell a live runner from a dead one even after the flag is gone&lt;/i&gt;" vertex="1">
+          <mxGeometry height="70" width="380" x="20" y="130" as="geometry" />
+        </mxCell>
+        <mxCell id="p4_inbox" parent="1" style="swimlane;html=1;startSize=26;whiteSpace=wrap;fillColor=default;strokeColor=default;fontColor=default;swimlaneFillColor=default;align=center;verticalAlign=middle;fontSize=11;" value="&lt;b&gt;~inbox/hb/&amp;lt;ID&amp;gt;/&lt;/b&gt;&amp;nbsp;&amp;nbsp;done with, read by a person" vertex="1">
+          <mxGeometry height="220" width="420" x="1520" y="800" as="geometry" />
+        </mxCell>
+        <mxCell id="p4_inb_out" parent="p4_inbox" style="whiteSpace=wrap;html=1;shape=process;size=0.037;spacingLeft=22;spacingRight=22;fillColor=default;strokeColor=default;fontColor=default;align=center;verticalAlign=middle;fontSize=11;" value="&lt;b&gt;the outcome folder&lt;/b&gt;&lt;br&gt;&lt;i&gt;fields and contents on page 5&lt;/i&gt;" vertex="1">
+          <mxGeometry height="70" width="380" x="20" y="46" as="geometry" />
+        </mxCell>
+        <mxCell id="p4_inb_item" parent="p4_inbox" style="whiteSpace=wrap;html=1;shape=process;size=0.037;spacingLeft=22;spacingRight=22;fillColor=default;strokeColor=default;fontColor=default;align=center;verticalAlign=middle;fontSize=11;" value="&lt;b&gt;item.md&lt;/b&gt;&amp;nbsp;&amp;nbsp;the item exactly as it was claimed&lt;br&gt;&lt;i&gt;so tomorrow&#39;s reader sees the brief the worker actually got&lt;/i&gt;" vertex="1">
+          <mxGeometry height="70" width="380" x="20" y="130" as="geometry" />
+        </mxCell>
+        <mxCell id="p4_r1" parent="1" style="whiteSpace=wrap;html=1;shape=parallelogram;perimeter=parallelogramPerimeter;flipH=1;size=0.06;spacingLeft=50;spacingRight=50;fillColor=default;strokeColor=default;fontColor=default;align=center;verticalAlign=middle;fontSize=11;" value="&lt;b&gt;The move is the claim.&lt;/b&gt;&amp;nbsp;&amp;nbsp;&lt;i&gt;No lock, no claimed-by field, no second marker to go stale. A crash between the move and the finish leaves the item exactly where the sweep looks for it.&lt;/i&gt;" vertex="1">
+          <mxGeometry height="120" width="660" x="560" y="1090" as="geometry" />
+        </mxCell>
+        <mxCell id="p4_r2" parent="1" style="whiteSpace=wrap;html=1;shape=parallelogram;perimeter=parallelogramPerimeter;flipH=1;size=0.06;spacingLeft=50;spacingRight=50;fillColor=default;strokeColor=default;fontColor=default;align=center;verticalAlign=middle;fontSize=11;strokeWidth=3;" value="&lt;b&gt;A release must be the flag that was claimed &amp;mdash; and a deleted flag never returns.&lt;/b&gt;&amp;nbsp;&amp;nbsp;&lt;i&gt;The runner may only move a flag whose pid and start time are still its own, and it may never create one. Only the detector, at the open, brings a flag into being.&lt;/i&gt;" vertex="1">
+          <mxGeometry height="120" width="660" x="1280" y="1090" as="geometry" />
+        </mxCell>
+        <mxCell id="p4_r3" parent="1" style="whiteSpace=wrap;html=1;shape=parallelogram;perimeter=parallelogramPerimeter;flipH=1;size=0.028;spacingLeft=50;spacingRight=50;fillColor=default;strokeColor=default;fontColor=default;align=center;verticalAlign=middle;fontSize=11;" value="&lt;b&gt;Every return to the queue costs an attempt, and the attempt ceiling turns an item into a bug report.&lt;/b&gt;&amp;nbsp;&amp;nbsp;&lt;i&gt;An orphan sweep, a provisioning failure and a quota stop all count. An item that has failed three nights is not a backlog item any more, and the inbox says so instead of the queue hiding it.&lt;/i&gt;" vertex="1">
+          <mxGeometry height="110" width="1380" x="560" y="1250" as="geometry" />
+        </mxCell>
+        <mxCell id="p4_eA" edge="1" parent="1" source="p4_det" target="p4_go" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=block;endFill=1;fontSize=10;exitX=1;exitY=0.5;exitDx=0;exitDy=0;entryX=0.17;entryY=0;entryDx=0;entryDy=0;" value="issues">
+          <mxGeometry relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="380" y="345" />
+              <mxPoint x="380" y="412" />
+              <mxPoint x="991" y="412" />
+            </Array>
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="p4_eB" edge="1" parent="1" source="p4_det" target="p4_absent" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=block;endFill=1;fontSize=10;exitX=1;exitY=0.75;exitDx=0;exitDy=0;entryX=0.33;entryY=0;entryDx=0;entryDy=0;" value="revokes">
+          <mxGeometry relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="380" y="368" />
+              <mxPoint x="380" y="428" />
+              <mxPoint x="659" y="428" />
+            </Array>
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="p4_eC" edge="1" parent="1" source="p4_tick" target="p4_inflight" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=block;endFill=1;fontSize=10;strokeWidth=3;exitX=1;exitY=0.5;exitDx=0;exitDy=0;entryX=0.17;entryY=0;entryDx=0;entryDy=0;" value="claims">
+          <mxGeometry relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="400" y="485" />
+              <mxPoint x="400" y="444" />
+              <mxPoint x="1371" y="444" />
+            </Array>
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="p4_eD" edge="1" parent="1" source="p4_tick" target="p4_absent" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=block;endFill=1;fontSize=10;exitX=1;exitY=0.75;exitDx=0;exitDy=0;entryX=0.67;entryY=0;entryDx=0;entryDy=0;" value="expires">
+          <mxGeometry relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="400" y="508" />
+              <mxPoint x="400" y="460" />
+              <mxPoint x="761" y="460" />
+            </Array>
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="p4_eE" edge="1" parent="1" source="p4_run" target="p4_go" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=block;endFill=1;fontSize=10;exitX=1;exitY=0.5;exitDx=0;exitDy=0;entryX=0.83;entryY=0;entryDx=0;entryDy=0;" value="hands back">
+          <mxGeometry relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="420" y="625" />
+              <mxPoint x="420" y="476" />
+              <mxPoint x="1189" y="476" />
+            </Array>
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="p4_eF" edge="1" parent="1" source="p4_run" target="p4_absent" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=block;endFill=1;fontSize=10;exitX=1;exitY=0.25;exitDx=0;exitDy=0;entryX=0.83;entryY=0;entryDx=0;entryDy=0;" value="hands in">
+          <mxGeometry relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="440" y="602" />
+              <mxPoint x="440" y="492" />
+              <mxPoint x="809" y="492" />
+            </Array>
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="p4_eG" edge="1" parent="1" source="p4_human" target="p4_absent" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=block;endFill=1;fontSize=10;exitX=1;exitY=0.5;exitDx=0;exitDy=0;entryX=0.17;entryY=0;entryDx=0;entryDy=0;" value="kill switch">
+          <mxGeometry relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="460" y="765" />
+              <mxPoint x="460" y="508" />
+              <mxPoint x="611" y="508" />
+            </Array>
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="p4_eH" edge="1" parent="1" source="p4_run" target="p4_inflight" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=block;endFill=1;fontSize=10;exitX=1;exitY=0.9;exitDx=0;exitDy=0;entryX=0.5;entryY=1;entryDx=0;entryDy=0;" value="annotates">
+          <mxGeometry relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="400" y="661" />
+              <mxPoint x="400" y="690" />
+              <mxPoint x="1470" y="690" />
+            </Array>
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="p4_eI" edge="1" parent="1" source="p4_run" target="p4_inflightbox" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=block;endFill=1;fontSize=10;exitX=0.5;exitY=1;exitDx=0;exitDy=0;entryX=0.5;entryY=0;entryDx=0;entryDy=0;" value="pops">
+          <mxGeometry relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="220" y="760" />
+              <mxPoint x="1250" y="760" />
+            </Array>
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="p4_eJ" edge="1" parent="1" source="p4_run" target="p4_outbox" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=block;endFill=1;fontSize=10;exitX=0.35;exitY=1;exitDx=0;exitDy=0;entryX=0.33;entryY=0;entryDx=0;entryDy=0;" value="requeues">
+          <mxGeometry relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="184" y="745" />
+              <mxPoint x="699" y="745" />
+            </Array>
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="p4_eK" edge="1" parent="1" source="p4_run" target="p4_inbox" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=block;endFill=1;fontSize=10;exitX=0.65;exitY=1;exitDx=0;exitDy=0;entryX=0.43;entryY=0;entryDx=0;entryDy=0;" value="finishes">
+          <mxGeometry relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="256" y="775" />
+              <mxPoint x="1701" y="775" />
+            </Array>
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="p4_eL" edge="1" parent="1" source="p4_det" target="p4_outbox" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=block;endFill=1;fontSize=10;exitX=1;exitY=0.25;exitDx=0;exitDy=0;entryX=0.19;entryY=0;entryDx=0;entryDy=0;" value="sweeps">
+          <mxGeometry relative="1" as="geometry">
+            <Array as="points"><mxPoint x="500" y="345" /><mxPoint x="500" y="730" /></Array>
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="p4_eM" edge="1" parent="1" source="p4_det" target="p4_inbox" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=block;endFill=1;fontSize=10;exitX=1;exitY=0.1;exitDx=0;exitDy=0;entryX=0.19;entryY=0;entryDx=0;entryDy=0;" value="at the ceiling">
+          <mxGeometry relative="1" as="geometry">
+            <Array as="points"><mxPoint x="520" y="345" /><mxPoint x="520" y="715" /></Array>
+          </mxGeometry>
+        </mxCell>
+      </root>
+    </mxGraphModel>
+  </diagram>
+  <diagram id="hb-data" name="5 · The records">
+    <mxGraphModel dx="2550" dy="1717" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="1600" pageHeight="1000" math="0" shadow="0">
+      <root>
+        <mxCell id="0" />
+        <mxCell id="1" parent="0" />
+        <mxCell id="p5_title" parent="1" style="text;html=1;whiteSpace=wrap;align=center;verticalAlign=middle;fontSize=18;" value="&lt;b&gt;heartbeat &amp;middot; the records&lt;/b&gt;&amp;nbsp;&amp;nbsp;&lt;font color=&quot;#666666&quot;&gt;every file the system keeps, what is in it, and which sets its fields are drawn from&lt;/font&gt;" vertex="1">
+          <mxGeometry height="40" width="2320" x="80" y="20" as="geometry" />
+        </mxCell>
+        <mxCell id="p5_self" parent="1" style="whiteSpace=wrap;html=1;shape=note;fillColor=#8c8c8c;strokeColor=default;fontColor=default;align=left;verticalAlign=top;fontSize=11;spacingLeft=10;spacingRight=22;spacingTop=8;shadow=1;" value="&lt;b&gt;this page&lt;/b&gt;&lt;br&gt;&lt;i&gt;Structure only &amp;mdash; no doer appears, so nothing here is an act. Two registers: the job channel, which exists once per project root, and the runtime, which exists once at the apex.&lt;/i&gt;&lt;br&gt;&lt;i&gt;The flag and its sidecar are drawn on page 4 and are not redrawn here.&lt;/i&gt;&lt;br&gt;&lt;i&gt;Everything on this page is markdown or JSON on disk. There is no database.&lt;/i&gt;" vertex="1">
+          <mxGeometry height="160" width="420" x="80" y="70" as="geometry" />
+        </mxCell>
+        <mxCell id="p5_c_root" parent="1" style="whiteSpace=wrap;html=1;ellipse;shape=cloud;fillColor=default;strokeColor=default;fontColor=default;align=center;verticalAlign=middle;fontSize=11;" value="&lt;b&gt;a project root&lt;/b&gt;&lt;br&gt;&lt;i&gt;see 1 &amp;middot; Deployment&lt;/i&gt;&lt;br&gt;only a root that is the top of its own repository can be worked" vertex="1">
+          <mxGeometry height="170" width="420" x="80" y="270" as="geometry" />
+        </mxCell>
+        <mxCell id="p5_config" parent="1" style="whiteSpace=wrap;html=1;shape=process;size=0.033;spacingLeft=22;spacingRight=22;fillColor=default;strokeColor=default;fontColor=default;align=left;verticalAlign=top;spacingTop=8;fontSize=11;" value="&lt;b&gt;config.json&lt;/b&gt;&amp;nbsp;&amp;nbsp;&lt;i&gt;tracked defaults&lt;/i&gt;&lt;br&gt;window.open &amp;middot; window.close&lt;br&gt;item_cap_min &amp;middot; count_cap &amp;middot; attempts_max&lt;br&gt;model &amp;middot; qa &amp;middot; pr &amp;middot; worker_web&lt;br&gt;base_branch &amp;middot; branch_prefix &amp;middot; sandbox_rel&lt;br&gt;quota.max_age_hours &amp;middot; five_hour_max_pct &amp;middot; seven_day_max_pct &amp;middot; missing_policy&lt;br&gt;stale_branch_days &amp;middot; extra_path &amp;middot; python&lt;br&gt;&lt;i&gt;tick_minutes, wsl_distro and wsl_user are read by nobody &amp;mdash; the schedule really lives in the task registration&lt;/i&gt;" vertex="1">
+          <mxGeometry height="250" width="420" x="80" y="480" as="geometry" />
+        </mxCell>
+        <mxCell id="p5_override" parent="1" style="whiteSpace=wrap;html=1;shape=process;size=0.033;spacingLeft=22;spacingRight=22;fillColor=default;strokeColor=default;fontColor=default;align=center;verticalAlign=middle;fontSize=11;" value="&lt;b&gt;state/config.json&lt;/b&gt;&amp;nbsp;&amp;nbsp;&lt;i&gt;untracked instance override&lt;/i&gt;&lt;br&gt;same keys, shallow-merged over the defaults" vertex="1">
+          <mxGeometry height="110" width="420" x="80" y="790" as="geometry" />
+        </mxCell>
+        <mxCell id="p5_c_flag" parent="1" style="whiteSpace=wrap;html=1;ellipse;shape=cloud;fillColor=default;strokeColor=default;fontColor=default;align=center;verticalAlign=middle;fontSize=11;" value="&lt;b&gt;the GO flag and the pid sidecar&lt;/b&gt;&lt;br&gt;&lt;i&gt;see 4 &amp;middot; The flag and the queue&lt;/i&gt;" vertex="1">
+          <mxGeometry height="150" width="420" x="80" y="960" as="geometry" />
+        </mxCell>
+        <mxCell id="p5_chan" parent="1" style="swimlane;html=1;startSize=26;whiteSpace=wrap;fillColor=default;strokeColor=default;fontColor=default;swimlaneFillColor=default;align=center;verticalAlign=middle;fontSize=11;" value="&lt;b&gt;THE JOB CHANNEL&lt;/b&gt;&amp;nbsp;&amp;nbsp;one of these per project root &amp;middot; markdown with frontmatter &amp;middot; never tracked" vertex="1">
+          <mxGeometry height="430" width="1420" x="560" y="250" as="geometry" />
+        </mxCell>
+        <mxCell id="p5_item" parent="p5_chan" style="whiteSpace=wrap;html=1;shape=process;size=0.021;spacingLeft=22;spacingRight=22;fillColor=default;strokeColor=default;fontColor=default;align=left;verticalAlign=top;spacingTop=8;fontSize=11;strokeWidth=3;" value="&lt;b&gt;an item&lt;/b&gt;&amp;nbsp;&amp;nbsp;~outbox/hb/&amp;lt;ID&amp;gt;.md&lt;br&gt;&lt;b&gt;required:&lt;/b&gt; id &amp;middot; recipient &amp;middot; sender &amp;middot; project &amp;middot; priority &amp;middot; status &amp;middot; approved_by &amp;middot; approved_at &amp;middot; attempts&lt;br&gt;&lt;b&gt;optional:&lt;/b&gt; attempts_max &amp;middot; model &amp;middot; time_cap_min &amp;middot; qa &amp;middot; pr &amp;middot; base &amp;middot; scope &amp;middot; depends_on &amp;middot; tags &amp;middot; source&lt;br&gt;&lt;b&gt;body:&lt;/b&gt; the brief &amp;mdash; what, why, acceptance, constraints&lt;br&gt;&lt;i&gt;a missing or malformed required field is a rejection, never a guess. time_cap_min may lower the configured ceiling and never raise it; scope, if given, is enforced at publish.&lt;/i&gt;" vertex="1">
+          <mxGeometry height="230" width="660" x="20" y="46" as="geometry" />
+        </mxCell>
+        <mxCell id="p5_outcome" parent="p5_chan" style="whiteSpace=wrap;html=1;shape=process;size=0.02;spacingLeft=22;spacingRight=22;fillColor=default;strokeColor=default;fontColor=default;align=left;verticalAlign=top;spacingTop=8;fontSize=11;strokeWidth=3;" value="&lt;b&gt;an outcome&lt;/b&gt;&amp;nbsp;&amp;nbsp;~inbox/hb/&amp;lt;ID&amp;gt;/outcome.md&lt;br&gt;item_id &amp;middot; branch &amp;middot; pr &amp;middot; pushed &amp;middot; publish_note&lt;br&gt;&lt;b&gt;terminus &amp;middot; qa_result&lt;/b&gt; &amp;middot; summary &amp;middot; scope_breach&lt;br&gt;base_commit &amp;middot; head_commit &amp;middot; has_commits &amp;middot; files_touched&lt;br&gt;attempts &amp;middot; session_id &amp;middot; transcript_path &amp;middot; worker_is_error&lt;br&gt;cost_usd &amp;middot; duration_min &amp;middot; written_at&lt;br&gt;&lt;b&gt;body:&lt;/b&gt; what was done, what was not, why it stopped &amp;mdash; and the same text becomes the pull request body&lt;br&gt;&lt;i&gt;a rejected or failed-repeatedly outcome carries only the fields that exist&lt;/i&gt;" vertex="1">
+          <mxGeometry height="230" width="700" x="700" y="46" as="geometry" />
+        </mxCell>
+        <mxCell id="p5_pause" parent="p5_chan" style="whiteSpace=wrap;html=1;shape=process;size=0.021;spacingLeft=22;spacingRight=22;fillColor=default;strokeColor=default;fontColor=default;align=center;verticalAlign=middle;fontSize=11;" value="&lt;b&gt;context.md &amp;middot; state.md&lt;/b&gt;&amp;nbsp;&amp;nbsp;the worker&#39;s own account, in the same shape a paused session uses &amp;mdash; decisions, open questions, what it touched" vertex="1">
+          <mxGeometry height="100" width="660" x="20" y="296" as="geometry" />
+        </mxCell>
+        <mxCell id="p5_delta" parent="p5_chan" style="whiteSpace=wrap;html=1;shape=process;size=0.02;spacingLeft=22;spacingRight=22;fillColor=default;strokeColor=default;fontColor=default;align=center;verticalAlign=middle;fontSize=11;" value="&lt;b&gt;state-delta.diff&lt;/b&gt;&amp;nbsp;&amp;nbsp;what the worker changed in the work register of its throwaway copy &amp;mdash; preserved as a diff to read, never applied" vertex="1">
+          <mxGeometry height="100" width="700" x="700" y="296" as="geometry" />
+        </mxCell>
+        <mxCell id="p5_rt" parent="1" style="swimlane;html=1;startSize=26;whiteSpace=wrap;fillColor=default;strokeColor=default;fontColor=default;swimlaneFillColor=default;align=center;verticalAlign=middle;fontSize=11;" value="&lt;b&gt;THE RUNTIME&lt;/b&gt;&amp;nbsp;&amp;nbsp;one of these, at the apex &amp;middot; JSON &amp;middot; never tracked &amp;middot; rebuilt every night" vertex="1">
+          <mxGeometry height="430" width="1420" x="560" y="730" as="geometry" />
+        </mxCell>
+        <mxCell id="p5_night" parent="p5_rt" style="whiteSpace=wrap;html=1;shape=process;size=0.021;spacingLeft=22;spacingRight=22;fillColor=default;strokeColor=default;fontColor=default;align=left;verticalAlign=top;spacingTop=8;fontSize=11;" value="&lt;b&gt;the night ledger&lt;/b&gt;&amp;nbsp;&amp;nbsp;state/night.json&lt;br&gt;night &amp;middot; opened_at &amp;middot; closes_at &amp;middot; count_cap&lt;br&gt;runs[] &amp;middot; corpses[] &amp;middot; notes[] &amp;middot; closed&lt;br&gt;&lt;i&gt;the count cap is counted here, and a crashed attempt counts too &amp;mdash; otherwise a repeatable crash would spend the whole night&lt;/i&gt;" vertex="1">
+          <mxGeometry height="180" width="660" x="20" y="46" as="geometry" />
+        </mxCell>
+        <mxCell id="p5_run" parent="p5_rt" style="whiteSpace=wrap;html=1;shape=process;size=0.02;spacingLeft=22;spacingRight=22;fillColor=default;strokeColor=default;fontColor=default;align=left;verticalAlign=top;spacingTop=8;fontSize=11;" value="&lt;b&gt;a run&lt;/b&gt;&amp;nbsp;&amp;nbsp;one entry in runs[]&lt;br&gt;item_id &amp;middot; root_name &amp;middot; project &amp;middot; started_at &amp;middot; finished_at&lt;br&gt;attempts &amp;middot; quota_at_gate &amp;middot; branch &amp;middot; base_commit &amp;middot; sandbox&lt;br&gt;terminus &amp;middot; qa_result &amp;middot; pushed &amp;middot; pr &amp;middot; head_commit&lt;br&gt;files_touched &amp;middot; cost_usd &amp;middot; duration_min &amp;middot; session_id&lt;br&gt;&lt;i&gt;one per attempt, on as many nights as it takes; it carries the gate&#39;s own reading, so a later one cannot rewrite history&lt;/i&gt;" vertex="1">
+          <mxGeometry height="180" width="700" x="700" y="46" as="geometry" />
+        </mxCell>
+        <mxCell id="p5_quota" parent="p5_rt" style="whiteSpace=wrap;html=1;shape=process;size=0.021;spacingLeft=22;spacingRight=22;fillColor=default;strokeColor=default;fontColor=default;align=left;verticalAlign=top;spacingTop=8;fontSize=11;" value="&lt;b&gt;the quota reading&lt;/b&gt;&amp;nbsp;&amp;nbsp;state/quota.json&lt;br&gt;written_at &amp;middot; cwd &amp;middot; rate_limits.five_hour{used_percentage, resets_at} &amp;middot; rate_limits.seven_day{&amp;#8230;}&lt;br&gt;&lt;i&gt;written by an interactive session and by nothing else, so its age is part of the reading&lt;/i&gt;&lt;br&gt;&lt;b&gt;state/last-tick&lt;/b&gt; &amp;mdash; one timestamp, the proof the schedule fired at all" vertex="1">
+          <mxGeometry height="150" width="660" x="20" y="246" as="geometry" />
+        </mxCell>
+        <mxCell id="p5_diag" parent="p5_rt" style="whiteSpace=wrap;html=1;shape=process;size=0.02;spacingLeft=22;spacingRight=22;fillColor=default;strokeColor=default;fontColor=default;align=left;verticalAlign=top;spacingTop=8;fontSize=11;" value="&lt;b&gt;a diagnostic&lt;/b&gt;&amp;nbsp;&amp;nbsp;state/diag/&amp;lt;stamp&amp;gt;-&amp;lt;kind&amp;gt;-&amp;lt;item&amp;gt;.json&lt;br&gt;kind &amp;middot; at &amp;middot; item_id &amp;middot; the payload for that kind&lt;br&gt;&lt;i&gt;corpse carries pid, claimed_at and whether the session ever booted; quota-exhausted carries the reading that cleared the gate and the one at the wall &amp;mdash; and it is written with no model call, because the process that noticed is the one with nothing left to spend&lt;/i&gt;" vertex="1">
+          <mxGeometry height="150" width="700" x="700" y="246" as="geometry" />
+        </mxCell>
+        <mxCell id="p5_bandC" parent="1" style="text;html=1;whiteSpace=wrap;align=left;verticalAlign=middle;fontSize=15;" value="&lt;b&gt;CONTROLLED TERMS&lt;/b&gt;&lt;br&gt;&lt;font color=&quot;#666666&quot;&gt;closed sets &amp;mdash; referenced, not related to&lt;/font&gt;" vertex="1">
+          <mxGeometry height="50" width="340" x="2060" y="200" as="geometry" />
+        </mxCell>
+        <mxCell id="p5_c_prio" parent="1" style="whiteSpace=wrap;html=1;shape=internalStorage;dx=16;dy=16;fillColor=default;strokeColor=default;fontColor=default;align=center;verticalAlign=middle;fontSize=11;" value="&lt;b&gt;priority&lt;/b&gt;&lt;br&gt;9 &amp;#8230; 0&lt;br&gt;&lt;i&gt;9 is most urgent; 0 is idle filler&lt;/i&gt;" vertex="1">
+          <mxGeometry height="120" width="340" x="2060" y="270" as="geometry" />
+        </mxCell>
+        <mxCell id="p5_c_term" parent="1" style="whiteSpace=wrap;html=1;shape=internalStorage;dx=16;dy=16;fillColor=default;strokeColor=default;fontColor=default;align=center;verticalAlign=middle;fontSize=11;" value="&lt;b&gt;terminus&lt;/b&gt;&lt;br&gt;converged &amp;middot; exhausted &amp;middot; cap&lt;br&gt;quota &amp;middot; unexpected&lt;br&gt;rejected &amp;middot; failed-repeatedly&lt;br&gt;&lt;i&gt;the first three are expected; what each one does is on page 3&lt;/i&gt;" vertex="1">
+          <mxGeometry height="190" width="340" x="2060" y="420" as="geometry" />
+        </mxCell>
+        <mxCell id="p5_c_qa" parent="1" style="whiteSpace=wrap;html=1;shape=internalStorage;dx=16;dy=16;fillColor=default;strokeColor=default;fontColor=default;align=center;verticalAlign=middle;fontSize=11;" value="&lt;b&gt;qa_result&lt;/b&gt;&lt;br&gt;converged &amp;middot; held &amp;middot; exhausted&lt;br&gt;escalation &amp;middot; n/a&lt;br&gt;&lt;i&gt;the QA protocol&#39;s own exit states, mapped one to one&lt;/i&gt;" vertex="1">
+          <mxGeometry height="170" width="340" x="2060" y="640" as="geometry" />
+        </mxCell>
+        <mxCell id="p5_c_qamode" parent="1" style="whiteSpace=wrap;html=1;shape=internalStorage;dx=16;dy=16;fillColor=default;strokeColor=default;fontColor=default;align=center;verticalAlign=middle;fontSize=11;" value="&lt;b&gt;qa&lt;/b&gt;&amp;nbsp;&amp;nbsp;&lt;i&gt;the exit predicate an item asks for&lt;/i&gt;&lt;br&gt;mileqa &amp;middot; tests &amp;middot; none" vertex="1">
+          <mxGeometry height="130" width="340" x="2060" y="840" as="geometry" />
+        </mxCell>
+        <mxCell id="p5_c_recip" parent="1" style="whiteSpace=wrap;html=1;shape=internalStorage;dx=16;dy=16;fillColor=default;strokeColor=default;fontColor=default;align=center;verticalAlign=middle;fontSize=11;" value="&lt;b&gt;recipient&lt;/b&gt;&lt;br&gt;hb &amp;middot; &amp;lt;project-slug&amp;gt;&lt;br&gt;&lt;i&gt;the outbox is a general handoff channel; hb is one reader of it&lt;/i&gt;" vertex="1">
+          <mxGeometry height="140" width="340" x="2060" y="1000" as="geometry" />
+        </mxCell>
+        <mxCell id="p5_e_root" edge="1" parent="1" source="p5_c_root" target="p5_item" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;startArrow=ERmandatoryOne;startFill=0;endArrow=ERzeroToMany;endFill=0;fontSize=10;exitX=1;exitY=0.5;exitDx=0;exitDy=0;entryX=0;entryY=0.5;entryDx=0;entryDy=0;" value="">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="p5_e_item_out" edge="1" parent="1" source="p5_item" target="p5_outcome" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;startArrow=diamondThin;startFill=1;endArrow=ERzeroToOne;endFill=0;fontSize=10;" value="">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="p5_e_out_pause" edge="1" parent="1" source="p5_outcome" target="p5_pause" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;startArrow=diamondThin;startFill=1;endArrow=ERzeroToOne;endFill=0;fontSize=10;exitX=0;exitY=0.75;exitDx=0;exitDy=0;entryX=1;entryY=0.5;entryDx=0;entryDy=0;" value="">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="p5_e_out_delta" edge="1" parent="1" source="p5_outcome" target="p5_delta" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;startArrow=diamondThin;startFill=1;endArrow=ERzeroToOne;endFill=0;fontSize=10;" value="">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="p5_e_night_run" edge="1" parent="1" source="p5_night" target="p5_run" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;startArrow=diamondThin;startFill=1;endArrow=ERoneToMany;endFill=0;fontSize=10;" value="">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="p5_e_item_run" edge="1" parent="1" source="p5_item" target="p5_run" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;startArrow=ERmandatoryOne;startFill=0;endArrow=ERzeroToMany;endFill=0;fontSize=10;exitX=0.5;exitY=1;exitDx=0;exitDy=0;entryX=0.5;entryY=0;entryDx=0;entryDy=0;" value="per attempt">
+          <mxGeometry relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="910" y="705" />
+              <mxPoint x="1610" y="705" />
+            </Array>
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="p5_e_run_quota" edge="1" parent="1" source="p5_run" target="p5_quota" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;startArrow=ERone;startFill=0;endArrow=ERzeroToOne;endFill=0;fontSize=10;exitX=0;exitY=0.5;exitDx=0;exitDy=0;entryX=1;entryY=0.25;entryDx=0;entryDy=0;" value="">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="p5_e_run_diag" edge="1" parent="1" source="p5_run" target="p5_diag" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;startArrow=ERone;startFill=0;endArrow=ERzeroToMany;endFill=0;fontSize=10;" value="">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="p5_e_flag_item" edge="1" parent="1" source="p5_c_flag" target="p5_item" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;startArrow=ERone;startFill=0;endArrow=ERzeroToOne;endFill=0;fontSize=10;exitX=1;exitY=0.5;exitDx=0;exitDy=0;entryX=0;entryY=0.75;entryDx=0;entryDy=0;" value="">
+          <mxGeometry relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="520" y="1035" />
+              <mxPoint x="520" y="469" />
+            </Array>
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="p5_e_override" edge="1" parent="1" source="p5_override" target="p5_config" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=open;endFill=0;fontSize=10;dashed=1;dashPattern=8 8;" value="">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+      </root>
+    </mxGraphModel>
+  </diagram>
+  <diagram id="hb-controls" name="6 · Controls &amp; the boundary">
+    <mxGraphModel dx="2550" dy="1717" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="1600" pageHeight="1000" math="0" shadow="0">
+      <root>
+        <mxCell id="0" />
+        <mxCell id="1" parent="0" />
+        <mxCell id="p6_title" parent="1" style="text;html=1;whiteSpace=wrap;align=center;verticalAlign=middle;fontSize=18;" value="&lt;b&gt;heartbeat &amp;middot; controls and the boundary&lt;/b&gt;&amp;nbsp;&amp;nbsp;&lt;font color=&quot;#666666&quot;&gt;what holds because of what does not exist, what merely makes the easy way hard, and the one gap that is still open&lt;/font&gt;" vertex="1">
+          <mxGeometry height="40" width="2380" x="80" y="20" as="geometry" />
+        </mxCell>
+        <mxCell id="p6_self" parent="1" style="whiteSpace=wrap;html=1;shape=note;fillColor=#8c8c8c;strokeColor=default;fontColor=default;align=left;verticalAlign=top;fontSize=11;spacingLeft=10;spacingRight=22;spacingTop=8;shadow=1;" value="&lt;b&gt;this page&lt;/b&gt;&lt;br&gt;&lt;i&gt;The guarantees are drawn as rules that bind the built system; the mechanisms that serve them are drawn as the files they actually are.&lt;/i&gt;&lt;br&gt;&lt;i&gt;The prohibitions themselves &amp;mdash; what the worker may not do &amp;mdash; are on page 2, where the doer is; they are not restated here.&lt;/i&gt;" vertex="1">
+          <mxGeometry height="160" width="420" x="80" y="70" as="geometry" />
+        </mxCell>
+        <mxCell id="p6_what" parent="1" style="whiteSpace=wrap;html=1;fillColor=default;strokeColor=default;fontColor=default;align=left;verticalAlign=top;spacing=8;fontSize=11;" value="&lt;b&gt;WHY THE TWO BANDS ARE NOT THE SAME KIND OF THING&lt;/b&gt;&lt;br&gt;&lt;i&gt;A guarantee in the first band holds because the capability is absent: there is no credential in the worker&#39;s environment, and no amount of cleverness conjures one. A layer in the second band holds because a check recognised a spelling &amp;mdash; and three rounds of adversarial review found a new spelling every round. Both are worth having; only the first is worth claiming. The moment a page or a README describes the second band as the boundary, the honest reading of the system has been lost.&lt;/i&gt;" vertex="1">
+          <mxGeometry height="160" width="1320" x="560" y="70" as="geometry" />
+        </mxCell>
+        <mxCell id="p6_bandA" parent="1" style="text;html=1;whiteSpace=wrap;align=left;verticalAlign=middle;fontSize=15;" value="&lt;b&gt;THE BOUNDARY&lt;/b&gt;&amp;nbsp;&amp;nbsp;&lt;font color=&quot;#666666&quot;&gt;structural &amp;mdash; each of these holds because something is missing, not because something was checked&lt;/font&gt;" vertex="1">
+          <mxGeometry height="36" width="1400" x="560" y="270" as="geometry" />
+        </mxCell>
+        <mxCell id="p6_r1" parent="1" style="whiteSpace=wrap;html=1;shape=parallelogram;perimeter=parallelogramPerimeter;flipH=1;size=0.059;spacingLeft=50;spacingRight=50;fillColor=default;strokeColor=default;fontColor=default;align=center;verticalAlign=middle;fontSize=11;strokeWidth=3;" value="&lt;b&gt;The worker holds no credential.&lt;/b&gt;&lt;br&gt;&lt;i&gt;An empty gh config directory, the global git config switched off, credential helpers reset, askpass pointed at a program that always fails, terminal prompts disabled.&lt;/i&gt;" vertex="1">
+          <mxGeometry height="140" width="680" x="560" y="320" as="geometry" />
+        </mxCell>
+        <mxCell id="p6_r2" parent="1" style="whiteSpace=wrap;html=1;shape=parallelogram;perimeter=parallelogramPerimeter;flipH=1;size=0.059;spacingLeft=50;spacingRight=50;fillColor=default;strokeColor=default;fontColor=default;align=center;verticalAlign=middle;fontSize=11;" value="&lt;b&gt;The runner publishes; the worker only commits.&lt;/b&gt;&lt;br&gt;&lt;i&gt;One explicit branch ref is pushed, by the process that has the identity, after the text has been scanned.&lt;/i&gt;" vertex="1">
+          <mxGeometry height="140" width="680" x="1300" y="320" as="geometry" />
+        </mxCell>
+        <mxCell id="p6_r3" parent="1" style="whiteSpace=wrap;html=1;shape=parallelogram;perimeter=parallelogramPerimeter;flipH=1;size=0.059;spacingLeft=50;spacingRight=50;fillColor=default;strokeColor=default;fontColor=default;align=center;verticalAlign=middle;fontSize=11;" value="&lt;b&gt;The worker works in a copy that is thrown away.&lt;/b&gt;&lt;br&gt;&lt;i&gt;A worktree of its own on a branch of its own, from a pinned base; removed at harvest, kept only when something went wrong enough to need the evidence.&lt;/i&gt;" vertex="1">
+          <mxGeometry height="140" width="680" x="560" y="490" as="geometry" />
+        </mxCell>
+        <mxCell id="p6_r4" parent="1" style="whiteSpace=wrap;html=1;shape=parallelogram;perimeter=parallelogramPerimeter;flipH=1;size=0.059;spacingLeft=50;spacingRight=50;fillColor=default;strokeColor=default;fontColor=default;align=center;verticalAlign=middle;fontSize=11;strokeWidth=3;" value="&lt;b&gt;Nothing here merges.&lt;/b&gt;&lt;br&gt;&lt;i&gt;Every path ends at a diff a person has to look at. The one act that changes the default branch belongs to a human who is awake.&lt;/i&gt;" vertex="1">
+          <mxGeometry height="140" width="680" x="1300" y="490" as="geometry" />
+        </mxCell>
+        <mxCell id="p6_r5" parent="1" style="whiteSpace=wrap;html=1;shape=parallelogram;perimeter=parallelogramPerimeter;flipH=1;size=0.059;spacingLeft=50;spacingRight=50;fillColor=default;strokeColor=default;fontColor=default;align=center;verticalAlign=middle;fontSize=11;" value="&lt;b&gt;No model call writes live state.&lt;/b&gt;&lt;br&gt;&lt;i&gt;The token, the queue and the inbox are written only by deterministic code. Nothing decides for itself that there is work to do.&lt;/i&gt;" vertex="1">
+          <mxGeometry height="140" width="680" x="560" y="660" as="geometry" />
+        </mxCell>
+        <mxCell id="p6_r6" parent="1" style="whiteSpace=wrap;html=1;shape=parallelogram;perimeter=parallelogramPerimeter;flipH=1;size=0.059;spacingLeft=50;spacingRight=50;fillColor=default;strokeColor=default;fontColor=default;align=center;verticalAlign=middle;fontSize=11;" value="&lt;b&gt;One at a time, and not for long.&lt;/b&gt;&lt;br&gt;&lt;i&gt;One token, one item, a wall clock the runner enforces by killing a process group, and a count the night is allowed to reach.&lt;/i&gt;" vertex="1">
+          <mxGeometry height="140" width="680" x="1300" y="660" as="geometry" />
+        </mxCell>
+        <mxCell id="p6_bandB" parent="1" style="text;html=1;whiteSpace=wrap;align=left;verticalAlign=middle;fontSize=15;" value="&lt;b&gt;DEPTH&lt;/b&gt;&amp;nbsp;&amp;nbsp;&lt;font color=&quot;#666666&quot;&gt;real files doing real work &amp;mdash; and not one of them is the boundary&lt;/font&gt;" vertex="1">
+          <mxGeometry height="36" width="1400" x="2060" y="270" as="geometry" />
+        </mxCell>
+        <mxCell id="p6_b1" parent="1" style="whiteSpace=wrap;html=1;shape=document;size=0.13;spacingBottom=10;fillColor=default;strokeColor=default;fontColor=default;align=center;verticalAlign=middle;fontSize=11;" value="&lt;b&gt;hb-guard.py&lt;/b&gt;&amp;nbsp;&amp;nbsp;&lt;i&gt;the sandbox&#39;s own hook on every shell command&lt;/i&gt;&lt;br&gt;containment against the live tree, case-folded and alias-aware, globs failing closed &amp;middot; a git subcommand allowlist with no global or exec options &amp;middot; gh limited to reading &amp;middot; wrappers, keywords and here-documents peeled &amp;middot; protected environment names" vertex="1">
+          <mxGeometry height="220" width="680" x="2060" y="320" as="geometry" />
+        </mxCell>
+        <mxCell id="p6_b2" parent="1" style="whiteSpace=wrap;html=1;shape=document;size=0.16;spacingBottom=10;fillColor=default;strokeColor=default;fontColor=default;align=center;verticalAlign=middle;fontSize=11;" value="&lt;b&gt;the deny overlay&lt;/b&gt;&amp;nbsp;&amp;nbsp;&lt;i&gt;written into the sandbox per item&lt;/i&gt;&lt;br&gt;prefix denials for the obvious spellings, and no fetching from the web unless the instance opts in" vertex="1">
+          <mxGeometry height="180" width="680" x="2060" y="570" as="geometry" />
+        </mxCell>
+        <mxCell id="p6_b3" parent="1" style="whiteSpace=wrap;html=1;shape=document;size=0.16;spacingBottom=10;fillColor=default;strokeColor=default;fontColor=default;align=center;verticalAlign=middle;fontSize=11;" value="&lt;b&gt;remote-guard and the inherited denials&lt;/b&gt;&lt;br&gt;&lt;i&gt;every session in this instance carries them&lt;/i&gt;&lt;br&gt;no force push, no push to the default branch, no re-pointing a remote, no reaching the forge&#39;s API" vertex="1">
+          <mxGeometry height="180" width="680" x="2060" y="780" as="geometry" />
+        </mxCell>
+        <mxCell id="p6_b4" parent="1" style="whiteSpace=wrap;html=1;shape=document;size=0.14;spacingBottom=10;fillColor=default;strokeColor=default;fontColor=default;align=center;verticalAlign=middle;fontSize=11;" value="&lt;b&gt;the scrub&lt;/b&gt;&amp;nbsp;&amp;nbsp;&lt;i&gt;two passes, because a push and a pull request are two different egress paths&lt;/i&gt;&lt;br&gt;the repository&#39;s pre-push hook walks the range commit by commit &amp;middot; the runner scans the messages, the paths, the title and the body before either leaves &amp;mdash; and an allow-pragma in the worker&#39;s own text counts as a failure, not a pass" vertex="1">
+          <mxGeometry height="220" width="680" x="2060" y="990" as="geometry" />
+        </mxCell>
+        <mxCell id="p6_bandC" parent="1" style="text;html=1;whiteSpace=wrap;align=left;verticalAlign=middle;fontSize=15;" value="&lt;b&gt;THE RESIDUAL&lt;/b&gt;&amp;nbsp;&amp;nbsp;&lt;font color=&quot;#666666&quot;&gt;named, not buried &amp;mdash; the gate is held closed on this one&lt;/font&gt;" vertex="1">
+          <mxGeometry height="36" width="1400" x="560" y="850" as="geometry" />
+        </mxCell>
+        <mxCell id="p6_q44" parent="1" style="whiteSpace=wrap;html=1;shape=hexagon;perimeter=hexagonPerimeter2;size=0.028;spacingLeft=50;spacingRight=50;fillColor=#8c8c8c;strokeColor=default;fontColor=default;align=center;verticalAlign=middle;fontSize=11;strokeWidth=3;shadow=1;" value="&lt;b&gt;The worker runs as the same operating-system user as the human.&lt;/b&gt;&lt;br&gt;&lt;i&gt;So every file that user can read &amp;mdash; the forge token, the assistant&#39;s own credentials &amp;mdash; is readable in principle by anything that user runs, and the credential strip is an environment, not a wall: a script file that shells out is never inspected. The guard blocks the obvious spellings and nothing more.&lt;/i&gt;&lt;br&gt;&lt;b&gt;Open. Only the operator can close it.&lt;/b&gt;" vertex="1">
+          <mxGeometry height="200" width="1400" x="560" y="900" as="geometry" />
+        </mxCell>
+        <mxCell id="p6_cond" parent="1" style="whiteSpace=wrap;html=1;shape=parallelogram;perimeter=parallelogramPerimeter;flipH=1;size=0.06;spacingLeft=50;spacingRight=50;fillColor=default;strokeColor=default;fontColor=default;dashed=1;dashPattern=2 4;align=center;verticalAlign=middle;fontSize=11;" value="&lt;b&gt;The worker cannot read what the human&#39;s user can read.&lt;/b&gt;&lt;br&gt;&lt;i&gt;Exists only under one answer: a dedicated operating-system user for the worker, or a dedicated forge identity whose pull requests a person must approve. Neither is built.&lt;/i&gt;" vertex="1">
+          <mxGeometry height="150" width="660" x="560" y="1150" as="geometry" />
+        </mxCell>
+        <mxCell id="p6_ev1" parent="1" style="whiteSpace=wrap;html=1;shape=tape;size=0.18;fillColor=default;strokeColor=default;fontColor=default;align=center;verticalAlign=middle;fontSize=11;" value="&lt;b&gt;measured 2026-08-16&lt;/b&gt;&lt;br&gt;a push from inside the sandbox fails: &lt;i&gt;could not read Username&lt;/i&gt;&lt;br&gt;gh reports: &lt;i&gt;not logged into any hosts&lt;/i&gt;&lt;br&gt;and a live worker was handed the guard&#39;s refusal verbatim" vertex="1">
+          <mxGeometry height="150" width="680" x="1280" y="1150" as="geometry" />
+        </mxCell>
+        <mxCell id="p6_e1" edge="1" parent="1" source="p6_b1" target="p6_r3" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=open;endFill=0;fontSize=10;dashed=1;dashPattern=8 8;exitX=0;exitY=0.5;exitDx=0;exitDy=0;entryX=1;entryY=0.5;entryDx=0;entryDy=0;" value="">
+          <mxGeometry relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="2010" y="430" />
+              <mxPoint x="2010" y="560" />
+            </Array>
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="p6_e2" edge="1" parent="1" source="p6_b3" target="p6_r2" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=open;endFill=0;fontSize=10;dashed=1;dashPattern=8 8;exitX=0;exitY=0.5;exitDx=0;exitDy=0;entryX=0.5;entryY=1;entryDx=0;entryDy=0;" value="">
+          <mxGeometry relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="1640" y="870" />
+            </Array>
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="p6_e3" edge="1" parent="1" source="p6_b4" target="p6_r2" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=open;endFill=0;fontSize=10;dashed=1;dashPattern=8 8;exitX=0;exitY=0.25;exitDx=0;exitDy=0;entryX=1;entryY=0.75;entryDx=0;entryDy=0;" value="">
+          <mxGeometry relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="2020" y="1045" />
+              <mxPoint x="2020" y="425" />
+            </Array>
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="p6_e4" edge="1" parent="1" source="p6_cond" target="p6_q44" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=open;endFill=0;fontSize=10;dashed=1;dashPattern=8 8;" value="conditional on">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="p6_e5" edge="1" parent="1" source="p6_q44" target="p6_r1" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=open;endFill=0;fontSize=10;dashed=1;dashPattern=8 8;exitX=0.17;exitY=0;exitDx=0;exitDy=0;entryX=0.17;entryY=1;entryDx=0;entryDy=0;" value="">
+          <mxGeometry relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="798" y="880" />
+              <mxPoint x="676" y="880" />
+            </Array>
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="p6_e6" edge="1" parent="1" source="p6_ev1" target="p6_r1" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=open;endFill=0;fontSize=10;dashed=1;dashPattern=8 8;exitX=1;exitY=0.5;exitDx=0;exitDy=0;entryX=1;entryY=0.5;entryDx=0;entryDy=0;" value="">
+          <mxGeometry relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="2000" y="1225" />
+              <mxPoint x="2000" y="1320" />
+              <mxPoint x="500" y="1320" />
+              <mxPoint x="500" y="390" />
+            </Array>
+          </mxGeometry>
+        </mxCell>
+      </root>
+    </mxGraphModel>
+  </diagram>
+  <diagram id="hb-decisions" name="7 · Designed, then built">
+    <mxGraphModel dx="2550" dy="1717" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="1600" pageHeight="1000" math="0" shadow="0">
+      <root>
+        <mxCell id="0" />
+        <mxCell id="1" parent="0" />
+        <mxCell id="p7_title" parent="1" style="text;html=1;whiteSpace=wrap;align=center;verticalAlign=middle;fontSize=18;" value="&lt;b&gt;heartbeat &amp;middot; designed, then built&lt;/b&gt;&amp;nbsp;&amp;nbsp;&lt;font color=&quot;#666666&quot;&gt;the questions that closed, the ones still open, and what was measured on the way&lt;/font&gt;" vertex="1">
+          <mxGeometry height="40" width="2380" x="80" y="20" as="geometry" />
+        </mxCell>
+        <mxCell id="p7_self" parent="1" style="whiteSpace=wrap;html=1;shape=note;fillColor=#8c8c8c;strokeColor=default;fontColor=default;align=left;verticalAlign=top;fontSize=11;spacingLeft=10;spacingRight=22;spacingTop=8;shadow=1;" value="&lt;b&gt;this page&lt;/b&gt;&lt;br&gt;&lt;i&gt;A decision is a question that closed, so it keeps its shape and only its fill changes. Nothing here was redrawn when an argument ended.&lt;/i&gt;&lt;br&gt;&lt;i&gt;The one open question about trust lives on page 6, next to the guarantee it weakens, and is referenced here rather than repeated.&lt;/i&gt;&lt;br&gt;&lt;i&gt;Where the original specification and these decisions disagree, these decisions won &amp;mdash; that is what the build actually did.&lt;/i&gt;" vertex="1">
+          <mxGeometry height="180" width="420" x="80" y="70" as="geometry" />
+        </mxCell>
+        <mxCell id="p7_how" parent="1" style="whiteSpace=wrap;html=1;fillColor=default;strokeColor=default;fontColor=default;align=left;verticalAlign=top;spacing=8;fontSize=11;" value="&lt;b&gt;HOW THE NIGHT WENT&lt;/b&gt;&lt;br&gt;&lt;i&gt;Design converged over an evening; the build ran overnight against a live host. The order that mattered: prove the plumbing with a throwaway item, then run one real backlog item end to end, then adversarially review the whole thing three times over &amp;mdash; and only then write the report. Every number on this page came from a run, not an estimate.&lt;/i&gt;&lt;br&gt;&lt;i&gt;What the reviews kept finding is the thing worth remembering: the deterministic half converged round by round, and the pattern-matching half did not.&lt;/i&gt;" vertex="1">
+          <mxGeometry height="180" width="1320" x="560" y="70" as="geometry" />
+        </mxCell>
+        <mxCell id="p7_bandD" parent="1" style="text;html=1;whiteSpace=wrap;align=left;verticalAlign=middle;fontSize=15;" value="&lt;b&gt;DECIDED&lt;/b&gt;&amp;nbsp;&amp;nbsp;&lt;font color=&quot;#666666&quot;&gt;the fill has drained &amp;mdash; settled, so it recedes&lt;/font&gt;" vertex="1">
+          <mxGeometry height="36" width="1400" x="560" y="280" as="geometry" />
+        </mxCell>
+        <mxCell id="p7_d1" parent="1" style="whiteSpace=wrap;html=1;shape=hexagon;perimeter=hexagonPerimeter2;size=0.087;spacingLeft=50;spacingRight=50;fillColor=default;strokeColor=default;fontColor=default;align=center;verticalAlign=middle;fontSize=11;strokeWidth=3;" value="&lt;b&gt;Split the doer from the decider.&lt;/b&gt;&lt;br&gt;&lt;i&gt;Deterministic code owns the token, the queue and the publishing; the model only works inside a sandbox. The alternative &amp;mdash; one session that both decides and records &amp;mdash; makes every guarantee a matter of the model&#39;s good behaviour.&lt;/i&gt;" vertex="1">
+          <mxGeometry height="170" width="460" x="560" y="330" as="geometry" />
+        </mxCell>
+        <mxCell id="p7_d2" parent="1" style="whiteSpace=wrap;html=1;shape=hexagon;perimeter=hexagonPerimeter2;size=0.087;spacingLeft=50;spacingRight=50;fillColor=default;strokeColor=default;fontColor=default;align=center;verticalAlign=middle;fontSize=11;" value="&lt;b&gt;The sandbox is a worktree inside the tree.&lt;/b&gt;&lt;br&gt;&lt;i&gt;A clone somewhere else was the first proposal and was wrong: a session fenced to this tree could neither build nor inspect it. Keeping it inside also dissolved the question of how a branch gets home.&lt;/i&gt;" vertex="1">
+          <mxGeometry height="170" width="460" x="1060" y="330" as="geometry" />
+        </mxCell>
+        <mxCell id="p7_d3" parent="1" style="whiteSpace=wrap;html=1;shape=hexagon;perimeter=hexagonPerimeter2;size=0.087;spacingLeft=50;spacingRight=50;fillColor=default;strokeColor=default;fontColor=default;align=center;verticalAlign=middle;fontSize=11;strokeWidth=3;" value="&lt;b&gt;Publish, but never enact.&lt;/b&gt;&lt;br&gt;&lt;i&gt;The original contract forbade the network entirely; the operator opened push and pull-request creation and kept merge closed. Review then moved that capability out of the model and into the runner, where identity already lived.&lt;/i&gt;" vertex="1">
+          <mxGeometry height="170" width="460" x="1560" y="330" as="geometry" />
+        </mxCell>
+        <mxCell id="p7_d4" parent="1" style="whiteSpace=wrap;html=1;shape=hexagon;perimeter=hexagonPerimeter2;size=0.087;spacingLeft=50;spacingRight=50;fillColor=default;strokeColor=default;fontColor=default;align=center;verticalAlign=middle;fontSize=11;" value="&lt;b&gt;A mailbox per project, not a queue in a database.&lt;/b&gt;&lt;br&gt;&lt;i&gt;Take-as-lease, atomic move as the claim, an inbox a person reads. The failure modes of this shape are catalogued and old.&lt;/i&gt;" vertex="1">
+          <mxGeometry height="170" width="460" x="2060" y="330" as="geometry" />
+        </mxCell>
+        <mxCell id="p7_d5" parent="1" style="whiteSpace=wrap;html=1;shape=hexagon;perimeter=hexagonPerimeter2;size=0.087;spacingLeft=50;spacingRight=50;fillColor=default;strokeColor=default;fontColor=default;align=center;verticalAlign=middle;fontSize=11;" value="&lt;b&gt;Everything in one tracked folder.&lt;/b&gt;&lt;br&gt;&lt;i&gt;Contract, code, templates, schedule and tests together; only the runtime and the sandboxes untracked. The earlier split across three trees was abandoned before it was built.&lt;/i&gt;" vertex="1">
+          <mxGeometry height="170" width="460" x="560" y="530" as="geometry" />
+        </mxCell>
+        <mxCell id="p7_d6" parent="1" style="whiteSpace=wrap;html=1;shape=hexagon;perimeter=hexagonPerimeter2;size=0.087;spacingLeft=50;spacingRight=50;fillColor=default;strokeColor=default;fontColor=default;align=center;verticalAlign=middle;fontSize=11;" value="&lt;b&gt;The scheduler, not a daemon; the tick, not a detached child.&lt;/b&gt;&lt;br&gt;&lt;i&gt;A laptop that sleeps and roams makes a long-lived process a reliability tarpit. The tick becomes the runner for one item and holds the whole thing in one process.&lt;/i&gt;" vertex="1">
+          <mxGeometry height="170" width="460" x="1060" y="530" as="geometry" />
+        </mxCell>
+        <mxCell id="p7_d7" parent="1" style="whiteSpace=wrap;html=1;shape=hexagon;perimeter=hexagonPerimeter2;size=0.087;spacingLeft=50;spacingRight=50;fillColor=default;strokeColor=default;fontColor=default;align=center;verticalAlign=middle;fontSize=11;" value="&lt;b&gt;Never start what cannot finish.&lt;/b&gt;&lt;br&gt;&lt;i&gt;A per-item wall clock, and a tick that refuses to spawn within one of the close &amp;mdash; rather than killing work at the boundary. An item may ask for less time; it may not ask for more.&lt;/i&gt;" vertex="1">
+          <mxGeometry height="170" width="460" x="1560" y="530" as="geometry" />
+        </mxCell>
+        <mxCell id="p7_d8" parent="1" style="whiteSpace=wrap;html=1;shape=hexagon;perimeter=hexagonPerimeter2;size=0.087;spacingLeft=50;spacingRight=50;fillColor=default;strokeColor=default;fontColor=default;align=center;verticalAlign=middle;fontSize=11;" value="&lt;b&gt;A file every night, even a silent one.&lt;/b&gt;&lt;br&gt;&lt;i&gt;Otherwise a week of quiet nights and a week of a dead scheduler look identical, and the second is only discovered when something was needed.&lt;/i&gt;" vertex="1">
+          <mxGeometry height="170" width="460" x="2060" y="530" as="geometry" />
+        </mxCell>
+        <mxCell id="p7_d9" parent="1" style="whiteSpace=wrap;html=1;shape=hexagon;perimeter=hexagonPerimeter2;size=0.087;spacingLeft=50;spacingRight=50;fillColor=default;strokeColor=default;fontColor=default;align=center;verticalAlign=middle;fontSize=11;" value="&lt;b&gt;The claim is a rename, and the tick makes it.&lt;/b&gt;&lt;br&gt;&lt;i&gt;If the spawned process claimed for itself, the next tick could fire in the gap and start a second. So the claim happens before the spawn, and it is one filesystem operation.&lt;/i&gt;" vertex="1">
+          <mxGeometry height="170" width="460" x="560" y="730" as="geometry" />
+        </mxCell>
+        <mxCell id="p7_d10" parent="1" style="whiteSpace=wrap;html=1;shape=hexagon;perimeter=hexagonPerimeter2;size=0.087;spacingLeft=50;spacingRight=50;fillColor=default;strokeColor=default;fontColor=default;align=center;verticalAlign=middle;fontSize=11;" value="&lt;b&gt;Feed from the backlog; the item&#39;s name is the branch&#39;s name.&lt;/b&gt;&lt;br&gt;&lt;i&gt;Morning review is matching diffs to messages; deriving one name from the other removes that work entirely.&lt;/i&gt;" vertex="1">
+          <mxGeometry height="170" width="460" x="1060" y="730" as="geometry" />
+        </mxCell>
+        <mxCell id="p7_d11" parent="1" style="whiteSpace=wrap;html=1;shape=hexagon;perimeter=hexagonPerimeter2;size=0.087;spacingLeft=50;spacingRight=50;fillColor=default;strokeColor=default;fontColor=default;align=center;verticalAlign=middle;fontSize=11;" value="&lt;b&gt;Count-capped before quota-bound.&lt;/b&gt;&lt;br&gt;&lt;i&gt;One item the first night, two for a few after. If the provisioning or the claiming is subtly wrong, the cost of finding out is one bad diff and not a spent week.&lt;/i&gt;" vertex="1">
+          <mxGeometry height="170" width="460" x="1560" y="730" as="geometry" />
+        </mxCell>
+        <mxCell id="p7_d12" parent="1" style="whiteSpace=wrap;html=1;shape=hexagon;perimeter=hexagonPerimeter2;size=0.087;spacingLeft=50;spacingRight=50;fillColor=default;strokeColor=default;fontColor=default;align=center;verticalAlign=middle;fontSize=11;" value="&lt;b&gt;The quota reading is stale by construction, and that is accepted.&lt;/b&gt;&lt;br&gt;&lt;i&gt;Only an interactive session writes it, so a headless night reads yesterday&#39;s number. Treated as missing once it ages out; the count cap is what actually bounds the night.&lt;/i&gt;" vertex="1">
+          <mxGeometry height="170" width="460" x="2060" y="730" as="geometry" />
+        </mxCell>
+        <mxCell id="p7_bandO" parent="1" style="text;html=1;whiteSpace=wrap;align=left;verticalAlign=middle;fontSize=15;" value="&lt;b&gt;STILL OPEN&lt;/b&gt;&amp;nbsp;&amp;nbsp;&lt;font color=&quot;#666666&quot;&gt;filled, so they pop &amp;mdash; these are the live ones, carried deliberately rather than forgotten&lt;/font&gt;" vertex="1">
+          <mxGeometry height="36" width="1400" x="560" y="940" as="geometry" />
+        </mxCell>
+        <mxCell id="p7_o1" parent="1" style="whiteSpace=wrap;html=1;shape=hexagon;perimeter=hexagonPerimeter2;size=0.087;spacingLeft=50;spacingRight=50;fillColor=#8c8c8c;strokeColor=default;fontColor=default;align=center;verticalAlign=middle;fontSize=11;shadow=1;" value="&lt;b&gt;Should a project be able to raise its own hand?&lt;/b&gt;&lt;br&gt;&lt;i&gt;The original idea was a dirty-bit file a project drops when it wants attention. Deferred, not cancelled &amp;mdash; it needs reconciling with popping from an approved queue, or the approval gate stops meaning anything.&lt;/i&gt;" vertex="1">
+          <mxGeometry height="170" width="460" x="560" y="990" as="geometry" />
+        </mxCell>
+        <mxCell id="p7_o2" parent="1" style="whiteSpace=wrap;html=1;shape=hexagon;perimeter=hexagonPerimeter2;size=0.087;spacingLeft=50;spacingRight=50;fillColor=#8c8c8c;strokeColor=default;fontColor=default;align=center;verticalAlign=middle;fontSize=11;shadow=1;" value="&lt;b&gt;Two nights, two branches, one conflict.&lt;/b&gt;&lt;br&gt;&lt;i&gt;Each item branches from a pinned base and cannot see the other&#39;s unmerged work &amp;mdash; correct in isolation, and it means two diffs can be reviewed blind to each other.&lt;/i&gt;" vertex="1">
+          <mxGeometry height="170" width="460" x="1060" y="990" as="geometry" />
+        </mxCell>
+        <mxCell id="p7_o3" parent="1" style="whiteSpace=wrap;html=1;shape=hexagon;perimeter=hexagonPerimeter2;size=0.087;spacingLeft=50;spacingRight=50;fillColor=#8c8c8c;strokeColor=default;fontColor=default;align=center;verticalAlign=middle;fontSize=11;shadow=1;" value="&lt;b&gt;Who decides what is worth a night?&lt;/b&gt;&lt;br&gt;&lt;i&gt;Approval is a person&#39;s act today, which does not scale past a handful of items. A planner that turns raw backlog into approved work is a prerequisite for anything beyond hand-fed nights, and is not built.&lt;/i&gt;" vertex="1">
+          <mxGeometry height="170" width="460" x="1560" y="990" as="geometry" />
+        </mxCell>
+        <mxCell id="p7_c44" parent="1" style="whiteSpace=wrap;html=1;ellipse;shape=cloud;fillColor=default;strokeColor=default;fontColor=default;align=center;verticalAlign=middle;fontSize=11;" value="&lt;b&gt;the open question about trust&lt;/b&gt;&lt;br&gt;&lt;i&gt;see 6 &amp;middot; Controls and the boundary&lt;/i&gt;" vertex="1">
+          <mxGeometry height="170" width="460" x="2060" y="990" as="geometry" />
+        </mxCell>
+        <mxCell id="p7_bandE" parent="1" style="text;html=1;whiteSpace=wrap;align=left;verticalAlign=middle;fontSize=15;" value="&lt;b&gt;EVIDENCE&lt;/b&gt;&amp;nbsp;&amp;nbsp;&lt;font color=&quot;#666666&quot;&gt;measured on the running system, not estimated&lt;/font&gt;" vertex="1">
+          <mxGeometry height="36" width="1400" x="560" y="1200" as="geometry" />
+        </mxCell>
+        <mxCell id="p7_e1" parent="1" style="whiteSpace=wrap;html=1;shape=tape;size=0.18;fillColor=default;strokeColor=default;fontColor=default;align=center;verticalAlign=middle;fontSize=11;" value="&lt;b&gt;night one, one real backlog item&lt;/b&gt;&lt;br&gt;converged, three commits, a pull request opened&lt;br&gt;&lt;b&gt;7.2 minutes &amp;middot; $2.36&lt;/b&gt;&lt;br&gt;the worktree removed, the branch kept, the token handed back" vertex="1">
+          <mxGeometry height="170" width="460" x="560" y="1250" as="geometry" />
+        </mxCell>
+        <mxCell id="p7_e2" parent="1" style="whiteSpace=wrap;html=1;shape=tape;size=0.18;fillColor=default;strokeColor=default;fontColor=default;align=center;verticalAlign=middle;fontSize=11;" value="&lt;b&gt;the regression suite&lt;/b&gt;&lt;br&gt;30 tests at the first commit, &lt;b&gt;58 at the last&lt;/b&gt;&lt;br&gt;no model call, no quota, about a minute and a half&lt;br&gt;green at every checkpoint" vertex="1">
+          <mxGeometry height="170" width="460" x="1060" y="1250" as="geometry" />
+        </mxCell>
+        <mxCell id="p7_e3" parent="1" style="whiteSpace=wrap;html=1;shape=tape;size=0.18;fillColor=default;strokeColor=default;fontColor=default;align=center;verticalAlign=middle;fontSize=11;strokeWidth=3;" value="&lt;b&gt;three adversarial rounds, two codas&lt;/b&gt;&lt;br&gt;122 raw findings &amp;middot; 119 survived independent refutation&lt;br&gt;&lt;b&gt;fifteen of them critical&lt;/b&gt;, every one in the same component&lt;br&gt;&lt;i&gt;the deterministic half narrowed each round; the pattern-matching half produced a fresh bypass every round &amp;mdash; which is what &quot;depth, not boundary&quot; is a conclusion from&lt;/i&gt;" vertex="1">
+          <mxGeometry height="170" width="460" x="1560" y="1250" as="geometry" />
+        </mxCell>
+        <mxCell id="p7_e4" parent="1" style="whiteSpace=wrap;html=1;shape=tape;size=0.18;fillColor=default;strokeColor=default;fontColor=default;align=center;verticalAlign=middle;fontSize=11;" value="&lt;b&gt;two defects the first real night found that no review had&lt;/b&gt;&lt;br&gt;the push gate was silently skipped, because a tracked hook loses its execute bit on this mount&lt;br&gt;and the worker&#39;s own backlog filing was thrown away with the sandbox" vertex="1">
+          <mxGeometry height="170" width="460" x="2060" y="1250" as="geometry" />
+        </mxCell>
+        <mxCell id="p7_x1" edge="1" parent="1" source="p7_e3" target="p7_d3" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=open;endFill=0;fontSize=10;dashed=1;dashPattern=8 8;exitX=1;exitY=0.5;exitDx=0;exitDy=0;entryX=1;entryY=0.5;entryDx=0;entryDy=0;" value="">
+          <mxGeometry relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="2540" y="1335" />
+              <mxPoint x="2540" y="415" />
+            </Array>
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="p7_x2" edge="1" parent="1" source="p7_e4" target="p7_d11" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=open;endFill=0;fontSize=10;dashed=1;dashPattern=8 8;exitX=0.5;exitY=0;exitDx=0;exitDy=0;entryX=0.5;entryY=1;entryDx=0;entryDy=0;" value="">
+          <mxGeometry relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="2290" y="1220" />
+              <mxPoint x="1790" y="1220" />
+            </Array>
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="p7_x3" edge="1" parent="1" source="p7_e1" target="p7_d1" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=open;endFill=0;fontSize=10;dashed=1;dashPattern=8 8;exitX=0;exitY=0.5;exitDx=0;exitDy=0;entryX=0;entryY=0.5;entryDx=0;entryDy=0;" value="">
+          <mxGeometry relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="500" y="1335" />
+              <mxPoint x="500" y="415" />
+            </Array>
+          </mxGeometry>
+        </mxCell>
+      </root>
+    </mxGraphModel>
+  </diagram>
+</mxfile>

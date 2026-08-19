@@ -10,7 +10,8 @@ repeated here.
 
 | file | what it is |
 |---|---|
-| `heartbeat-01.drawio` | seven pages: deployment · actors and acts · one night end to end · the flag and the queue · the records · controls and the boundary · designed then built |
+| `heartbeat-02.drawio` | **current.** Same seven pages, with the labels fixed: an edge carries a verb, not a sentence. |
+| `heartbeat-01.drawio` | first cut. Kept whole. Its edge labels are sentences, which drawio renders unwrapped at the line's midpoint — so they run over the shapes at both ends. Legible as a record, not as a diagram. |
 
 Drawn against the standard as of `drawio@a30a4de` — theme-adaptive, so it reads in either app theme.
 When the standard revises a device, this file is re-passed to match rather than left on the old one.
@@ -25,6 +26,15 @@ When the standard revises a device, this file is re-passed to match rather than 
 - **Cut a new number** (`heartbeat-02.drawio`) when a state is worth re-opening beside the old one.
   Keep the old file whole.
 - **Compression stays off.**
+- **An edge label is a verb, not a sentence.** One to three words, ~17 characters, and under ten where
+  the line runs through a gutter. drawio draws the label unwrapped at the path's midpoint with nothing
+  behind it, so anything longer lies across whatever the midpoint happens to be over. Prose belongs in
+  the box at the end of the arrow — where it is already half-said, and where it wraps.
+- **Where a mark already reads, drop the label.** ER ends state their own cardinality; a derivation
+  arrow states provenance. A word on top of them is a second copy that can drift.
+- **Check it, don't eyeball it.** The failure is invisible in the XML and obvious in a print: place a
+  label rectangle at each edge's path midpoint and test it against every shape. Zero collisions before
+  a version is cut.
 
 ## Where the drawing stops
 
