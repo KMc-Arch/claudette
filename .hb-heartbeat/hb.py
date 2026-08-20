@@ -1,14 +1,19 @@
 #!/usr/bin/env python3
 """Heartbeat (HB) — nightly unattended backlog execution for claudette.
 
-    KILL SWITCH:  rm .hb-heartbeat/state/GO      (everything stops at the next tick)
+    KILL SWITCH:  rm .hb-heartbeat/state/GO      (all backlog runs stop at the next tick)
+                  NOTE: the DB keep-alive ping (keepalive()) is GO-independent by design and keeps
+                  firing after `rm GO`; disable it separately via cfg keepalive.enabled=false or
+                  `touch .hb-heartbeat/state/NO-KEEPALIVE`.
 
 Deterministic control plane. No model call happens in this file. The only process
 that ever talks to a model is the *worker* spawned by runner.py — inside a sandbox
 worktree, hard-rooted there, and it never touches the GO flag or the queues.
 
 CLI:
-    hb.py tick                      # Task Scheduler, every N min: read GO; maybe claim + run one item (in-process)
+    hb.py tick                      # Task Scheduler, every N min: keep-alive; read GO; maybe claim + run one item
+    hb.py run                       # SESSION-DRIVEN (apex-only): arm + process ONE item now + release; no scheduler
+    hb.py loop start|stop|status    # SESSION-DRIVEN (apex-only): detached `tick` every N s (default 3600); non-persistent
     hb.py window open|close         # Task Scheduler, twice nightly: issue / revoke GO, sweeps, nightly summary
     hb.py install [--dry-run]       # materialize ~outbox/~inbox (+ start.md) at every root in roots.db
     hb.py approve <ID> [--project P] [--priority N] [--model M]   # backlog section -> ~outbox/hb/<ID>.md
@@ -32,6 +37,7 @@ import json
 import os
 import re
 import shutil
+import signal
 import sqlite3
 import subprocess
 import sys
@@ -51,6 +57,10 @@ QUOTA = STATE / "quota.json"
 DIAG = STATE / "diag"
 LOG_DIR = STATE / "log"
 LOG = LOG_DIR / "hb.log"
+KEEPALIVE_STAMP = STATE / "last-keepalive"   # night_key of the last keep-alive attempt (once/night guard)
+NO_KEEPALIVE = STATE / "NO-KEEPALIVE"        # sentinel: `touch` it to disable the keep-alive without editing config
+LOOP_STATE = STATE / "loop.json"             # session-driven background ticker: pid + interval (see loop_*)
+LOOP_LOG = LOG_DIR / "loop.log"
 TEMPLATES = HB / "templates"
 ROOTS_DB = APEX / ".state" / "roots.db"
 
@@ -352,6 +362,36 @@ def outbox(root: Path) -> Path:
 
 def inbox(root: Path) -> Path:
     return root / "~inbox" / RECIPIENT
+
+
+def caller_root() -> Path | None:
+    """The nearest root: true ancestor of the CWD, per roots.db (apex + children). The deepest matching
+    root wins. None if the CWD is not under the apex at all."""
+    try:
+        cwd = Path.cwd().resolve()
+    except OSError:
+        return None
+    best = None
+    for r in roots():
+        rp = Path(r["abs_path"]).resolve()
+        if cwd == rp or rp in cwd.parents:
+            if best is None or len(str(rp)) > len(str(best)):
+                best = rp
+    return best
+
+
+def require_apex(cmd: str) -> None:
+    """Session-facing driver commands (`run`, `loop`) mutate the single apex-global control plane
+    (one GO / queue / quota / night ledger). Refuse to run them from a child project's context so the
+    apex-global effect is never mistaken for a per-project one. `tick`/`window` are exempt — the
+    scheduler invokes them from an arbitrary CWD."""
+    cr = caller_root()
+    if cr is None or cr != APEX.resolve():
+        sys.stderr.write(
+            f"hb: `{cmd}` must be run from the apex ({APEX.name}) context — HB is a single apex-global "
+            f"control plane (one GO / queue / quota). Current context: {cr or Path.cwd()}.\n"
+            f"    cd {APEX} and retry.\n")
+        raise SystemExit(3)
 
 
 def install(dry_run: bool = False) -> list[str]:
@@ -842,9 +882,42 @@ def touch_last_tick() -> None:
         pass
 
 
+def keepalive(cfg: dict) -> None:
+    """GO-independent DB keep-awake ping. Majel's live Supabase project (A/Archivist) is free-tier and
+    pauses after ~7 days idle; a nightly read-only `SELECT 1` (via the configured command) keeps it awake.
+
+    Runs at the TOP of every tick, BEFORE the GO/window/quota gates, so `rm GO` does NOT stop it (that is
+    the point — the DB must stay awake even when backlog automation is disarmed). At most one attempt per
+    night (guarded by KEEPALIVE_STAMP); the attempt is stamped up front so an unreachable/paused A does not
+    re-hammer every 5-minute tick. Off switch: cfg["keepalive"].enabled=false, or `touch state/NO-KEEPALIVE`.
+    Never raises — a keep-alive problem must never disturb the tick. NOTE: a data ping keeps A from pausing;
+    it cannot un-pause an already-paused project (that is a manual dashboard/management-API restore)."""
+    ka = cfg.get("keepalive") or {}
+    cmd = ka.get("command")
+    if not ka.get("enabled") or not cmd or NO_KEEPALIVE.exists():
+        return
+    try:
+        tonight = night_key()
+        if KEEPALIVE_STAMP.exists() and KEEPALIVE_STAMP.read_text(encoding="utf-8").strip() == tonight:
+            return
+        STATE.mkdir(parents=True, exist_ok=True)
+        write_atomic(KEEPALIVE_STAMP, tonight + "\n")   # stamp the attempt before running (bounded: 1/night)
+        timeout_s = int(ka.get("timeout_s", 20))
+        r = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout_s)
+        if r.returncode == 0:
+            log(f"keepalive: ok — {(r.stdout or '').strip()[:160]}")
+        else:
+            log(f"keepalive: FAILED rc={r.returncode} — {(r.stderr or r.stdout or '').strip()[:200]}")
+    except subprocess.TimeoutExpired:
+        log(f"keepalive: timed out after {ka.get('timeout_s', 20)}s")
+    except Exception as e:
+        log(f"keepalive: error {e!r}")
+
+
 def tick(cfg: dict) -> int:
     """Reads the flag and nothing else. Quiet when absent."""
     touch_last_tick()
+    keepalive(cfg)          # GO-independent DB keep-awake — before every gate; `rm GO` does not stop it
     d = read_flag()
     if d is None:
         return 0
@@ -901,6 +974,104 @@ def tick(cfg: dict) -> int:
     return 0
 
 
+# ── session-driven drivers (no scheduler): run / loop ────────────────
+#   Apex-only (require_apex). These let you drive HB from a session without native Task Scheduler.
+#   `run`  = one deliberate item now.  `loop` = a detached background ticker (keep-alive + run-if-armed).
+#   NON-PERSISTENT: a loop survives the terminal closing but dies on reboot/shutdown/WSL-down and never
+#   self-restarts — it is a while-you-work driver, not the unattended nightly scheduler.
+
+def run_once(cfg: dict) -> int:
+    """Manual one-shot: if GO is absent, arm a windowless one-item budget, process exactly ONE item under
+    the normal gates (quota / count_cap / near-close), then release. If a real window is already armed,
+    just advance its queue by one item. Refuses over a live inflight run."""
+    d = read_flag()
+    if d is not None and d.get("status") == "inflight":
+        print(f"hb run: a run is already in flight (item {d.get('item_id')}); refusing to double-arm", file=sys.stderr)
+        return 1
+    armed_here = d is None
+    if armed_here:
+        item_cap = int(cfg.get("item_cap_min", 90))
+        issue_flag(now_utc() + timedelta(minutes=item_cap + 5))   # one item + margin, so tick's near-close passes
+        write_night({"night": night_key(), "opened_at": iso(now_utc()), "closes_at": None,
+                     "count_cap": cfg.get("count_cap"), "runs": [], "notes": ["manual `hb run` one-shot"]})
+        log("hb run: armed a windowless one-shot")
+    try:
+        tick(cfg)
+    finally:
+        if armed_here and (read_flag() or {}).get("status") != "inflight":
+            remove_flag("hb run one-shot complete")     # leave an inflight corpse for the sweep, else clear
+    return 0
+
+
+def read_loop() -> dict:
+    try:
+        return json.loads(LOOP_STATE.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+
+
+def loop_alive(d: dict | None) -> bool:
+    return bool(d) and pid_alive(d.get("pid"), d.get("pid_start"))
+
+
+def loop_start(cfg: dict, interval_s: int) -> int:
+    """Spawn a detached background ticker: `hb.py tick` every interval_s, in its own session (survives the
+    terminal closing). Records pid/interval in LOOP_STATE. Refuses if one is already live."""
+    d = read_loop()
+    if loop_alive(d):
+        print(f"hb loop: already running (pid {d.get('pid')}, every {d.get('interval_s')}s since {d.get('started_at')})",
+              file=sys.stderr)
+        return 1
+    LOG_DIR.mkdir(parents=True, exist_ok=True)
+    # $1=python $2=hb.py $3=logfile $4=interval — passed as argv to avoid quoting the paths into the script
+    script = 'while true; do "$1" "$2" tick >> "$3" 2>&1; sleep "$4"; done'
+    proc = subprocess.Popen(
+        ["bash", "-c", script, "hb-loop", sys.executable, str(HB / "hb.py"), str(LOOP_LOG), str(interval_s)],
+        cwd=str(APEX), stdin=subprocess.DEVNULL,
+        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+        start_new_session=True, env=dict(os.environ),
+    )
+    proc._child_created = False   # fire-and-forget daemon: tracked by pid, not this Popen — silence its finalizer warning
+    write_atomic(LOOP_STATE, json.dumps(
+        {"pid": proc.pid, "pid_start": proc_start(proc.pid), "interval_s": interval_s,
+         "started_at": iso(now_utc())}, indent=2))
+    log(f"hb loop: started pid {proc.pid}, every {interval_s}s")
+    print(f"hb loop: started (pid {proc.pid}) — `hb.py tick` every {interval_s}s. Stop: `hb.py loop stop`.\n"
+          f"  NON-PERSISTENT: survives the terminal closing, but dies on reboot/shutdown and never self-restarts.")
+    return 0
+
+
+def loop_stop() -> int:
+    d = read_loop()
+    if not loop_alive(d):
+        LOOP_STATE.unlink(missing_ok=True)
+        print("hb loop: not running")
+        return 0
+    pid = int(d["pid"])
+    try:
+        os.killpg(os.getpgid(pid), signal.SIGTERM)   # the whole session group (bash loop + any child tick)
+    except (ProcessLookupError, PermissionError) as e:
+        log(f"hb loop: stop signal failed for pid {pid}: {e!r}")
+        try:
+            os.kill(pid, signal.SIGTERM)
+        except ProcessLookupError:
+            pass
+    LOOP_STATE.unlink(missing_ok=True)
+    log(f"hb loop: stopped pid {pid}")
+    print(f"hb loop: stopped (pid {pid})")
+    return 0
+
+
+def loop_status() -> str:
+    d = read_loop()
+    if loop_alive(d):
+        return (f"loop: running (pid {d.get('pid')}) — `tick` every {d.get('interval_s')}s "
+                f"since {d.get('started_at')}")
+    if d:
+        return f"loop: not running (stale record pid {d.get('pid')}); `loop stop` clears it"
+    return "loop: not running"
+
+
 # ── status / kill ────────────────────────────────────────────────────
 
 def status(cfg: dict) -> str:
@@ -922,6 +1093,7 @@ def status(cfg: dict) -> str:
                 lines.append(f"  inflight {p.stem} @{r['name']}")
     q = read_quota()
     lines.append(f"quota: {json.dumps(q.get('rate_limits')) if q else 'none'} @ {q.get('written_at') if q else '—'}")
+    lines.append(loop_status())
     return "\n".join(lines)
 
 
@@ -935,6 +1107,27 @@ def main(argv: list[str]) -> int:
     cmd, rest = argv[0], argv[1:]
     if cmd == "tick":
         return tick(cfg)
+    if cmd == "run":
+        require_apex("run")
+        return run_once(cfg)
+    if cmd == "loop":
+        require_apex("loop")
+        sub = rest[0] if rest else "status"
+        if sub == "start":
+            interval = cfg.get("loop_interval_s", 3600)
+            if "--interval" in rest:
+                j = rest.index("--interval")
+                if j + 1 < len(rest):
+                    try:
+                        interval = max(60, int(rest[j + 1]))     # floor 60s: guard a runaway tight loop
+                    except ValueError:
+                        print("usage: hb.py loop start [--interval SECONDS]", file=sys.stderr); return 2
+            return loop_start(cfg, int(interval))
+        if sub == "stop":
+            return loop_stop()
+        if sub == "status":
+            print(loop_status()); return 0
+        print("usage: hb.py loop start [--interval SECONDS] | stop | status", file=sys.stderr); return 2
     if cmd == "window":
         if rest[:1] == ["open"]:
             window_open(cfg, force="--force" in rest); return 0

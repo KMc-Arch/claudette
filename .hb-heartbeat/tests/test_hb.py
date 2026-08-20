@@ -9,6 +9,7 @@ import importlib
 import json
 import os
 import shutil
+import signal
 import subprocess
 import sys
 import tempfile
@@ -389,6 +390,123 @@ class TestTickWindow(Base):
         self.assertEqual(len(hb.read_night()["runs"]), 1)
 
 
+# ── keep-alive (GO-independent DB ping) ──────────────────────────────
+
+class TestKeepalive(Base):
+    def _ka_cfg(self, enabled=True, rc=0):
+        marker = hb.STATE / "ka-marker"
+        code = f"open(r'{marker}','a').write('x'); import sys; sys.exit({rc})"
+        cfg = dict(self.cfg)
+        cfg["keepalive"] = {"enabled": enabled, "command": [sys.executable, "-c", code], "timeout_s": 20}
+        return cfg, marker
+
+    def test_keepalive_fires_before_go_gate(self):
+        cfg, marker = self._ka_cfg()
+        self.assertIsNone(self.flag())                     # GO absent
+        self.assertEqual(hb.tick(cfg), 0)                  # tick no-ops on GO, but keepalive ran first
+        self.assertTrue(marker.exists(), "keepalive must run with GO absent (before the gate)")
+        self.assertIsNone(self.flag())                     # and it did not create/alter the flag
+
+    def test_keepalive_once_per_night(self):
+        cfg, marker = self._ka_cfg()
+        hb.tick(cfg); hb.tick(cfg); hb.tick(cfg)
+        self.assertEqual(marker.read_text(), "x", "at most one ping per night")
+        self.assertEqual(hb.KEEPALIVE_STAMP.read_text().strip(), hb.night_key())
+
+    def test_keepalive_sentinel_off_switch(self):
+        cfg, marker = self._ka_cfg()
+        hb.NO_KEEPALIVE.write_text("", encoding="utf-8")
+        hb.tick(cfg)
+        self.assertFalse(marker.exists(), "NO-KEEPALIVE sentinel disables the ping")
+
+    def test_keepalive_disabled_does_not_run(self):
+        cfg, marker = self._ka_cfg(enabled=False)
+        hb.tick(cfg)
+        self.assertFalse(marker.exists())
+
+    def test_keepalive_default_config_is_inert(self):
+        # the shareable config.json default must carry no command (site wiring lives in state/config.json)
+        self.assertFalse(self.cfg.get("keepalive", {}).get("enabled"))
+        self.assertIsNone(self.cfg.get("keepalive", {}).get("command"))
+        hb.tick(self.cfg)                                  # no command → nothing to run, no crash
+        self.assertFalse(hb.KEEPALIVE_STAMP.exists())
+
+    def test_keepalive_failure_is_bounded_and_silent_to_tick(self):
+        cfg, marker = self._ka_cfg(rc=1)                   # ping "fails"
+        self.assertEqual(hb.tick(cfg), 0)                  # tick unaffected
+        self.assertTrue(marker.exists())                   # it did attempt
+        self.assertEqual(hb.KEEPALIVE_STAMP.read_text().strip(), hb.night_key())  # stamped → won't re-hammer
+        hb.tick(cfg)                                       # same night: no second attempt despite the failure
+        self.assertEqual(marker.read_text(), "x")
+        self.assertIn("keepalive: FAILED", hb.LOG.read_text())
+
+
+# ── session-driven drivers: run / loop / apex-guard ──────────────────
+
+class TestSessionDrivers(Base):
+    def test_require_apex_passes_at_apex(self):
+        cwd0 = os.getcwd()
+        try:
+            os.chdir(self.apex)
+            hb.require_apex("run")                       # nearest root of apex == apex: no raise
+            self.assertEqual(hb.caller_root(), self.apex.resolve())
+        finally:
+            os.chdir(cwd0)
+
+    def test_require_apex_aborts_outside_apex(self):
+        cwd0 = os.getcwd()
+        outside = Path(tempfile.mkdtemp(prefix="hboutside-", dir=str(TMP_BASE)))
+        try:
+            os.chdir(outside)
+            self.assertIsNone(hb.caller_root())
+            with self.assertRaises(SystemExit) as cm:
+                hb.require_apex("loop")
+            self.assertEqual(cm.exception.code, 3)
+        finally:
+            os.chdir(cwd0)
+            shutil.rmtree(outside, ignore_errors=True)
+
+    def test_run_empty_queue_arms_and_releases(self):
+        self.assertIsNone(self.flag())
+        self.assertEqual(hb.run_once(self.cfg), 0)       # arm -> tick (no item) -> release
+        self.assertIsNone(self.flag(), "one-shot must leave GO absent")
+        self.assertEqual(len(hb.read_night().get("runs", [])), 0)
+
+    def test_run_processes_one_item_end_to_end(self):
+        self.s.approve()
+        rc = hb.run_once(self.cfg)
+        self.assertEqual(rc, 0)
+        self.assertEqual(len(hb.read_night()["runs"]), 1)   # exactly one item
+        self.assertIsNone(self.flag(), "one-shot released the flag")
+        self.assertTrue((hb.inbox(self.apex) / "BL-07" / "outcome.md").exists())
+
+    def test_run_refuses_over_inflight(self):
+        self.issue(); claim = hb.claim_flag(os.getpid())  # simulate a live run
+        self.assertEqual(claim["status"], "inflight")
+        self.assertEqual(hb.run_once(self.cfg), 1)        # refuse
+        self.assertEqual(self.flag()["status"], "inflight", "must not disturb the live flag")
+
+    def test_loop_lifecycle(self):
+        self.assertEqual(hb.loop_status(), "loop: not running")
+        self.assertEqual(hb.loop_stop(), 0)               # stop when none: graceful
+        pid = None
+        try:
+            self.assertEqual(hb.loop_start(self.cfg, 3600), 0)
+            d = hb.read_loop(); pid = d.get("pid")
+            self.assertTrue(hb.loop_alive(d), "loop child should be alive right after start")
+            self.assertIn("running", hb.loop_status())
+            self.assertEqual(hb.loop_start(self.cfg, 3600), 1, "refuse a second live loop")
+            self.assertEqual(hb.loop_stop(), 0)
+            self.assertFalse(hb.LOOP_STATE.exists())
+            self.assertEqual(hb.loop_status(), "loop: not running")
+        finally:
+            if pid:
+                try:
+                    os.killpg(os.getpgid(pid), signal.SIGKILL)
+                except (ProcessLookupError, PermissionError):
+                    pass
+
+
 # ── runner paths ─────────────────────────────────────────────────────
 
 class TestRunner(Base):
@@ -622,6 +740,8 @@ class TestRunner(Base):
         env = runner.worker_env(self.cfg, self.apex / ".hb-heartbeat" / "sandbox" / "X", "X", 60)
         keys = {env[f"GIT_CONFIG_KEY_{i}"]: env[f"GIT_CONFIG_VALUE_{i}"] for i in range(int(env["GIT_CONFIG_COUNT"]))}
         self.assertIn("user.name", keys); self.assertIn("user.email", keys); self.assertTrue(keys["user.name"])
+        # distinct autopilot name flags heartbeat commits vs the human's manual ones
+        self.assertEqual(keys["user.name"], "Heartbeat (autopilot)")
         r = subprocess.run(["git", "config", "--get", "user.email"], env=env, capture_output=True, text=True, cwd=str(self.apex))
         self.assertTrue(r.stdout.strip())
 

@@ -5,9 +5,12 @@ short-desc: Heartbeat — nightly unattended backlog execution (window → GO fl
 
 # Heartbeat (HB)
 
-> **KILL SWITCH: `rm .hb-heartbeat/state/GO`** — everything stops at the next tick (≤ 5 min). A running
+> **KILL SWITCH: `rm .hb-heartbeat/state/GO`** — all backlog runs stop at the next tick (≤ 5 min). A running
 > worker finishes its current item and cannot re-arm; nothing relaunches. Re-arm only by the window
 > detector at the next scheduled open (or `hb.py window open` by hand).
+> **Exception — the DB keep-alive is GO-independent** (`keepalive()` runs at the top of every tick, before
+> the GO gate) and keeps pinging after `rm GO`. Disable it separately: `keepalive.enabled=false` in
+> `state/config.json`, or `touch .hb-heartbeat/state/NO-KEEPALIVE`.
 
 Nightly, unattended, one item at a time: pop one **approved** item from a project's `~outbox/hb/`, work it on
 a branch in a throwaway worktree, push + open a PR (never merge), and drop an outcome in that project's
@@ -42,6 +45,26 @@ python3 .hb-heartbeat/hb.py install [--dry-run]                                 
 
 Morning review: `~inbox/hb/night-<date>.md` (always written, even for a quiet night) and `~inbox/hb/<ITEM>/outcome.md`
 (terminus + qa_result + branch + PR). Merge awake, by hand. Bad → prune the branch or re-approve with a better brief.
+
+## Session-driven (no scheduler)
+
+Drive HB from a session without registering Task Scheduler. **Apex-only** — both hard-abort (exit 3) from a child
+project's context (HB is one apex-global control plane: one GO / queue / quota / night ledger).
+
+```
+python3 .hb-heartbeat/hb.py run                                   # arm a windowless one-shot -> ONE item (quota/count_cap) -> release
+python3 .hb-heartbeat/hb.py loop start [--interval S]             # detached: `tick` every S seconds (default loop_interval_s = 3600)
+python3 .hb-heartbeat/hb.py loop status | stop                    # inspect / stop it (also shown by `hb.py status`)
+```
+
+- `run` processes exactly one item (foreground, deliberate); if a real window is already armed it just advances that
+  queue by one. It refuses over a live inflight run.
+- `loop` runs **`tick`** — keep-alive **+ process-one-only-if-armed**. So a stray/forgotten loop keeps Majel's DB awake
+  (the ping) but **cannot open a PR on its own**; to make the loop process backlog, arm a window (`window open --force`)
+  and its ticks run items under `count_cap`.
+- **Non-persistent:** a loop is detached (survives the terminal closing) but dies on reboot/shutdown/WSL-down and never
+  self-restarts. It is a *while-you-work* driver — for true unattended nightly runs, register Task Scheduler. For the
+  keep-alive alone, note A only pauses after ~7 days idle, so any session that ticks within a week suffices.
 
 ## Controls on the worker (what stops a 3am disaster)
 

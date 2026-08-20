@@ -122,9 +122,12 @@ def worker_env(cfg: dict, sandbox: Path, item_id: str, cap_s: int) -> dict:
     env["GIT_CONFIG_COUNT"] = "4"
     env["GIT_CONFIG_KEY_0"] = "credential.helper"; env["GIT_CONFIG_VALUE_0"] = ""
     env["GIT_CONFIG_KEY_1"] = "core.askPass"; env["GIT_CONFIG_VALUE_1"] = "/bin/false"
-    # identity: the global config is off, so give the worker the project's committer identity explicitly
-    name = _git(hb.APEX, "config", "user.name").stdout.strip() or "Heartbeat worker"
-    email = _git(hb.APEX, "config", "user.email").stdout.strip() or "heartbeat@localhost"
+    # identity: the global config is off, so set the worker's committer identity explicitly. A distinct NAME
+    # flags autopilot commits in git log/blame; the EMAIL inherits the project's so GitHub still attributes
+    # them to the account. Both overridable via cfg["worker_identity"] {name, email}; email null = inherit apex.
+    ident = cfg.get("worker_identity") or {}
+    name = ident.get("name") or "Heartbeat (autopilot)"
+    email = ident.get("email") or _git(hb.APEX, "config", "user.email").stdout.strip() or "heartbeat@localhost"
     env["GIT_CONFIG_KEY_2"] = "user.name"; env["GIT_CONFIG_VALUE_2"] = name
     env["GIT_CONFIG_KEY_3"] = "user.email"; env["GIT_CONFIG_VALUE_3"] = email
     return env

@@ -1,5 +1,5 @@
 {
-  "_doc": "Heartbeat defaults. Instance overrides: .hb-heartbeat/state/config.json (untracked), same keys, shallow-merged. Read by hb.py/runner.py: window.open+close (in-window check, close computation), item_cap_min (ceiling; per-item time_cap_min may only lower it; the tick's near-close refusal uses it), count_cap, attempts_max, model, qa, pr, base_branch, branch_prefix, sandbox_rel, stale_branch_days, quota.*, worker_web (WebFetch/WebSearch in the sandbox; default false), extra_path, python. NOTE window.open/close and item_cap_min are ALSO baked into the Task Scheduler registration (win/register-tasks.ps1 -Open/-Close/-ItemCapMin): keep them equal and re-register when you change either. INFORMATIONAL ONLY (the schedule lives in win/register-tasks.ps1 parameters \u2014 re-register if you change them): tick_minutes, wsl_distro, wsl_user.",
+  "_doc": "Heartbeat defaults. Instance overrides: .hb-heartbeat/state/config.json (untracked), same keys, shallow-merged. Read by hb.py/runner.py: window.open+close (in-window check, close computation), item_cap_min (ceiling; per-item time_cap_min may only lower it; the tick's near-close refusal uses it), count_cap, attempts_max, model, qa, pr, base_branch, branch_prefix, sandbox_rel, stale_branch_days, quota.*, worker_web (WebFetch/WebSearch in the sandbox; default false), loop_interval_s (default seconds between ticks for the session-driven `hb.py loop`; --interval overrides, floor 60), worker_identity (worker commit author {name, email}; distinct name flags autopilot commits, email null inherits apex user.email), keepalive (GO-independent DB keep-awake ping {enabled, command, timeout_s} — see its _doc), extra_path, python. NOTE window.open/close and item_cap_min are ALSO baked into the Task Scheduler registration (win/register-tasks.ps1 -Open/-Close/-ItemCapMin): keep them equal and re-register when you change either. INFORMATIONAL ONLY (the schedule lives in win/register-tasks.ps1 parameters \u2014 re-register if you change them): tick_minutes, wsl_distro, wsl_user.",
   "window": {
     "open": "00:30",
     "close": "06:30"
@@ -30,5 +30,16 @@
     "/bin"
   ],
   "python": "python3",
-  "worker_web": false
+  "worker_web": false,
+  "loop_interval_s": 3600,
+  "worker_identity": {
+    "name": "Heartbeat (autopilot)",
+    "email": null
+  },
+  "keepalive": {
+    "_doc": "GO-independent DB keep-awake ping (keepalive() in hb.py): runs at most once/night at the TOP of every tick, BEFORE the GO/window/quota gates, so `rm GO` does NOT stop it. Prevents a free-tier Supabase project from pausing after ~7 days idle (it cannot un-pause an already-paused one). Off: enabled=false, or `touch state/NO-KEEPALIVE`. command = argv list run via subprocess (no shell), bounded by timeout_s. This shareable default is INERT (enabled=false, command=null) so no site path travels; the instance wires the real command in state/config.json (untracked).",
+    "enabled": false,
+    "command": null,
+    "timeout_s": 20
+  }
 }
