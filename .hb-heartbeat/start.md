@@ -57,8 +57,10 @@ python3 .hb-heartbeat/hb.py loop start [--interval S]             # detached: `t
 python3 .hb-heartbeat/hb.py loop status | stop                    # inspect / stop it (also shown by `hb.py status`)
 ```
 
-- `run` processes exactly one item (foreground, deliberate); if a real window is already armed it just advances that
-  queue by one. It refuses over a live inflight run.
+- `run` processes one item (foreground, deliberate) and prints whether it did; when armed by GO-absent it
+  bypasses the scheduler's per-night `count_cap` (a deliberate manual action). If a REAL window is already
+  armed it advances that queue by one under the window's own cap (so it can no-op if the cap is already
+  reached — it says so). It self-heals a dead inflight corpse (reap) and refuses only over a *live* inflight run.
 - `loop` runs **`tick`** — keep-alive **+ process-one-only-if-armed**. So a stray/forgotten loop keeps Majel's DB awake
   (the ping) but **cannot open a PR on its own**; to make the loop process backlog, arm a window (`window open --force`)
   and its ticks run items under `count_cap`.

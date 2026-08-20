@@ -365,19 +365,26 @@ def inbox(root: Path) -> Path:
 
 
 def caller_root() -> Path | None:
-    """The nearest root: true ancestor of the CWD, per roots.db (apex + children). The deepest matching
-    root wins. None if the CWD is not under the apex at all."""
+    """The nearest context root at/above the CWD, found by walking the CLAUDE.md chain — NOT roots.db, which
+    is a rebuildable cache that is absent on a fresh checkout / after `purge all` / before cboot (relying on
+    it made this guard fail OPEN: roots() fell back to apex-only, so any child subtree matched the apex).
+    A directory bearing a CLAUDE.md is a root boundary; the nearest one wins. Fails CLOSED — a stray
+    intermediate CLAUDE.md aborts a driver rather than waving a child through. None if the CWD is outside
+    the apex tree entirely."""
     try:
         cwd = Path.cwd().resolve()
     except OSError:
         return None
-    best = None
-    for r in roots():
-        rp = Path(r["abs_path"]).resolve()
-        if cwd == rp or rp in cwd.parents:
-            if best is None or len(str(rp)) > len(str(best)):
-                best = rp
-    return best
+    apex = APEX.resolve()
+    if cwd != apex and apex not in cwd.parents:
+        return None                          # outside the apex tree
+    p = cwd
+    while True:
+        if (p / "CLAUDE.md").is_file():
+            return p                         # nearest CLAUDE.md-bearing dir = nearest root
+        if p == apex:
+            return apex                      # apex always terminates the walk
+        p = p.parent
 
 
 def require_apex(cmd: str) -> None:
@@ -889,35 +896,60 @@ def keepalive(cfg: dict) -> None:
     Runs at the TOP of every tick, BEFORE the GO/window/quota gates, so `rm GO` does NOT stop it (that is
     the point — the DB must stay awake even when backlog automation is disarmed). At most one attempt per
     night (guarded by KEEPALIVE_STAMP); the attempt is stamped up front so an unreachable/paused A does not
-    re-hammer every 5-minute tick. Off switch: cfg["keepalive"].enabled=false, or `touch state/NO-KEEPALIVE`.
-    Never raises — a keep-alive problem must never disturb the tick. NOTE: a data ping keeps A from pausing;
-    it cannot un-pause an already-paused project (that is a manual dashboard/management-API restore)."""
+    re-hammer every 5-minute tick. The stamp records the OUTCOME (`<night> ok|FAILED`) so `hb status` surfaces
+    a misconfigured or failing ping instead of it failing silently until A pauses. Off switch:
+    cfg["keepalive"].enabled=false, or `touch state/NO-KEEPALIVE`. Never raises — a keep-alive problem must
+    never disturb the tick. NOTE: a data ping keeps A from pausing; it cannot un-pause an already-paused
+    project (that is a manual dashboard/management-API restore)."""
     ka = cfg.get("keepalive") or {}
     cmd = ka.get("command")
     if not ka.get("enabled") or not cmd or NO_KEEPALIVE.exists():
         return
+    tonight = night_key()
     try:
-        tonight = night_key()
-        if KEEPALIVE_STAMP.exists() and KEEPALIVE_STAMP.read_text(encoding="utf-8").strip() == tonight:
-            return
-        STATE.mkdir(parents=True, exist_ok=True)
-        write_atomic(KEEPALIVE_STAMP, tonight + "\n")   # stamp the attempt before running (bounded: 1/night)
-        timeout_s = int(ka.get("timeout_s", 20))
+        prev = KEEPALIVE_STAMP.read_text(encoding="utf-8").split()
+    except OSError:
+        prev = []
+    if prev[:1] == [tonight]:
+        return                              # already attempted this night (any outcome) — bounded 1/night
+
+    def _stamp(outcome: str) -> None:
+        try:
+            STATE.mkdir(parents=True, exist_ok=True)
+            write_atomic(KEEPALIVE_STAMP, f"{tonight} {outcome}\n")
+        except OSError:
+            pass
+
+    _stamp("attempt")                       # stamp before running so a hard kill can't re-hammer; outcome overwrites it
+    try:
+        timeout_s = int(ka.get("timeout_s") or 20)     # tolerate null / bad config without a TypeError
+        if timeout_s <= 0:
+            timeout_s = 20
+    except (TypeError, ValueError):
+        timeout_s = 20
+    try:
         r = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout_s)
         if r.returncode == 0:
-            log(f"keepalive: ok — {(r.stdout or '').strip()[:160]}")
+            _stamp("ok"); log(f"keepalive: ok — {(r.stdout or '').strip()[:160]}")
         else:
-            log(f"keepalive: FAILED rc={r.returncode} — {(r.stderr or r.stdout or '').strip()[:200]}")
+            _stamp("FAILED"); log(f"keepalive: FAILED rc={r.returncode} — {(r.stderr or r.stdout or '').strip()[:200]}")
     except subprocess.TimeoutExpired:
-        log(f"keepalive: timed out after {ka.get('timeout_s', 20)}s")
+        _stamp("FAILED"); log(f"keepalive: timed out after {timeout_s}s")
     except Exception as e:
-        log(f"keepalive: error {e!r}")
+        _stamp("FAILED"); log(f"keepalive: error {e!r}")
 
 
-def tick(cfg: dict) -> int:
-    """Reads the flag and nothing else. Quiet when absent."""
+def tick(cfg: dict, reap: bool = False, ignore_count_cap: bool = False) -> int:
+    """Reads the flag and nothing else. Quiet when absent.
+
+    `reap` (session/loop mode): first reap a DEAD inflight corpse. The scheduler defers reaping to
+    window_close, but no-scheduler run/loop have no window_close, so they must self-heal or one crash wedges
+    HB. `ignore_count_cap` lets a deliberate `hb run` process one item past the scheduler's per-night cap.
+    Both default off so the scheduler's `tick` behavior is byte-for-byte unchanged."""
     touch_last_tick()
     keepalive(cfg)          # GO-independent DB keep-awake — before every gate; `rm GO` does not stop it
+    if reap:
+        reap_dead_inflight(cfg)
     d = read_flag()
     if d is None:
         return 0
@@ -937,7 +969,7 @@ def tick(cfg: dict) -> int:
         return 0
     n = read_night()
     cap = int(cfg.get("count_cap", 1))
-    if len(n.get("runs", [])) >= cap:
+    if not ignore_count_cap and len(n.get("runs", [])) >= cap:
         if not n.get("cap_logged"):
             log(f"count cap {cap} reached; not spawning again tonight")
             n["cap_logged"] = True; write_night(n)
@@ -980,26 +1012,58 @@ def tick(cfg: dict) -> int:
 #   NON-PERSISTENT: a loop survives the terminal closing but dies on reboot/shutdown/WSL-down and never
 #   self-restarts — it is a while-you-work driver, not the unattended nightly scheduler.
 
-def run_once(cfg: dict) -> int:
-    """Manual one-shot: if GO is absent, arm a windowless one-item budget, process exactly ONE item under
-    the normal gates (quota / count_cap / near-close), then release. If a real window is already armed,
-    just advance its queue by one item. Refuses over a live inflight run."""
+def reap_dead_inflight(cfg: dict) -> bool:
+    """If GO is inflight with a DEAD pid, reap it in-band: record the corpse, return the item to the queue
+    (orphan_sweep, honoring attempts_max), and clear GO. The scheduler defers this to window_close; the
+    session drivers (run/loop) have no window_close, so without this one worker crash wedges HB — `hb run`
+    would refuse forever on the stale inflight and the loop would idle. Returns True iff it reaped."""
     d = read_flag()
-    if d is not None and d.get("status") == "inflight":
+    if not d or d.get("status") != "inflight" or flag_alive(d):
+        return False
+    log(f"reap: dead pid {d.get('pid')} on inflight flag (item {d.get('item_id')}); sweeping (session-driven)")
+    corpse(d, cfg)
+    orphan_sweep(cfg)
+    remove_flag("reaped dead inflight corpse (session-driven)")
+    return True
+
+
+def run_once(cfg: dict) -> int:
+    """Manual one-shot. Self-heals first (reap a dead inflight corpse), then: if GO is absent, arm a
+    windowless one-item budget and process exactly ONE item — past the scheduler's per-night count_cap, since
+    this is a deliberate user action — then release. If a REAL window is already armed, advance its queue by
+    one item under its own cap (no ledger reset, no override). Refuses only over a LIVE inflight run. Prints
+    what it did so a no-op is never silent."""
+    reap_dead_inflight(cfg)
+    d = read_flag()
+    if d is not None and d.get("status") == "inflight":        # survived the reap ⇒ a LIVE run
         print(f"hb run: a run is already in flight (item {d.get('item_id')}); refusing to double-arm", file=sys.stderr)
         return 1
     armed_here = d is None
     if armed_here:
         item_cap = int(cfg.get("item_cap_min", 90))
         issue_flag(now_utc() + timedelta(minutes=item_cap + 5))   # one item + margin, so tick's near-close passes
-        write_night({"night": night_key(), "opened_at": iso(now_utc()), "closes_at": None,
-                     "count_cap": cfg.get("count_cap"), "runs": [], "notes": ["manual `hb run` one-shot"]})
+        if read_night().get("night") != night_key():
+            # only start a fresh ledger when none exists for tonight; never clobber a scheduled window's
+            # record (its runs/corpses feed the morning summary)
+            write_night({"night": night_key(), "opened_at": iso(now_utc()), "closes_at": None,
+                         "count_cap": cfg.get("count_cap"), "runs": [], "notes": ["manual `hb run` one-shot"]})
         log("hb run: armed a windowless one-shot")
+    before = len(read_night().get("runs", []))
+    crashed = False
     try:
-        tick(cfg)
+        tick(cfg, ignore_count_cap=armed_here)     # a deliberate manual run bypasses the scheduler's night cap
+    except Exception as e:
+        crashed = True
+        print(f"hb run: the item crashed ({e!r}); left as a corpse — re-run `hb run` to reap and retry", file=sys.stderr)
     finally:
         if armed_here and (read_flag() or {}).get("status") != "inflight":
-            remove_flag("hb run one-shot complete")     # leave an inflight corpse for the sweep, else clear
+            remove_flag("hb run one-shot complete")     # leave an inflight corpse for the next reap, else clear
+    if crashed:
+        return 1
+    if len(read_night().get("runs", [])) > before:
+        print("hb run: processed 1 item")
+    else:
+        print("hb run: no item processed (queue empty, quota exhausted, or — with a window already armed — count cap reached)")
     return 0
 
 
@@ -1023,15 +1087,18 @@ def loop_start(cfg: dict, interval_s: int) -> int:
               file=sys.stderr)
         return 1
     LOG_DIR.mkdir(parents=True, exist_ok=True)
-    # $1=python $2=hb.py $3=logfile $4=interval — passed as argv to avoid quoting the paths into the script
-    script = 'while true; do "$1" "$2" tick >> "$3" 2>&1; sleep "$4"; done'
+    # $1=python $2=hb.py $3=logfile $4=interval — passed as argv to avoid quoting the paths into the script.
+    # `tick --reap` (not bare tick): with no window_close in this mode, the loop must self-heal a dead
+    # inflight corpse each tick, else one crash idles it permanently.
+    script = 'while true; do "$1" "$2" tick --reap >> "$3" 2>&1; sleep "$4"; done'
     proc = subprocess.Popen(
         ["bash", "-c", script, "hb-loop", sys.executable, str(HB / "hb.py"), str(LOOP_LOG), str(interval_s)],
         cwd=str(APEX), stdin=subprocess.DEVNULL,
         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
         start_new_session=True, env=dict(os.environ),
     )
-    proc._child_created = False   # fire-and-forget daemon: tracked by pid, not this Popen — silence its finalizer warning
+    if hasattr(proc, "_child_created"):
+        proc._child_created = False   # fire-and-forget daemon: tracked by pid, not this Popen — silence the finalizer warning (best-effort across CPython versions)
     write_atomic(LOOP_STATE, json.dumps(
         {"pid": proc.pid, "pid_start": proc_start(proc.pid), "interval_s": interval_s,
          "started_at": iso(now_utc())}, indent=2))
@@ -1048,13 +1115,20 @@ def loop_stop() -> int:
         print("hb loop: not running")
         return 0
     pid = int(d["pid"])
+    f = read_flag()
+    if f and f.get("status") == "inflight" and flag_alive(f):
+        # loop_stop is a hard stop (unlike `rm GO`, which lets a worker finish): warn that an in-flight item
+        # will be interrupted and left as a reapable corpse (the next `hb run`/loop tick --reap reclaims it).
+        print(f"hb loop: WARNING an item is in flight (item {f.get('item_id')}, pid {f.get('pid')}); stopping the "
+              f"loop interrupts it and leaves a corpse — `hb run` reaps it, or `rm GO` to let it finish instead.",
+              file=sys.stderr)
     try:
         os.killpg(os.getpgid(pid), signal.SIGTERM)   # the whole session group (bash loop + any child tick)
     except (ProcessLookupError, PermissionError) as e:
         log(f"hb loop: stop signal failed for pid {pid}: {e!r}")
         try:
             os.kill(pid, signal.SIGTERM)
-        except ProcessLookupError:
+        except (ProcessLookupError, PermissionError):
             pass
     LOOP_STATE.unlink(missing_ok=True)
     log(f"hb loop: stopped pid {pid}")
@@ -1093,6 +1167,12 @@ def status(cfg: dict) -> str:
                 lines.append(f"  inflight {p.stem} @{r['name']}")
     q = read_quota()
     lines.append(f"quota: {json.dumps(q.get('rate_limits')) if q else 'none'} @ {q.get('written_at') if q else '—'}")
+    try:
+        ks = KEEPALIVE_STAMP.read_text(encoding="utf-8").split()
+        if ks:
+            lines.append(f"keepalive: last {ks[0]} {ks[1] if len(ks) > 1 else '?'}")
+    except OSError:
+        pass
     lines.append(loop_status())
     return "\n".join(lines)
 
@@ -1106,7 +1186,7 @@ def main(argv: list[str]) -> int:
     cfg = load_config()
     cmd, rest = argv[0], argv[1:]
     if cmd == "tick":
-        return tick(cfg)
+        return tick(cfg, reap="--reap" in rest)
     if cmd == "run":
         require_apex("run")
         return run_once(cfg)
@@ -1114,15 +1194,16 @@ def main(argv: list[str]) -> int:
         require_apex("loop")
         sub = rest[0] if rest else "status"
         if sub == "start":
-            interval = cfg.get("loop_interval_s", 3600)
+            interval = cfg.get("loop_interval_s", 3600)     # config default OR --interval — both floored below
             if "--interval" in rest:
                 j = rest.index("--interval")
-                if j + 1 < len(rest):
-                    try:
-                        interval = max(60, int(rest[j + 1]))     # floor 60s: guard a runaway tight loop
-                    except ValueError:
-                        print("usage: hb.py loop start [--interval SECONDS]", file=sys.stderr); return 2
-            return loop_start(cfg, int(interval))
+                interval = rest[j + 1] if j + 1 < len(rest) else None
+            try:
+                interval = max(60, int(interval))            # floor 60s on BOTH paths: guard a runaway tight loop
+            except (TypeError, ValueError):
+                print("usage: hb.py loop start [--interval SECONDS]  (needs a positive integer; "
+                      "check config loop_interval_s)", file=sys.stderr); return 2
+            return loop_start(cfg, interval)
         if sub == "stop":
             return loop_stop()
         if sub == "status":

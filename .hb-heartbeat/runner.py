@@ -108,7 +108,9 @@ def worker_env(cfg: dict, sandbox: Path, item_id: str, cap_s: int) -> dict:
     env["HB_SANDBOX"] = str(sandbox)
     env["HB_APEX_ALIASES"] = ":".join(apex_aliases())
     for k in ("GH_TOKEN", "GITHUB_TOKEN", "GH_ENTERPRISE_TOKEN", "GIT_ASKPASS", "SSH_ASKPASS", "SSH_AUTH_SOCK",
-              "GIT_SSH", "GIT_SSH_COMMAND"):
+              "GIT_SSH", "GIT_SSH_COMMAND",
+              # ambient author/committer identity would override the GIT_CONFIG-injected "Heartbeat (autopilot)"
+              "GIT_AUTHOR_NAME", "GIT_AUTHOR_EMAIL", "GIT_COMMITTER_NAME", "GIT_COMMITTER_EMAIL", "EMAIL"):
         env.pop(k, None)
     empty_gh = sandbox / RESULT_REL.parent / "gh-empty"
     empty_gh.mkdir(parents=True, exist_ok=True)

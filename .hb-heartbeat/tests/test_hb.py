@@ -411,7 +411,18 @@ class TestKeepalive(Base):
         cfg, marker = self._ka_cfg()
         hb.tick(cfg); hb.tick(cfg); hb.tick(cfg)
         self.assertEqual(marker.read_text(), "x", "at most one ping per night")
-        self.assertEqual(hb.KEEPALIVE_STAMP.read_text().strip(), hb.night_key())
+        self.assertEqual(hb.KEEPALIVE_STAMP.read_text().split()[0], hb.night_key())
+
+    def test_keepalive_stamp_records_outcome_and_status(self):
+        cfg, marker = self._ka_cfg(rc=0)
+        hb.tick(cfg)
+        self.assertEqual(hb.KEEPALIVE_STAMP.read_text().split(), [hb.night_key(), "ok"])
+        self.assertIn(f"keepalive: last {hb.night_key()} ok", hb.status(cfg))
+        # a bad timeout_s must not TypeError past the stamp (finding-9 hardening)
+        cfg2, _ = self._ka_cfg(rc=0); cfg2["keepalive"]["timeout_s"] = None
+        hb.KEEPALIVE_STAMP.unlink()
+        hb.tick(cfg2)                                       # must not raise
+        self.assertEqual(hb.KEEPALIVE_STAMP.read_text().split()[1], "ok")
 
     def test_keepalive_sentinel_off_switch(self):
         cfg, marker = self._ka_cfg()
@@ -435,7 +446,7 @@ class TestKeepalive(Base):
         cfg, marker = self._ka_cfg(rc=1)                   # ping "fails"
         self.assertEqual(hb.tick(cfg), 0)                  # tick unaffected
         self.assertTrue(marker.exists())                   # it did attempt
-        self.assertEqual(hb.KEEPALIVE_STAMP.read_text().strip(), hb.night_key())  # stamped → won't re-hammer
+        self.assertEqual(hb.KEEPALIVE_STAMP.read_text().split(), [hb.night_key(), "FAILED"])  # stamped w/ outcome
         hb.tick(cfg)                                       # same night: no second attempt despite the failure
         self.assertEqual(marker.read_text(), "x")
         self.assertIn("keepalive: FAILED", hb.LOG.read_text())
@@ -471,6 +482,8 @@ class TestSessionDrivers(Base):
         self.assertEqual(hb.run_once(self.cfg), 0)       # arm -> tick (no item) -> release
         self.assertIsNone(self.flag(), "one-shot must leave GO absent")
         self.assertEqual(len(hb.read_night().get("runs", [])), 0)
+        # non-vacuous (finding-10): a no-op run_once would not have logged the arm
+        self.assertIn("armed a windowless one-shot", hb.LOG.read_text())
 
     def test_run_processes_one_item_end_to_end(self):
         self.s.approve()
@@ -485,6 +498,76 @@ class TestSessionDrivers(Base):
         self.assertEqual(claim["status"], "inflight")
         self.assertEqual(hb.run_once(self.cfg), 1)        # refuse
         self.assertEqual(self.flag()["status"], "inflight", "must not disturb the live flag")
+
+    def test_require_apex_aborts_from_child_without_rootsdb(self):
+        # finding-3: a child context (own CLAUDE.md) under apex, roots.db ABSENT, must still hard-abort
+        child = self.apex / "ChildProj" / "deep"; child.mkdir(parents=True)
+        (self.apex / "ChildProj" / "CLAUDE.md").write_text("---\nroot: true\n---\n", encoding="utf-8")
+        self.assertFalse(hb.ROOTS_DB.exists(), "precondition: no roots.db cache")
+        cwd0 = os.getcwd()
+        try:
+            os.chdir(child)
+            self.assertEqual(hb.caller_root(), (self.apex / "ChildProj").resolve())
+            with self.assertRaises(SystemExit) as cm:
+                hb.require_apex("run")
+            self.assertEqual(cm.exception.code, 3)
+        finally:
+            os.chdir(cwd0)
+
+    def test_reap_dead_inflight_records_corpse_and_clears(self):
+        # finding-1/4/11: session mode must self-heal a dead inflight corpse (no window_close to do it)
+        self.issue(); hb.write_night({"night": hb.night_key(), "runs": []})
+        hb.claim_flag(pid=4999999)                          # GO -> inflight with a DEAD pid
+        self.assertEqual(self.flag()["status"], "inflight")
+        self.assertTrue(hb.reap_dead_inflight(self.cfg))
+        self.assertIsNone(self.flag(), "GO cleared after reap")
+        self.assertTrue(list(hb.DIAG.glob("*corpse*")), "corpse recorded")
+        self.assertFalse(hb.reap_dead_inflight(self.cfg), "no-op when nothing to reap")
+
+    def test_run_self_heals_dead_inflight_instead_of_wedging(self):
+        # finding-1: `hb run` must NOT refuse forever on a dead corpse (contrast test_run_refuses_over_inflight)
+        self.issue(); hb.write_night({"night": hb.night_key(), "runs": []})
+        hb.claim_flag(pid=4999999)                          # dead inflight corpse
+        self.assertEqual(hb.run_once(self.cfg), 0, "reaps + proceeds, does not refuse")
+        self.assertTrue(list(hb.DIAG.glob("*corpse*")))
+        self.assertIsNone(self.flag())
+
+    def test_run_preserves_same_night_ledger(self):
+        # finding-2/8: the armed one-shot must not clobber a scheduled window's ledger for tonight
+        hb.write_night({"night": hb.night_key(), "runs": [{"item_id": "BL-99", "terminus": "converged"}],
+                        "corpses": [{"item_id": "BL-98"}], "closed": True})
+        self.assertIsNone(self.flag())
+        hb.run_once(self.cfg)                               # empty queue, armed one-shot
+        n = hb.read_night()
+        self.assertEqual([r["item_id"] for r in n["runs"]], ["BL-99"], "prior run preserved")
+        self.assertEqual(len(n.get("corpses", [])), 1, "corpse record preserved")
+
+    def test_run_bypasses_count_cap_when_armed(self):
+        # finding-7: a deliberate `hb run` processes one item past the scheduler's per-night cap
+        hb.write_night({"night": hb.night_key(), "count_cap": 1,
+                        "runs": [{"item_id": "BL-99", "terminus": "converged"}]})   # cap already reached
+        self.s.approve()
+        hb.run_once(self.cfg)
+        ids = [r.get("item_id") for r in hb.read_night()["runs"]]
+        self.assertIn("BL-07", ids, "manual run processed despite count_cap reached")
+        self.assertEqual(len(ids), 2)
+
+    def test_loop_interval_floored_from_config_default(self):
+        # finding-6: a bad config default must be floored on the no-`--interval` path too
+        (hb.STATE / "config.json").write_text('{"loop_interval_s": 0}', encoding="utf-8")
+        cwd0 = os.getcwd(); pid = None
+        try:
+            os.chdir(self.apex)
+            self.assertEqual(hb.main(["loop", "start"]), 0)
+            d = hb.read_loop(); pid = d.get("pid")
+            self.assertEqual(d.get("interval_s"), 60, "loop_interval_s=0 floored to 60")
+        finally:
+            os.chdir(cwd0)
+            if pid:
+                try: os.killpg(os.getpgid(pid), signal.SIGKILL)
+                except (ProcessLookupError, PermissionError): pass
+            hb.LOOP_STATE.unlink(missing_ok=True)
+            (hb.STATE / "config.json").unlink(missing_ok=True)
 
     def test_loop_lifecycle(self):
         self.assertEqual(hb.loop_status(), "loop: not running")
