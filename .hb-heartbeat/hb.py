@@ -198,7 +198,7 @@ def flag_alive(d: dict | None) -> bool:
 
 def read_flag() -> dict | None:
     try:
-        text = GO.read_text(encoding="utf-8")
+        text = GO.read_text(encoding="utf-8", errors="replace")   # a corrupt (non-UTF-8) GO must not crash the tick
     except FileNotFoundError:
         return None
     try:
@@ -311,7 +311,7 @@ def remove_flag(reason: str) -> None:
 
 def read_night() -> dict:
     try:
-        return json.loads(NIGHT.read_text(encoding="utf-8"))
+        return json.loads(NIGHT.read_text(encoding="utf-8", errors="replace"))
     except (OSError, json.JSONDecodeError):
         return {}
 
@@ -836,7 +836,7 @@ def stale_branches(cfg: dict) -> list[str]:
 
 def read_quota() -> dict:
     try:
-        return json.loads(QUOTA.read_text(encoding="utf-8"))
+        return json.loads(QUOTA.read_text(encoding="utf-8", errors="replace"))
     except (OSError, json.JSONDecodeError):
         return {}
 
@@ -1078,7 +1078,7 @@ def run_once(cfg: dict) -> int:
 
 def read_loop() -> dict:
     try:
-        return json.loads(LOOP_STATE.read_text(encoding="utf-8"))
+        return json.loads(LOOP_STATE.read_text(encoding="utf-8", errors="replace"))
     except (OSError, json.JSONDecodeError):
         return {}
 

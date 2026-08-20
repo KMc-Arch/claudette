@@ -250,6 +250,19 @@ class TestTickWindow(Base):
         hb.issue_flag(hb.now_utc() - timedelta(minutes=1))
         hb.tick(self.cfg); self.assertIsNone(self.flag())
 
+    def test_corrupt_state_files_do_not_crash_tick_or_status(self):
+        # coda: a non-UTF-8 GO / night / quota / loop state file must not crash tick() or status()
+        hb.STATE.mkdir(parents=True, exist_ok=True)
+        hb.GO.write_bytes(b'\xff\xfe status: go \x80')
+        hb.NIGHT.write_bytes(b'\xff\xfe{bad}\x80')
+        hb.QUOTA.write_bytes(b'\xff\xfe q \x80')
+        hb.LOOP_STATE.write_bytes(b'\xff\xfe l \x80')
+        self.assertEqual(hb.tick(self.cfg), 0)      # must not raise (corrupt GO → treated as non-go, ignored)
+        hb.status(self.cfg)                          # must not raise
+        self.assertEqual(hb.read_night(), {})        # corrupt json → {}
+        self.assertEqual(hb.read_quota(), {})
+        self.assertEqual(hb.read_loop(), {})
+
     def test_tick_near_close_refuses(self):
         self.s.approve()
         hb.issue_flag(hb.now_utc() + timedelta(minutes=10))     # cap 90 > 10 left
