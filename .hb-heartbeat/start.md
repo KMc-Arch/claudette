@@ -28,7 +28,7 @@ sandboxed *worker* and never touches the flag or the queues.
 | `hb-guard.sh` / `hb-guard.py` | sandbox-only PreToolUse(Bash) hook: live-tree path containment, git/gh allowlists, wrapper peeling, credential tokens |
 | `templates/` | `~outbox/start.md` (**item frontmatter spec**), `~inbox/start.md`, `item.md` — materialized to every root by `hb.py install` |
 | `win/register-tasks.ps1` · `win/run-tick.ps1` | Task Scheduler: `hb-window-open` (wake), `hb-window-close`, `hb-tick` (repeats only inside the window; wrapper holds a keep-awake power request) → `wsl.exe -d claude-context -u KMc -- python3 …/hb.py …` |
-| `tests/test_hb.py` | 42 zero-quota tests (flag machine, claim race, sweeps, pop order, fake-worker E2E incl. runner push to a local bare origin, crash-as-corpse, window bounds, guard allow/block corpus) — `python3 .hb-heartbeat/tests/test_hb.py` |
+| `tests/test_hb.py` | 77 zero-quota tests (flag machine, claim race, sweeps, pop order, fake-worker E2E incl. runner push to a local bare origin, crash-as-corpse, window bounds, guard allow/block corpus, keep-alive, session drivers run/loop) — `python3 .hb-heartbeat/tests/test_hb.py` |
 | `state/` | runtime (untracked): `GO`, `night.json`, `quota.json`, `last-tick`, `diag/`, `log/hb.log` — see `state/start.md` |
 | `sandbox/<ITEM>/` | runtime worktrees (untracked); removed after harvest, kept only on an unexpected terminus |
 
@@ -61,7 +61,8 @@ python3 .hb-heartbeat/hb.py loop status | stop                    # inspect / st
   bypasses the scheduler's per-night `count_cap` (a deliberate manual action). If a REAL window is already
   armed it advances that queue by one under the window's own cap (so it can no-op if the cap is already
   reached — it says so). It self-heals a dead inflight corpse (reap) and refuses only over a *live* inflight run.
-- `loop` runs **`tick`** — keep-alive **+ process-one-only-if-armed**. So a stray/forgotten loop keeps Majel's DB awake
+- `loop` runs **`tick --reap`** — keep-alive **+ process-one-only-if-armed**, and self-heals a dead inflight corpse each
+  tick (there is no window_close in this mode). So a stray/forgotten loop keeps Majel's DB awake
   (the ping) but **cannot open a PR on its own**; to make the loop process backlog, arm a window (`window open --force`)
   and its ticks run items under `count_cap`.
 - **Non-persistent:** a loop is detached (survives the terminal closing) but dies on reboot/shutdown/WSL-down and never

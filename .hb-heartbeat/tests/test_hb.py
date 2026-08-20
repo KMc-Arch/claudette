@@ -424,6 +424,16 @@ class TestKeepalive(Base):
         hb.tick(cfg2)                                       # must not raise
         self.assertEqual(hb.KEEPALIVE_STAMP.read_text().split()[1], "ok")
 
+    def test_keepalive_corrupt_stamp_does_not_crash(self):
+        # round-2 regression guard: a non-UTF-8 stamp must NOT crash tick() or status()
+        cfg, marker = self._ka_cfg(rc=0)
+        hb.STATE.mkdir(parents=True, exist_ok=True)
+        hb.KEEPALIVE_STAMP.write_bytes(b'\xff\xfe\x00 garbage \x80\x81')
+        hb.tick(cfg)                                        # must not raise
+        hb.status(cfg)                                      # must not raise
+        # self-healed: the corrupt stamp was re-written with a clean outcome
+        self.assertEqual(hb.KEEPALIVE_STAMP.read_text(encoding="utf-8", errors="replace").split()[0], hb.night_key())
+
     def test_keepalive_sentinel_off_switch(self):
         cfg, marker = self._ka_cfg()
         hb.NO_KEEPALIVE.write_text("", encoding="utf-8")
@@ -531,6 +541,22 @@ class TestSessionDrivers(Base):
         self.assertEqual(hb.run_once(self.cfg), 0, "reaps + proceeds, does not refuse")
         self.assertTrue(list(hb.DIAG.glob("*corpse*")))
         self.assertIsNone(self.flag())
+
+    def test_run_reports_corpse_on_unexpected_terminus(self):
+        # round-2: an unexpected terminus leaves GO inflight + a recorded run; run_once must report a corpse
+        # and exit 1 (NOT "processed" / exit 0), mirroring the crash path so a $?-checking caller isn't fooled
+        real_tick = hb.tick
+        def fake_tick(cfg, **kw):
+            hb.claim_flag(os.getpid())                      # go -> inflight, left behind (unexpected terminus)
+            hb.night_add_run({"item_id": "BL-07", "terminus": "unexpected"})
+            return 0
+        hb.tick = fake_tick
+        try:
+            rc = hb.run_once(self.cfg)
+        finally:
+            hb.tick = real_tick
+        self.assertEqual(rc, 1, "abnormal terminus (corpse) must exit non-zero")
+        self.assertEqual(self.flag()["status"], "inflight", "corpse left for the next reap")
 
     def test_run_preserves_same_night_ledger(self):
         # finding-2/8: the armed one-shot must not clobber a scheduled window's ledger for tonight

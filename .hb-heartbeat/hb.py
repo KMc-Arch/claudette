@@ -907,7 +907,9 @@ def keepalive(cfg: dict) -> None:
         return
     tonight = night_key()
     try:
-        prev = KEEPALIVE_STAMP.read_text(encoding="utf-8").split()
+        # errors="replace": a corrupt (non-UTF-8) stamp must never raise here — keepalive() must NOT crash the
+        # tick (it is called before every gate). Garbage won't equal tonight, so the next line re-stamps clean.
+        prev = KEEPALIVE_STAMP.read_text(encoding="utf-8", errors="replace").split()
     except OSError:
         prev = []
     if prev[:1] == [tonight]:
@@ -1060,8 +1062,15 @@ def run_once(cfg: dict) -> int:
             remove_flag("hb run one-shot complete")     # leave an inflight corpse for the next reap, else clear
     if crashed:
         return 1
+    if (read_flag() or {}).get("status") == "inflight":
+        # the runner returned an UNEXPECTED terminus and left GO inflight (a corpse) — armed or real-window,
+        # report it honestly with a non-zero exit, mirroring the crash path, so a `$?`-checking caller is
+        # never told it succeeded
+        print("hb run: the item ended abnormally and was left as a corpse — re-run `hb run` to reap and retry",
+              file=sys.stderr)
+        return 1
     if len(read_night().get("runs", [])) > before:
-        print("hb run: processed 1 item")
+        print("hb run: ran 1 item — see its terminus in ~inbox/hb/<ID>/outcome.md")
     else:
         print("hb run: no item processed (queue empty, quota exhausted, or — with a window already armed — count cap reached)")
     return 0
@@ -1120,8 +1129,8 @@ def loop_stop() -> int:
         # loop_stop is a hard stop (unlike `rm GO`, which lets a worker finish): warn that an in-flight item
         # will be interrupted and left as a reapable corpse (the next `hb run`/loop tick --reap reclaims it).
         print(f"hb loop: WARNING an item is in flight (item {f.get('item_id')}, pid {f.get('pid')}); stopping the "
-              f"loop interrupts it and leaves a corpse — `hb run` reaps it, or `rm GO` to let it finish instead.",
-              file=sys.stderr)
+              f"loop now interrupts it and leaves a reapable corpse (the next `hb run` reclaims it). To let an "
+              f"in-flight item finish, prefer `rm GO` over `loop stop`.", file=sys.stderr)
     try:
         os.killpg(os.getpgid(pid), signal.SIGTERM)   # the whole session group (bash loop + any child tick)
     except (ProcessLookupError, PermissionError) as e:
@@ -1168,7 +1177,7 @@ def status(cfg: dict) -> str:
     q = read_quota()
     lines.append(f"quota: {json.dumps(q.get('rate_limits')) if q else 'none'} @ {q.get('written_at') if q else '—'}")
     try:
-        ks = KEEPALIVE_STAMP.read_text(encoding="utf-8").split()
+        ks = KEEPALIVE_STAMP.read_text(encoding="utf-8", errors="replace").split()   # never crash status on a corrupt stamp
         if ks:
             lines.append(f"keepalive: last {ks[0]} {ks[1] if len(ks) > 1 else '?'}")
     except OSError:
