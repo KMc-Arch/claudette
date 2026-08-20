@@ -27,8 +27,15 @@ When the standard revises a device, this file is re-passed to match rather than 
 - **Cut a new number** (`heartbeat-02.drawio`) when a state is worth re-opening beside the old one.
   Keep the old file whole.
 - **Compression stays off.**
-- **Lint before you cut a version.** `python3 lint.py heartbeat-0N.drawio` — six geometry rules, each of
-  them written because a cold reader holding only a PNG failed at it. Zero, or it is not publishable.
+- **Lint before you cut a version.** `python3 ^/^/drawio/foundation/legibility/lint.py heartbeat-0N.drawio`
+  — zero, or it is not publishable. The rules were minted here, from cold readers failing on prints, and
+  the operator promoted them into the standard on 2026-08-19; that copy is canonical and this folder keeps
+  no fork of it.
+- **Then look at it, and have someone else do the looking.** `^/^/drawio/foundation/legibility/preview.sh
+  [-d] [-p PAGE] <file>` renders a page to PNG. **Sub-delegate the eyeball pass**: an agent runs the
+  preview, reads the image cold with no context, and reports what it cannot determine; bring that back
+  before cutting the version. Checking your own drawing against the XML you wrote proves nothing — you
+  already know the connections, which is exactly the self-referential check bedrock forbids.
 - **Ownership is drawn, not stated.** What a doer makes goes inside its lane; containment takes no edge.
   Page 2 went from 25 edges to 12 by doing this, and the "column" its own note referred to became a thing
   a reader can actually see.
@@ -45,9 +52,9 @@ When the standard revises a device, this file is re-passed to match rather than 
 - **Independent lines need 24px, not 14.** Measured from four cold reads: at print scale a 14px stagger
   reads as one stroke. This is stricter than the standard's 12-16px drafting figure.
 - **Mark every crossing** (`jumpStyle=arc`): with no jump, a crossing and a corner are the same picture.
-- **Check it, don't eyeball it.** The failure is invisible in the XML and obvious in a print: place a
-  label rectangle at each edge's path midpoint and test it against every shape. Zero collisions before
-  a version is cut.
+- **Neither check replaces the other.** The linter answers the arithmetic half — a label erasing its
+  edge, a line behind a box, runs too close to tell apart. The cold read answers everything else, and it
+  is the half that found the defects worth fixing.
 
 ## Where the drawing stops
 
