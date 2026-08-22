@@ -361,7 +361,7 @@ def _purge_agents_dir(purger: Purger, agents_dir: Path, project_root: Path) -> N
             # disagreeing, which is the whole failure this module exists to stop.
             # Reading the marker here only ever PREVENTS a deletion, so it does
             # not reintroduce deciding ownership from content.
-            if ao.read_marker(item) is None:
+            if not ao.marker_matches(item, claims[ao._key(item)]["rel_path"]):
                 purger.skipped.append(
                     f"  PRESERVED (claimed but hand-edited): {purger._label(item)}")
             else:

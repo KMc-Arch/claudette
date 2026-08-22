@@ -62,6 +62,7 @@ COVERED = {
     "render_marker",
     "_purge_agents_dir",
     "_ensure_agent_tables",
+    "marker_matches",
 }
 
 
@@ -1108,6 +1109,170 @@ def _():
         truthy(edited.exists(), "a claimed file whose marker is gone is preserved")
         truthy(any("hand-edited" in s for s in p.skipped),
                "and reported: %r" % (p.skipped,))
+
+
+# ── Round-2 hardening (AG-23.., PG-09..) ─────────────────────────────
+
+@test("AG-23", "build_root_inventory")
+def _():
+    """A root reachable only through a symlink OUT of the apex is skipped, not fatal.
+
+    discover_roots follows directory symlinks, so a root can resolve outside the
+    apex. Every consumer computes rel_path with relative_to(), which raised an
+    uncaught ValueError and took down the whole boot before the report was
+    written. This tree really contains such links.
+    """
+    outside = Path(tempfile.mkdtemp(prefix="ctest-outside-"))
+    try:
+        (outside / "CLAUDE.md").write_text("---\nroot: true\nname: outsider\n---\n\nO.\n")
+        with scratch_apex([("alpha", "A.\n")]) as apex:
+            try:
+                os.symlink(outside, apex / "linked")
+            except (OSError, NotImplementedError):
+                return
+            rep = cboot.BootReport()
+            rows = cboot.build_root_inventory(rep)          # must not raise
+            truthy(rows is not None, "the walk still completes")
+            rels = {r["rel_path"] for r in rows}
+            truthy("linked" not in rels, "the escapee is not in the inventory: %s" % sorted(rels))
+            truthy(any("outside the apex" in w for w in rep.warnings),
+                   "and it is reported: %r" % (rep.warnings,))
+            cboot.generate_agents(rep, rows)
+            truthy((apex / "alpha").is_dir(), "the healthy root is unaffected")
+    finally:
+        _shutil.rmtree(outside, ignore_errors=True)
+
+
+@test("AG-24", "build_root_inventory")
+def _():
+    """A symlink pointing at a `_`-prefixed directory does not launder it in.
+
+    discover_roots filters on the DIRENT name, so an ordinarily-named link to an
+    invisible directory would otherwise make it addressable.
+    """
+    with scratch_apex([]) as apex:
+        hidden = apex / "_private"
+        hidden.mkdir()
+        (hidden / "CLAUDE.md").write_text("---\nroot: true\nname: private\n---\n\nP.\n")
+        try:
+            os.symlink(hidden, apex / "visible")
+        except (OSError, NotImplementedError):
+            return
+        rep = cboot.BootReport()
+        rows = cboot.build_root_inventory(rep)
+        rels = {r["rel_path"] for r in rows}
+        truthy("visible" not in rels and "_private" not in rels,
+               "no `_` path in the inventory: %s" % sorted(rels))
+
+
+@test("AG-25", "generate_agents")
+def _():
+    """An undecodable PARENT CLAUDE.md must not delete its nested roots' agents.
+
+    An unreadable CLAUDE.md removes its whole subtree from the walk, not just
+    itself. Reading that as "these projects were deleted" closed the claims of
+    perfectly healthy children.
+    """
+    with scratch_apex([("grp", "Group.\n"), ("grp/a", "A.\n"), ("grp/b", "B.\n")]) as apex:
+        ag_optin(apex, [("grp", 0, None, None),
+                        ("grp/a", 1, "aa", "A."), ("grp/b", 1, "bb", "B.")])
+        ag_boot(apex)
+        ag = apex / ".claude" / "agents"
+        eq(sorted(p.name for p in ag.iterdir()), ["aa.md", "bb.md"], "setup")
+
+        (apex / "grp" / "CLAUDE.md").write_bytes(
+            "---\nroot: true\nname: grp\n---\n\ncafé\n".encode("utf-16"))
+        rep = ag_boot(apex)
+        eq(sorted(p.name for p in ag.iterdir()), ["aa.md", "bb.md"],
+           "the children's agents survive their parent being unreadable")
+        conn = _sqlite_factory().connect(str(apex / ".state" / "roots.db"))
+        n = conn.execute("SELECT COUNT(*) FROM agent_registry"
+                         " WHERE valid_to IS NULL").fetchone()[0]
+        conn.close()
+        eq(n, 2, "both claims stay open")
+
+
+@test("AG-26", "generate_agents")
+def _():
+    """A stale decision does not reserve an @name forever.
+
+    A renamed or deleted project left an agent_optin row nothing ever cleaned up,
+    and the prompt kept treating its name as taken.
+    """
+    with scratch_apex([("beta", "B.\n")]) as apex:
+        ag_optin(apex, [("gone-away", 1, "shared", "Old."), ("beta", 1, "shared", "New.")])
+        ag_boot(apex)
+        ag = apex / ".claude" / "agents"
+        truthy((ag / "shared.md").exists(),
+               "the live project gets the name the dead one was holding: %s"
+               % sorted(p.name for p in ag.iterdir()))
+
+
+@test("AG-27", "generate_agents")
+def _():
+    """A description containing the marker placeholder text cannot break the file."""
+    with scratch_apex([("drawio", "A tool.\n")]) as apex:
+        ag_optin(apex, [("drawio", 1, "drawio", "Handles @@MARKER@@ tokens in text.")])
+        ag_boot(apex)
+        text = (apex / ".claude" / "agents" / "drawio.md").read_text()
+        truthy('description: "Handles @@MARKER@@ tokens in text."' in text,
+               "the description survives verbatim")
+        eq(text.count("<!-- cboot:agent root="), 1, "exactly one marker in the file")
+
+
+@test("AG-28", "marker_matches")
+def _():
+    """marker_matches treats a missing and a retargeted marker the same way."""
+    ao = cboot._agent_ownership()
+    with scratch_apex() as apex:
+        f = apex / ".claude" / "agents" / "x.md"
+        f.write_text("---\nname: x\n---\n\n%s\nbody\n"
+                     % ao.render_marker("drawio", "2026-01-01T00:00:00Z"))
+        truthy(ao.marker_matches(f, "drawio"), "our own marker matches")
+        truthy(not ao.marker_matches(f, "other"), "a marker for another root does not")
+        f.write_text("---\nname: x\n---\n\nhand written\n")
+        truthy(not ao.marker_matches(f, "drawio"), "no marker does not")
+
+
+@test("PG-09", "_purge_agents_dir")
+def _():
+    """purge preserves a claimed file whose marker was ALTERED, matching cboot.
+
+    The first version of this rule only caught a marker that was GONE. A marker
+    edited to name a different root is the same act — a human in the file — and
+    the two callers disagreed on it until the predicate moved into the module.
+    """
+    pg = _load_purge()
+    with purge_rig() as (root, ag):
+        f = ag / "gen.md"
+        f.write_text('<!-- cboot:agent root="somewhere-else" generated="2026-01-01T00:00:00Z" -->\n'
+                     'and my own paragraph\n')
+        p = pg_run(pg, root)
+        truthy(f.exists(), "a retargeted marker is preserved, not deleted")
+        truthy(any("hand-edited" in s for s in p.skipped), "and reported: %r" % (p.skipped,))
+
+
+@test("PG-10", "_purge_agents_dir")
+def _():
+    """cboot and purge agree on every marker state for a claimed file."""
+    pg = _load_purge()
+    ao = cboot._agent_ownership()
+    cases = [
+        ('<!-- cboot:agent root="gen" generated="2026-01-01T00:00:00Z" -->\nbody\n', True),
+        ('<!-- cboot:agent root="elsewhere" generated="2026-01-01T00:00:00Z" -->\nbody\n', False),
+        ("no marker at all\n", False),
+        ("", False),
+    ]
+    for body, purge_should_delete in cases:
+        with purge_rig() as (root, ag):
+            f = ag / "gen.md"
+            f.write_text(body)
+            cboot_would_rewrite = ao.marker_matches(f, "gen")
+            pg_run(pg, root)
+            deleted = not f.exists()
+            eq(deleted, purge_should_delete, "purge verdict for %r" % body[:40])
+            eq(deleted, cboot_would_rewrite,
+               "purge and cboot must agree for %r" % body[:40])
 
 
 # ── runner + coverage ────────────────────────────────────────────────

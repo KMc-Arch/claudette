@@ -157,6 +157,21 @@ def render_marker(rel_path, generated_at):
             f'generated="{generated_at}" -->')
 
 
+def marker_matches(path, rel_path):
+    """True if `path` still carries OUR marker for `rel_path`.
+
+    The single test for "has a human been in this file". Both callers use it:
+    cboot to decide whether it may rewrite a file it claims, purge to decide
+    whether it may delete one. A missing marker and a marker that has been
+    retargeted to some other root mean the same thing — someone edited the file —
+    and splitting that judgement across two callers is how they came to disagree.
+
+    This is NOT an ownership test. Ownership is `owns()`. This only ever makes a
+    caller do LESS: cboot skips a rewrite, purge skips a delete.
+    """
+    return read_marker(path) == rel_path
+
+
 def read_marker(path):
     """Return the marker's `root=` value, or None.
 
