@@ -34,15 +34,36 @@ def discover_roots(root):
 
     Skips dot-prefixed (internal) and underscore-prefixed (invisible) dirs.
     Returns a flat list of all discovered roots at any depth.
+
+    NEVER RAISES. `iterdir`, `is_dir` and `exists` all propagate EACCES and EIO —
+    Python only swallows ENOENT/ENOTDIR/EBADF/ELOOP — so a single unreadable
+    directory under the apex used to abort the entire boot with a bare traceback,
+    before the boot report, the git-hook wiring, or the launch. That is reachable
+    without any deliberate chmod: this apex admits symlinked-in external projects
+    (AggregatorM/Delivery points into a OneDrive tree), where an offline
+    placeholder, a Windows ACL denial, or a drvfs EIO produces exactly that errno
+    class. A directory we cannot read tells us nothing, so it is skipped — the
+    same principle applied everywhere else in this system.
     """
     roots = []
-    for d in sorted(root.iterdir()):
-        if not d.is_dir():
+    try:
+        entries = sorted(root.iterdir())
+    except OSError:
+        return roots
+    for d in entries:
+        try:
+            if not d.is_dir():
+                continue
+        except OSError:
             continue
         if d.name.startswith(".") or d.name.startswith("_"):
             continue
         claude_md = d / "CLAUDE.md"
-        if claude_md.exists() and _has_root_true(claude_md):
+        try:
+            is_root = claude_md.exists() and _has_root_true(claude_md)
+        except OSError:
+            continue
+        if is_root:
             roots.append(d)
             # Recurse — this root may contain nested roots (group pattern)
             roots.extend(discover_roots(d))

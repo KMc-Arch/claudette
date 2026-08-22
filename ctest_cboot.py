@@ -68,6 +68,7 @@ COVERED = {
     "_select_roots",
     "_walk_candidate_roots",
     "RootRows",
+    "_reached_via_symlink",
 }
 
 
@@ -1509,7 +1510,8 @@ def _():
             os.symlink(apex / "alpha", apex / "aaa-alias")
         except (OSError, NotImplementedError):
             return
-        seen = [tuple(p.name for p in cboot._walk_candidate_roots()) for _ in range(3)]
+        seen = [tuple(p.name for p in cboot._walk_candidate_roots(apex.resolve()))
+                for _ in range(3)]
         eq(len(set(seen)), 1, "stable across runs: %r" % (seen,))
         # The alias sorts first alphabetically; the real directory must still win.
         eq(seen[0][0], "alpha", "real directory ordered ahead of the alias: %r" % (seen[0],))
@@ -1558,6 +1560,172 @@ def _():
     eq([r["rel_path"] for r in rows], ["a", "b"], "iteration")
     eq(rows.excluded, {"c": "why"}, "exclusions carried alongside")
     eq(cboot.RootRows([]).excluded, {}, "defaults to empty")
+
+
+@test("WK-07", "_select_roots")
+def _():
+    """An unreadable directory under the apex never aborts the boot.
+
+    iterdir/is_dir/exists propagate EACCES and EIO — Python swallows only
+    ENOENT/ENOTDIR/EBADF/ELOOP — so one unreadable directory used to kill the
+    whole boot with a bare traceback, before the report, the git hooks or the
+    launch. Reachable here without any chmod: this apex admits symlinked-in
+    external projects on a drvfs mount.
+    """
+    with scratch_apex([("alpha", "A.\n"), ("beta", "B.\n")]) as apex:
+        ag_optin(apex, [("alpha", 1, "alpha", "A."), ("beta", 1, "beta", "B.")])
+        ag_boot(apex)
+        ag = apex / ".claude" / "agents"
+        eq(sorted(p.name for p in ag.iterdir()), ["alpha.md", "beta.md"], "setup")
+
+        try:
+            os.chmod(apex / "beta", 0o000)
+            blocked = not os.access(apex / "beta" / "CLAUDE.md", os.R_OK)
+        except OSError:
+            blocked = False
+        if not blocked:
+            return                      # running as root, or chmod is a no-op here
+
+        try:
+            for i in range(2):
+                rep = cboot.BootReport()
+                rows = cboot.build_root_inventory(rep)     # must not raise
+                truthy(rows is not None, "the walk completes despite an unreadable dir")
+                cboot.generate_agents(rep, rows)
+                eq(sorted(p.name for p in ag.iterdir()), ["alpha.md", "beta.md"],
+                   "no agent removed on boot %d" % (i + 1))
+        finally:
+            os.chmod(apex / "beta", 0o755)
+
+
+@test("WK-08", "_root_is_gone")
+def _():
+    """A directory that cannot be stat'd is not a directory known to be gone."""
+    with scratch_apex([("alpha", "A.\n"), ("grp", "G.\n"), ("grp/kid", "K.\n")]) as apex:
+        try:
+            os.chmod(apex / "grp", 0o000)
+            blocked = not os.access(apex / "grp" / "kid", os.R_OK)
+        except OSError:
+            blocked = False
+        if not blocked:
+            return
+        try:
+            gone, why = cboot._root_is_gone("grp/kid")      # must not raise
+            eq(gone, False, "unreadable is never evidence of removal (%s)" % why)
+        finally:
+            os.chmod(apex / "grp", 0o755)
+
+
+@test("WK-09", "_select_roots")
+def _():
+    """A nested root reached through a symlinked ancestor loses to its real path.
+
+    is_symlink() tests only the LAST component, so `alias/sub` and `real/sub` are
+    both non-symlinks and the tie broke on the name alone — an alias sorting
+    first took the row, forking one project into two identities that never
+    reconciled across boots.
+    """
+    with scratch_apex([("real", "R.\n"), ("real/sub", "S.\n")]) as apex:
+        ag_optin(apex, [("real", 1, "real", "R."), ("real/sub", 1, "sub", "S.")])
+        ag_boot(apex)
+        try:
+            os.symlink(apex / "real", apex / "aaa-alias")   # sorts BEFORE "real"
+        except (OSError, NotImplementedError):
+            return
+        for i in range(3):
+            rep = cboot.BootReport()
+            rows = cboot.build_root_inventory(rep)
+            rels = sorted(r["rel_path"] for r in rows)
+            truthy("real/sub" in rels,
+                   "the real nested path keeps the row on boot %d: %s" % (i + 1, rels))
+            truthy("aaa-alias/sub" not in rels,
+                   "the aliased path does not take it: %s" % rels)
+            cboot.generate_agents(rep, rows)
+
+
+@test("WK-10", "_select_roots")
+def _():
+    """A de-duplicated alias is RECORDED in .excluded, not dropped silently.
+
+    De-duplication is the third way a discovered root leaves the row set. An
+    unrecorded drop is invisible to generate_agents, leaving only the weaker
+    positive test between it and a deletion — so the structural guarantee is
+    only worth having if every exit from the row set goes through .excluded.
+    """
+    with scratch_apex([("real", "R.\n")]) as apex:
+        try:
+            os.symlink(apex / "real", apex / "zz-alias")
+        except (OSError, NotImplementedError):
+            return
+        rep = cboot.BootReport()
+        rows = cboot.build_root_inventory(rep)
+        eq(sorted(r["rel_path"] for r in rows), [".", "real"], "the real path is admitted")
+        truthy("zz-alias" in rows.excluded,
+               "the alias is recorded, not silently dropped: %r" % (dict(rows.excluded),))
+        truthy("real" in rows.excluded["zz-alias"],
+               "with a reason naming what it duplicates: %r" % (rows.excluded,))
+
+
+@test("WK-11", "_reached_via_symlink")
+def _():
+    """True if ANY component below the apex is a symlink, not just the last."""
+    with scratch_apex([("real", "R.\n"), ("real/sub", "S.\n")]) as apex:
+        a = apex.resolve()
+        eq(cboot._reached_via_symlink(apex / "real", a), False, "a real directory")
+        eq(cboot._reached_via_symlink(apex / "real" / "sub", a), False, "a real nested dir")
+        try:
+            os.symlink(apex / "real", apex / "alias")
+        except (OSError, NotImplementedError):
+            return
+        eq(cboot._reached_via_symlink(apex / "alias", a), True, "the link itself")
+        eq(cboot._reached_via_symlink(apex / "alias" / "sub", a), True,
+           "a path THROUGH the link — the case is_symlink() alone misses")
+
+
+@test("WK-12", "generate_agents")
+def _():
+    """A traversal in a stored requested_name cannot escape the agents directory.
+
+    Only the derived fallback was sanitized, so a row written by hand or by
+    future tooling reached the filename raw — and `../..` made the write clobber
+    a user file outside the directory that ownership checks and purge ever look
+    at, with no warning.
+    """
+    with scratch_apex([("three", "T.\n")]) as apex:
+        victim = apex / "VICTIM.md"
+        victim.write_text("# the user's own notes\n")
+        ag_optin(apex, [("three", 1, "../../VICTIM", "T.")])
+        ag_boot(apex)
+        eq(victim.read_text(), "# the user's own notes\n", "the user's file is untouched")
+        for f in (apex / ".claude" / "agents").iterdir():
+            truthy(f.parent.resolve() == (apex / ".claude" / "agents").resolve(),
+                   "every written file is inside the agents directory: %s" % f)
+
+
+@test("WK-13", "generate_agents")
+def _():
+    """A claim held by a root skipped this boot still reserves its @name.
+
+    Otherwise a newcomer takes a case-variant of it — the same file on a
+    case-insensitive mount — overwriting the skipped project's agent in a way
+    that never repairs itself.
+    """
+    with scratch_apex([("one", "O.\n"), ("two", "T.\n")]) as apex:
+        ag_optin(apex, [("one", 1, "shared", "O."), ("two", 0, None, None)])
+        ag_boot(apex)
+        truthy((apex / ".claude" / "agents" / "shared.md").exists(), "setup")
+
+        # `one` drops out of the walk but keeps its claim.
+        (apex / "one" / "CLAUDE.md").write_bytes(
+            "---\nroot: true\nname: one\n---\n\ncafé\n".encode("utf-16"))
+        ag_optin(apex, [("two", 1, "Shared", "T.")])
+        rep = ag_boot(apex)
+
+        ag = apex / ".claude" / "agents"
+        names = sorted(p.name for p in ag.iterdir())
+        truthy("shared.md" in names, "the skipped project keeps its file: %s" % names)
+        truthy("Shared.md" not in names,
+               "the newcomer does not get a case-variant of a live claim: %s" % names)
 
 
 # ── runner + coverage ────────────────────────────────────────────────

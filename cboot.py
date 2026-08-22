@@ -850,18 +850,42 @@ class RootRows(list):
         self.excluded = dict(excluded)
 
 
-def _walk_candidate_roots():
+def _reached_via_symlink(dirent, apex_abs):
+    """True if ANY component of `dirent` below the apex is a symlink.
+
+    `dirent.is_symlink()` tests only the last component, which is wrong for a
+    nested root: `alias/sub` and `real/sub` are both non-symlinks even though one
+    is reached through a link. Ordering on that alone let an alias path win
+    de-duplication for nested roots purely on its name, forking one project into
+    two identities.
+    """
+    try:
+        rel = dirent.relative_to(apex_abs)
+    except ValueError:
+        return True                     # unplaceable: least preferred
+    cur = apex_abs
+    for part in rel.parts:
+        cur = cur / part
+        try:
+            if cur.is_symlink():
+                return True
+        except OSError:
+            return True                 # cannot tell: least preferred
+    return False
+
+
+def _walk_candidate_roots(apex_abs):
     """Every `root: true` directory under the apex, in a DETERMINISTIC order.
 
-    Discovery only — no policy, no de-duplication. Real directories sort ahead of
-    symlinks, then by path: two dirents can resolve to one directory (an alias
-    beside the project it points at) and only one may survive de-duplication, so
-    the survivor must be the real project rather than whichever the filesystem
-    happened to yield first.
+    Discovery only — no policy, no de-duplication. Paths reached entirely through
+    real directories sort ahead of paths reached through a symlink, then by path
+    string: two dirents can resolve to one directory (an alias beside the project
+    it points at) and only one may survive de-duplication, so the survivor must be
+    the real project rather than whichever name happens to sort first.
     """
     child_propagate = _load_module(PREBOOT_DIR / "child_propagate.py")
     return sorted(child_propagate.discover_roots(ROOT),
-                  key=lambda p: (p.is_symlink(), p.as_posix()))
+                  key=lambda p: (_reached_via_symlink(p, apex_abs), p.as_posix()))
 
 
 def _classify_root(dirent, apex_abs):
@@ -903,6 +927,8 @@ def _classify_root(dirent, apex_abs):
         inside.append(dirent.resolve().relative_to(apex_abs))
     except ValueError:
         pass                      # resolves outside the apex: external, allowed
+    except OSError:
+        pass                      # unresolvable: judge on the dirent path alone
     hidden = next((part for r in inside for part in r.parts
                    if part.startswith("_") or (part.startswith(".") and part != ".")), None)
     if hidden is not None:
@@ -917,8 +943,8 @@ def _select_roots(report, apex_abs):
     names, one directory), not a judgement about a project, and conflating the
     two is what made this function hard to reason about.
     """
-    admitted, excluded, seen = [], {}, {apex_abs}
-    for dirent in _walk_candidate_roots():
+    admitted, excluded, seen = [], {}, {apex_abs: "the apex itself"}
+    for dirent in _walk_candidate_roots(apex_abs):
         rel, reason = _classify_root(dirent, apex_abs)
         if reason is not None:
             if rel is not None:
@@ -926,10 +952,20 @@ def _select_roots(report, apex_abs):
             report.warn(f"Root inventory: {rel or dirent} {reason} — skipped",
                         "it is still on disk; its agent, if any, is left untouched")
             continue
-        resolved = dirent.resolve()
+        try:
+            resolved = dirent.resolve()
+        except OSError:
+            resolved = dirent         # unresolvable: de-duplicate on itself
         if resolved in seen:
-            continue              # an alias for a directory already admitted
-        seen.add(resolved)
+            # An alias for a directory already admitted. This is the THIRD way a
+            # discovered root leaves the row set, and it must be recorded like the
+            # other two: an unrecorded drop is invisible to generate_agents, which
+            # then has only the weaker positive test standing between it and a
+            # deletion. The structural guarantee is only worth having if every
+            # path out of the row set goes through `excluded`.
+            excluded[rel] = f"the same directory as {seen[resolved]}"
+            continue
+        seen[resolved] = rel
         admitted.append(dirent)
     return admitted, excluded
 
@@ -946,9 +982,13 @@ def build_root_inventory(report):
     depends on for its ownership. Nothing regenerates those. purge keeps
     .state/roots.db on its hard floor for that reason.
 
-    Returns the row dicts, or None if the walk did not complete — the caller must
-    not run the agent pass on an unknown inventory, which would read as every
-    project having been deleted. It is gitignored via .state/.gitignore.
+    Returns a RootRows — the row dicts PLUS `.excluded`, the roots this walk found
+    and deliberately did not admit — or None if the walk did not complete. Both
+    matter to the caller: it must not run the agent pass on an unknown inventory
+    (which reads as every project having been deleted), and it must keep the
+    RootRows type rather than reducing it to a plain list, because `.excluded` is
+    what stops a filtering decision from reaching a delete path. Gitignored via
+    .state/.gitignore.
 
     Records, per root: name, absolute path, apex-relative path, nearest enclosing
     root (containment parent), depth, whether it is the apex, and how many DIRECT
@@ -1220,8 +1260,13 @@ def _root_is_gone(rel):
     reconsiders. Those are not comparable.
     """
     target = ROOT / rel
-    if not target.is_dir():
-        return True, ""
+    try:
+        if not target.is_dir():
+            return True, ""
+    except OSError as e:
+        # is_dir() propagates EACCES/EIO. A directory we cannot stat is not a
+        # directory we know is gone, and this is the gate on deletion.
+        return False, f"it could not be stat'd ({e.__class__.__name__})"
 
     # An unreadable CLAUDE.md anywhere on the chain says nothing about any project
     # on it — including this one, whose own file may read perfectly well.
@@ -1232,7 +1277,7 @@ def _root_is_gone(rel):
         if status == "unreadable":
             return False, f"{anc.name}/CLAUDE.md is unreadable"
 
-    status, text = _read_child_text(target / "CLAUDE.md")
+    status, _text = _read_child_text(target / "CLAUDE.md")
     if status == "missing":
         return True, ""
     if status == "unreadable":
@@ -1458,6 +1503,13 @@ def _write_agent_file(target, content, report):
     marker-presence check would pass on stale content left behind by a ghosted
     rename, which is precisely the failure it is supposed to catch.
     """
+    # Containment belt. Everything upstream sanitizes the name, but this is the
+    # single function that writes, and the cost of being wrong is a user's file
+    # overwritten with no ownership check and no warning.
+    if target.parent.resolve() != AGENTS_DIR.resolve():
+        report.warn(f"Agents: refused to write outside the agents directory",
+                    str(target))
+        return False
     tmp = target.with_name(target.name + ".tmp")
     try:
         tmp.write_text(content, encoding="utf-8", newline="\n")
@@ -1577,8 +1629,13 @@ def generate_agents(report, rows):
             closed += 1
 
         # ── Open or refresh a claim per switched-on root ──
-        names_taken = {r["agent_name"] for rel, r in current.items()
-                       if rel in by_path and optin.get(rel, {"enabled": 0})["enabled"]}
+        # EVERY current claim reserves its @name, including one whose root was
+        # skipped this boot. Restricting this to roots in by_path let a newcomer
+        # take a case-variant of a live claim's name; on a case-insensitive mount
+        # that is the same file, so the skipped project's agent would be
+        # overwritten — and never repaired, since its marker would then name the
+        # other root and the diverged check refuses to rewrite it forever.
+        names_taken = {r["agent_name"] for r in current.values()}
         enabled = [(rel, r) for rel, r in sorted(by_path.items())
                    if optin.get(rel, {"enabled": 0})["enabled"]]
 
@@ -1600,7 +1657,13 @@ def generate_agents(report, rows):
                 name = held["agent_name"]
                 deconflicted_from = None
             else:
-                want = decision["requested_name"] or ao.derive_agent_name(abs_path.name)
+                # Sanitize unconditionally. The prompt already does, but a row
+                # written by hand, by future tooling, or by a restored roots.db
+                # would otherwise reach the filename raw — and a `..` in it makes
+                # the write escape .claude/agents/ entirely, clobbering a user
+                # file that no ownership check or purge sweep ever looks at.
+                want = ao.derive_agent_name(
+                    decision["requested_name"] or abs_path.name)
                 blocked = set(names_taken)
                 # A file already sitting on the name that is NOT ours blocks it.
                 for other in AGENTS_DIR.glob("*.md"):
