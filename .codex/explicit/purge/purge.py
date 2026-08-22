@@ -355,7 +355,17 @@ def _purge_agents_dir(purger: Purger, agents_dir: Path, project_root: Path) -> N
             purger.remove_file(item)
             continue
         if ao.owns(item, claims):
-            purger.remove_file(item)
+            # Ours by the registry — but if the marker is gone or altered, a human
+            # has been in the file, and cboot has already refused to overwrite it
+            # for that reason. Deleting what cboot preserves is the two callers
+            # disagreeing, which is the whole failure this module exists to stop.
+            # Reading the marker here only ever PREVENTS a deletion, so it does
+            # not reintroduce deciding ownership from content.
+            if ao.read_marker(item) is None:
+                purger.skipped.append(
+                    f"  PRESERVED (claimed but hand-edited): {purger._label(item)}")
+            else:
+                purger.remove_file(item)
         else:
             purger.skipped.append(f"  PRESERVED (hand-authored): {purger._label(item)}")
 

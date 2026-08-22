@@ -832,14 +832,20 @@ def _extract_root_name(claude_md: Path, fallback: str) -> str:
 
 
 def build_root_inventory(report):
-    """Materialize .state/roots.db — the durable directory of every root: true
-    context under the apex, including the apex itself.
+    """Materialize .state/roots.db — the directory of every root: true context
+    under the apex, including the apex itself.
 
-    This is a DERIVED, REBUILDABLE CACHE, not a source of truth. The filesystem
-    walk (child_propagate.discover_roots) is authoritative; this DB is dropped and
-    rebuilt from scratch on every boot and is safe to delete — the next boot
-    regenerates it. It is gitignored via .state/.gitignore (accumulation is never
-    tracked).
+    The `roots` and `meta` tables are a DERIVED CACHE: the filesystem walk
+    (child_propagate.discover_roots) is authoritative, and both are dropped and
+    rebuilt from scratch every boot. The file as a whole is NOT disposable — it
+    also carries `agent_optin` and `agent_registry`, which are durable, hold
+    decisions a human made once, and are what every file in .claude/agents/
+    depends on for its ownership. Nothing regenerates those. purge keeps
+    .state/roots.db on its hard floor for that reason.
+
+    Returns the row dicts, or None if the walk did not complete — the caller must
+    not run the agent pass on an unknown inventory, which would read as every
+    project having been deleted. It is gitignored via .state/.gitignore.
 
     Records, per root: name, absolute path, apex-relative path, nearest enclosing
     root (containment parent), depth, whether it is the apex, and how many DIRECT
@@ -850,14 +856,23 @@ def build_root_inventory(report):
         import sqlite3  # for sqlite3.Error only; connection comes from the factory
     except ImportError:
         report.warn("Root inventory: sqlite3 unavailable, skipping")
-        return []
+        return None
 
     child_propagate = _load_module(PREBOOT_DIR / "child_propagate.py")
     sqlite_factory = _load_module(CODEX / "reactive" / "sqlite" / "sqlite.py")
 
     # Apex is the ceiling row; discovered descendants follow. Resolve to absolute.
     apex_abs = ROOT.resolve()
-    descendants = [d.resolve() for d in child_propagate.discover_roots(ROOT)]
+    # De-duplicate on the RESOLVED path: a symlink inside the apex pointing at
+    # another root yields two dirents that resolve to one directory, which used to
+    # violate roots.abs_path UNIQUE and fail the entire inventory write.
+    descendants, seen = [], {apex_abs}
+    for d in child_propagate.discover_roots(ROOT):
+        rd = d.resolve()
+        if rd in seen:
+            continue
+        seen.add(rd)
+        descendants.append(rd)
     all_roots = [apex_abs] + descendants
     root_set = set(all_roots)
 
@@ -942,8 +957,11 @@ def build_root_inventory(report):
         finally:
             conn.close()
     except sqlite3.Error as e:
+        # None, never [] — an empty list is indistinguishable from "the apex has
+        # no children", and the agent pass reads that as every project having been
+        # deleted. A failed walk must be unusable, not merely empty.
         report.warn("Root inventory: sqlite write failed", str(e))
-        return []
+        return None
 
     n = len(descendants)
     report.ok(f"Root inventory: {len(rows)} roots in .state/roots.db "
@@ -1022,6 +1040,17 @@ def _ensure_agent_tables(conn):
                  " ON agent_registry(rel_path) WHERE valid_to IS NULL")
     conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_agent_cur_name"
                  " ON agent_registry(agent_name) WHERE valid_to IS NULL")
+    # CREATE TABLE IF NOT EXISTS is a no-op on a table that already exists, so a
+    # registry created before close_reason existed keeps its old shape and every
+    # claim-closing UPDATE then fails with "no such column". Migrate explicitly.
+    have = {r[1] for r in conn.execute("PRAGMA table_info(agent_registry)")}
+    if "close_reason" not in have:
+        conn.execute("ALTER TABLE agent_registry ADD COLUMN close_reason TEXT")
+    # Superseded by the partial idx_agent_cur_* indexes; a leftover unconditional
+    # unique index would reject legitimate SCD2 history.
+    for stale in ("agent_registry_current_name", "agent_registry_current_root"):
+        conn.execute("DROP INDEX IF EXISTS %s" % stale)
+
     # A live claim with no recorded decision predates the decision table. It is
     # still evidence of a decision a human made — under the older design, by
     # putting `agent: true` in the project's own CLAUDE.md. Inherit it rather
@@ -1326,6 +1355,7 @@ def generate_agents(report, rows):
         report.warn("Agents: roots.db unopenable, skipping", str(e))
         return
     try:
+      try:
         _ensure_agent_tables(conn)
 
         by_path = {r["rel_path"]: r for r in rows if not r["is_apex"]}
@@ -1382,6 +1412,11 @@ def generate_agents(report, rows):
             conn.execute("UPDATE agent_registry SET valid_to = ?, close_reason = ?"
                          " WHERE id = ?", (stamp, reason, row["id"]))
             conn.commit()
+            # The claim is gone, so the file it named is no longer ours. Drop it
+            # from the snapshot: otherwise a file left in place because it had
+            # diverged still reads as owned, fails to block its own stem, and gets
+            # clobbered by whichever root claims that @name next.
+            claims.pop(ao._key(target), None)
             closed += 1
 
         # ── Open or refresh a claim per switched-on root ──
@@ -1520,6 +1555,10 @@ def generate_agents(report, rows):
         report.ok("Agents: " + ", ".join(bits) +
                   (" (" + ", ".join(f"@{live[r]['agent_name']}" for r in sorted(live)) + ")"
                    if live else ""))
+      except sqlite3.Error as e:
+        # The agent pass is one step of a boot. A schema surprise here must not
+        # take down git hooks, the trace marker, the boot report, and the launch.
+        report.warn("Agents: registry error, pass abandoned", str(e))
     finally:
         conn.close()
 
@@ -1602,8 +1641,12 @@ def refresh_project(target_arg, report):
     # created (or just switched on) must become addressable without waiting for a
     # full apex boot. The walk is cheap and the agent pass is idempotent.
     root_rows = build_root_inventory(report)
-    decide_agent_optin(report, root_rows)
-    generate_agents(report, root_rows)
+    if root_rows is None:
+        report.warn("Agents: skipped — the root walk did not complete",
+                    "no claim is closed and no file is touched on an unknown inventory")
+    else:
+        decide_agent_optin(report, root_rows)
+        generate_agents(report, root_rows)
 
     # -- Trace marker --
     try:
@@ -1932,8 +1975,15 @@ def main():
 
     # Addressable agents — ask about anything new, then materialize
     # ^/.claude/agents/. Apex-only; never propagated to a child.
-    decide_agent_optin(report, root_rows)
-    generate_agents(report, root_rows)
+    # None means the walk did not complete. Skipping is mandatory: the agent pass
+    # decides what to DELETE by asking which roots the walk found, so running it
+    # on an unknown answer closes every claim and removes every agent file.
+    if root_rows is None:
+        report.warn("Agents: skipped — the root walk did not complete",
+                    "no claim is closed and no file is touched on an unknown inventory")
+    else:
+        decide_agent_optin(report, root_rows)
+        generate_agents(report, root_rows)
 
     configure_auto_memory(report)
     configure_git_hooks(report)

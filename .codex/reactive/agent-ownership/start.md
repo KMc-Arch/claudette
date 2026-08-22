@@ -27,12 +27,16 @@ Two divergent implementations of one ownership test is the defect this module ex
 
 Generated files carry `<!-- cboot:agent root="…" generated="…" -->` as their first body line. It is a human-readable "generated, do not hand-edit" banner plus a tamper check. **It confers nothing and removes nothing.** A forged marker cannot make a file ours. A missing marker cannot make our file foreign.
 
-| registry says | marker says | action |
-|---|---|---|
-| ours | present, matching | write / refresh normally |
-| ours | absent or altered | **warn and leave alone** — never overwrite, never delete |
-| not ours | present | **warn and leave alone** — a forged or stale marker confers nothing |
-| not ours | absent | not our business; untouched |
+| registry says | marker says | cboot | purge |
+|---|---|---|---|
+| ours | present, matching | write / refresh normally | remove (cboot regenerates it) |
+| ours | absent or altered | **warn and leave alone** — never overwrite | **preserve** — a human has been in the file |
+| not ours | present | leave alone — a forged or stale marker confers nothing | preserve |
+| not ours | absent | not our business; untouched | preserve |
+
+cboot warns only about the second row, where a file it *claims* has been edited. It says nothing about unclaimed files: they are none of its business, and warning about each one on every boot would be noise. `test-safe` T64 inventories them instead.
+
+**Why purge consults the marker at all.** Ownership is still the registry lookup — the marker is read only to *decline* a deletion, never to justify one. That can only ever narrow what purge removes, so it does not reintroduce deciding ownership from content. Without it the two callers disagree on a real input (a file cboot refuses to overwrite because a human edited it, and purge deletes), which is precisely the failure this module exists to prevent.
 
 ## Fail-safe
 

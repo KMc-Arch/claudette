@@ -20,6 +20,7 @@ import io
 import json
 import os
 import re
+import sqlite3
 import stat
 import sys
 import tempfile
@@ -60,6 +61,7 @@ COVERED = {
     "derive_agent_name",
     "render_marker",
     "_purge_agents_dir",
+    "_ensure_agent_tables",
 }
 
 
@@ -741,6 +743,10 @@ def purge_rig(claimed=("gen",), with_db=True):
         _shutil.rmtree(tmp, ignore_errors=True)
 
 
+GEN_BODY = ('<!-- cboot:agent root="%s" generated="2026-01-01T00:00:00Z" -->\n'
+            'generated\n')
+
+
 def pg_run(pg, root):
     purger = pg.Purger(root, dry_run=False)
     pg._purge_claude_dir(purger, root / ".claude", root)
@@ -752,7 +758,7 @@ def _():
     """Claimed files go; hand-authored files stay."""
     pg = _load_purge()
     with purge_rig() as (root, ag):
-        (ag / "gen.md").write_text("generated\n")
+        (ag / "gen.md").write_text(GEN_BODY % "gen")
         (ag / "hand.md").write_text("hand written\n")
         pg_run(pg, root)
         truthy(not (ag / "gen.md").exists(), "claimed file removed")
@@ -776,7 +782,7 @@ def _():
     """A non-UTF-8 file neither crashes the purge nor is deleted."""
     pg = _load_purge()
     with purge_rig() as (root, ag):
-        (ag / "gen.md").write_text("generated\n")
+        (ag / "gen.md").write_text(GEN_BODY % "gen")
         (ag / "cp1252.md").write_bytes(b"caf\xe9 hand written\n")
         pg_run(pg, root)                       # must not raise
         truthy((ag / "cp1252.md").exists(), "non-UTF-8 file preserved")
@@ -821,7 +827,7 @@ def _():
     """.md.tmp staging leftovers are reachable and removed."""
     pg = _load_purge()
     with purge_rig() as (root, ag):
-        (ag / "gen.md").write_text("generated\n")
+        (ag / "gen.md").write_text(GEN_BODY % "gen")
         (ag / "gen.md.tmp").write_text("interrupted\n")
         pg_run(pg, root)
         truthy(not (ag / "gen.md.tmp").exists(), ".md.tmp removed")
@@ -886,7 +892,7 @@ def _():
     """Drop the shared module -> purge preserves rather than guessing."""
     pg = _load_purge()
     with purge_rig() as (root, ag):
-        (ag / "gen.md").write_text("generated\n")
+        (ag / "gen.md").write_text(GEN_BODY % "gen")
         original = pg._agent_ownership
         pg._agent_ownership = lambda: None
         try:
@@ -896,6 +902,182 @@ def _():
         truthy((ag / "gen.md").exists(),
                "without the module purge must delete nothing")
         truthy(any("PRESERVED" in s for s in p.skipped), "and must say so")
+
+
+# ── Round-1 hardening (AG-18.., PG-08, MU-04..) ──────────────────────
+
+@test("AG-18", "build_root_inventory")
+def _():
+    """A failed walk returns None, not [] — the two must be distinguishable."""
+    with scratch_apex([("alpha", "A.\n")]) as apex:
+        rep = cboot.BootReport()
+        truthy(cboot.build_root_inventory(rep) is not None, "a good walk returns rows")
+
+        class _Boom:
+            @staticmethod
+            def connect(*a, **k):
+                raise sqlite3.OperationalError("simulated inventory write failure")
+
+        saved = cboot._load_module
+        cboot._load_module = lambda p: _Boom if p.name == "sqlite.py" else saved(p)
+        try:
+            rows = cboot.build_root_inventory(cboot.BootReport())
+        finally:
+            cboot._load_module = saved
+        eq(rows, None, "a failed walk must be unusable, not merely empty")
+
+
+@test("MU-04", "generate_agents")
+def _():
+    """Why AG-18 matters: an empty row list deletes every agent file.
+
+    This is the pre-fix behaviour of `return []`, demonstrated directly. It is
+    what the None guard in main()/refresh_project() exists to prevent.
+    """
+    with scratch_apex([("alpha", "A.\n"), ("beta", "B.\n")]) as apex:
+        ag_optin(apex, [("alpha", 1, "alpha", "A."), ("beta", 1, "beta", "B.")])
+        ag_boot(apex)
+        ag = apex / ".claude" / "agents"
+        eq(sorted(p.name for p in ag.iterdir()), ["alpha.md", "beta.md"], "setup")
+        cboot.generate_agents(cboot.BootReport(), [])     # what `return []` used to feed
+        eq(sorted(p.name for p in ag.iterdir()), [],
+           "an empty inventory wipes the directory — hence the None guard")
+
+
+@test("AG-19", "build_root_inventory")
+def _():
+    """Two dirents resolving to one root must not fail the whole inventory."""
+    with scratch_apex([("alpha", "A.\n")]) as apex:
+        try:
+            os.symlink(apex / "alpha", apex / "alpha-link")
+        except (OSError, NotImplementedError):
+            return                                        # platform cannot symlink
+        ag_optin(apex, [("alpha", 1, "alpha", "A.")])
+        rep = cboot.BootReport()
+        rows = cboot.build_root_inventory(rep)
+        truthy(rows is not None,
+               "a convenience symlink inside the apex must not break the walk: %r"
+               % (rep.warnings,))
+        cboot.generate_agents(rep, rows)
+        truthy((apex / ".claude" / "agents" / "alpha.md").exists(), "agent still generated")
+
+
+@test("AG-20", "generate_agents")
+def _():
+    """A closed claim stops looking owned, so its file blocks its own @name.
+
+    Without this, a file left in place because it had diverged still reads as
+    ours, fails to block its stem, and is clobbered by the next root to want
+    that name — silently destroying a human's edit while the report says the
+    file was left alone.
+    """
+    HUMAN = "HUMAN-AUTHORED PARAGRAPH"
+    with scratch_apex([("old-home", "Old.\n"), ("new-home", "New.\n")]) as apex:
+        ag_optin(apex, [("old-home", 1, "tools", "Old tools."),
+                        ("new-home", 0, None, None)])
+        ag_boot(apex)
+        ag = apex / ".claude" / "agents"
+        f = ag / "tools.md"
+        truthy(f.exists(), "setup: tools.md claimed by old-home")
+
+        f.write_text("---\nname: tools\n---\n\n%s\n" % HUMAN)   # a human edits it
+        _shutil.rmtree(apex / "old-home")                        # its project goes away
+        ag_optin(apex, [("new-home", 1, "tools", "New tools.")])  # newcomer wants the name
+        ag_boot(apex)
+
+        truthy(f.exists() and HUMAN in f.read_text(), "the human's edit survives")
+        truthy((ag / "tools-2.md").exists(),
+               "newcomer de-conflicted: %s" % sorted(p.name for p in ag.iterdir()))
+
+
+@test("AG-21", "_ensure_agent_tables")
+def _():
+    """A registry created before close_reason existed is migrated, not left to crash.
+
+    CREATE TABLE IF NOT EXISTS is a no-op on an existing table, so without an
+    explicit migration every claim-closing UPDATE fails with "no such column"
+    and takes the whole boot down with it.
+    """
+    with scratch_apex([("drawio", "A tool.\n")]) as apex:
+        db = apex / ".state" / "roots.db"
+        conn = sqlite3.connect(db)
+        conn.execute(
+            "CREATE TABLE agent_registry ( id INTEGER PRIMARY KEY, agent_name TEXT NOT NULL,"
+            " rel_path TEXT NOT NULL, source_folder TEXT NOT NULL, deconflicted_from TEXT,"
+            " description TEXT, agent_file TEXT NOT NULL, valid_from TEXT NOT NULL,"
+            " valid_to TEXT, change_reason TEXT NOT NULL)")
+        conn.execute("CREATE UNIQUE INDEX agent_registry_current_name"
+                     " ON agent_registry(agent_name)")
+        conn.execute(
+            "INSERT INTO agent_registry (agent_name, rel_path, source_folder, description,"
+            " agent_file, valid_from, change_reason) VALUES ('drawio','drawio','drawio',"
+            "'A tool.','.claude/agents/drawio.md','2026-01-01T00:00:00Z','opted-in')")
+        conn.commit()
+        conn.close()
+        truthy("close_reason" not in {r[1] for r in sqlite3.connect(db).execute(
+            "PRAGMA table_info(agent_registry)")}, "setup: legacy shape")
+
+        ag_boot(apex)
+        cols = {r[1] for r in sqlite3.connect(db).execute("PRAGMA table_info(agent_registry)")}
+        truthy("close_reason" in cols, "close_reason added: %s" % sorted(cols))
+        idx = {r[0] for r in sqlite3.connect(db).execute(
+            "SELECT name FROM sqlite_master WHERE type='index' AND tbl_name='agent_registry'")}
+        truthy("agent_registry_current_name" not in idx,
+               "superseded unconditional index dropped: %s" % sorted(idx))
+
+        # And the close path now works instead of aborting the boot.
+        f = apex / ".claude" / "agents" / "drawio.md"
+        truthy(f.exists(), "agent file present before removal")
+        _shutil.rmtree(apex / "drawio")
+        ag_boot(apex)                                     # must not raise
+        truthy(not f.exists(), "file removed")
+        row = sqlite3.connect(db).execute(
+            "SELECT valid_to, close_reason FROM agent_registry").fetchone()
+        truthy(row[0] is not None and row[1] == "root-removed", "row closed: %r" % (row,))
+
+
+@test("AG-22", "generate_agents")
+def _():
+    """A registry error degrades to a warning; it does not abort the boot."""
+    with scratch_apex([("drawio", "A tool.\n")]) as apex:
+        ag_optin(apex, [("drawio", 1, "drawio", "A tool.")])
+        ag_boot(apex)
+        conn = _sqlite_factory().connect(str(apex / ".state" / "roots.db"))
+        # A schema surprise CREATE TABLE IF NOT EXISTS cannot repair: the table
+        # exists, so it is left alone, and the next statement against it fails.
+        conn.execute("DROP TABLE agent_optin")
+        conn.execute("CREATE TABLE agent_optin (rel_path TEXT PRIMARY KEY)")
+        conn.commit()
+        conn.close()
+        rep = cboot.BootReport()
+        rows = cboot.build_root_inventory(rep)
+        cboot.generate_agents(rep, rows)                   # must not raise
+        truthy(any("Agents" in w for w in rep.warnings),
+               "the failure is reported: %r" % (rep.warnings,))
+
+
+@test("PG-08", "_purge_agents_dir")
+def _():
+    """purge preserves a claimed file a human has edited, matching cboot.
+
+    Ownership is still the registry lookup; the marker is consulted only to
+    DECLINE a deletion, which can never widen what purge removes.
+    """
+    pg = _load_purge()
+    with purge_rig() as (root, ag):
+        marked = ag / "gen.md"
+        marked.write_text(
+            '<!-- cboot:agent root="gen" generated="2026-01-01T00:00:00Z" -->\ngenerated\n')
+        pg_run(pg, root)
+        truthy(not marked.exists(), "an untouched generated file is still removed")
+
+    with purge_rig() as (root, ag):
+        edited = ag / "gen.md"
+        edited.write_text("---\nname: gen\n---\n\nI edited this by hand.\n")
+        p = pg_run(pg, root)
+        truthy(edited.exists(), "a claimed file whose marker is gone is preserved")
+        truthy(any("hand-edited" in s for s in p.skipped),
+               "and reported: %r" % (p.skipped,))
 
 
 # ── runner + coverage ────────────────────────────────────────────────
