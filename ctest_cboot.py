@@ -63,6 +63,7 @@ COVERED = {
     "_purge_agents_dir",
     "_ensure_agent_tables",
     "marker_matches",
+    "_root_is_gone",
 }
 
 
@@ -960,19 +961,27 @@ def _():
 
 @test("MU-04", "generate_agents")
 def _():
-    """Why AG-18 matters: an empty row list deletes every agent file.
+    """An empty inventory deletes NOTHING, because absence is not evidence.
 
-    This is the pre-fix behaviour of `return []`, demonstrated directly. It is
-    what the None guard in main()/refresh_project() exists to prevent.
+    The defence-in-depth half of AG-18. Even if a caller ignored the None guard
+    and passed an empty row list, no claim may close: closing requires positive
+    evidence the project is gone, and both projects are plainly still on disk.
+    Reading walk-absence as deletion was the same defect four times over — a
+    failed inventory, an undecodable CLAUDE.md, an undecodable ancestor, and a
+    root excluded by a visibility rule — so it is fixed at the source rather than
+    guarded at each call site.
     """
     with scratch_apex([("alpha", "A.\n"), ("beta", "B.\n")]) as apex:
         ag_optin(apex, [("alpha", 1, "alpha", "A."), ("beta", 1, "beta", "B.")])
         ag_boot(apex)
         ag = apex / ".claude" / "agents"
         eq(sorted(p.name for p in ag.iterdir()), ["alpha.md", "beta.md"], "setup")
-        cboot.generate_agents(cboot.BootReport(), [])     # what `return []` used to feed
-        eq(sorted(p.name for p in ag.iterdir()), [],
-           "an empty inventory wipes the directory — hence the None guard")
+        rep = cboot.BootReport()
+        cboot.generate_agents(rep, [])            # what `return []` used to feed
+        eq(sorted(p.name for p in ag.iterdir()), ["alpha.md", "beta.md"],
+           "both agents survive an empty inventory")
+        truthy(any("still present" in w for w in rep.warnings),
+               "and the skip is reported: %r" % (rep.warnings,))
 
 
 @test("AG-19", "build_root_inventory")
@@ -1115,12 +1124,14 @@ def _():
 
 @test("AG-23", "build_root_inventory")
 def _():
-    """A root reachable only through a symlink OUT of the apex is skipped, not fatal.
+    """A root symlinked in from outside the apex is ADMITTED, by its dirent path.
 
-    discover_roots follows directory symlinks, so a root can resolve outside the
-    apex. Every consumer computes rel_path with relative_to(), which raised an
-    uncaught ValueError and took down the whole boot before the report was
-    written. This tree really contains such links.
+    discover_roots follows directory symlinks, so a root's target can sit outside
+    the apex; resolving the row's path then broke relative_to() with an uncaught
+    ValueError that killed the boot. Excluding such roots instead was worse — it
+    made the close loop read a live project as deleted. A project a user
+    symlinked into the apex is a real project at a real in-apex path, and
+    child_propagate already provisions it.
     """
     outside = Path(tempfile.mkdtemp(prefix="ctest-outside-"))
     try:
@@ -1132,37 +1143,42 @@ def _():
                 return
             rep = cboot.BootReport()
             rows = cboot.build_root_inventory(rep)          # must not raise
-            truthy(rows is not None, "the walk still completes")
+            truthy(rows is not None, "the walk completes")
             rels = {r["rel_path"] for r in rows}
-            truthy("linked" not in rels, "the escapee is not in the inventory: %s" % sorted(rels))
-            truthy(any("outside the apex" in w for w in rep.warnings),
-                   "and it is reported: %r" % (rep.warnings,))
-            cboot.generate_agents(rep, rows)
-            truthy((apex / "alpha").is_dir(), "the healthy root is unaffected")
+            truthy("linked" in rels, "the symlinked root is admitted: %s" % sorted(rels))
+            ag_optin(apex, [("linked", 1, "outsider", "O.")])
+            cboot.generate_agents(cboot.BootReport(), cboot.build_root_inventory(rep))
+            truthy((apex / ".claude" / "agents" / "outsider.md").exists(),
+                   "and it can be addressable like any other project")
     finally:
         _shutil.rmtree(outside, ignore_errors=True)
 
 
 @test("AG-24", "build_root_inventory")
 def _():
-    """A symlink pointing at a `_`-prefixed directory does not launder it in.
+    """A symlink pointing at a `_` or `.` directory does not launder it in.
 
     discover_roots filters on the DIRENT name, so an ordinarily-named link to an
-    invisible directory would otherwise make it addressable.
+    invisible or Claude-internal directory would otherwise make it addressable.
+    Visibility is not negotiable, so this exclusion stays — and it is safe only
+    because a claim now closes on positive evidence of removal rather than on
+    absence from the walk.
     """
-    with scratch_apex([]) as apex:
-        hidden = apex / "_private"
-        hidden.mkdir()
-        (hidden / "CLAUDE.md").write_text("---\nroot: true\nname: private\n---\n\nP.\n")
-        try:
-            os.symlink(hidden, apex / "visible")
-        except (OSError, NotImplementedError):
-            return
-        rep = cboot.BootReport()
-        rows = cboot.build_root_inventory(rep)
-        rels = {r["rel_path"] for r in rows}
-        truthy("visible" not in rels and "_private" not in rels,
-               "no `_` path in the inventory: %s" % sorted(rels))
+    for target_name in ("_private", ".internal"):
+        with scratch_apex([]) as apex:
+            hidden = apex / target_name
+            hidden.mkdir()
+            (hidden / "CLAUDE.md").write_text(
+                "---\nroot: true\nname: hidden\n---\n\nH.\n")
+            try:
+                os.symlink(hidden, apex / "visible")
+            except (OSError, NotImplementedError):
+                return
+            rep = cboot.BootReport()
+            rows = cboot.build_root_inventory(rep)
+            rels = {r["rel_path"] for r in rows}
+            truthy("visible" not in rels and target_name not in rels,
+                   "%s stays out of the inventory: %s" % (target_name, sorted(rels)))
 
 
 @test("AG-25", "generate_agents")
@@ -1273,6 +1289,67 @@ def _():
             eq(deleted, purge_should_delete, "purge verdict for %r" % body[:40])
             eq(deleted, cboot_would_rewrite,
                "purge and cboot must agree for %r" % body[:40])
+
+
+@test("AG-29", "_root_is_gone")
+def _():
+    """A live project excluded from the walk keeps its agent, across repeated boots.
+
+    The exact scenario that made excluding out-of-apex roots worse than crashing:
+    the project is still on disk, its CLAUDE.md still reads, its opt-in row still
+    says yes — and it silently lost its agent file and had its claim closed, with
+    only an inventory warning that never mentioned agents. It never self-healed.
+    """
+    with scratch_apex([("delivery", "D.\n")]) as apex:
+        ag_optin(apex, [("delivery", 1, "delivery", "D.")])
+        ag_boot(apex)
+        f = apex / ".claude" / "agents" / "delivery.md"
+        truthy(f.exists(), "setup: the project has an agent")
+
+        # Exclude it from the walk without deleting it, exactly as a visibility
+        # rule would. Three consecutive boots must all leave it alone.
+        real = cboot.build_root_inventory
+
+        def without_delivery(report):
+            rows = real(report)
+            return None if rows is None else [r for r in rows if r["rel_path"] != "delivery"]
+
+        cboot.build_root_inventory = without_delivery
+        try:
+            for i in range(3):
+                rep = cboot.BootReport()
+                cboot.generate_agents(rep, cboot.build_root_inventory(rep))
+                truthy(f.exists(), "agent survives boot %d of the exclusion" % (i + 1))
+        finally:
+            cboot.build_root_inventory = real
+
+        conn = _sqlite_factory().connect(str(apex / ".state" / "roots.db"))
+        n = conn.execute("SELECT COUNT(*) FROM agent_registry"
+                         " WHERE valid_to IS NULL").fetchone()[0]
+        conn.close()
+        eq(n, 1, "and its claim stays open")
+
+
+@test("AG-30", "_root_is_gone")
+def _():
+    """A project that really was deleted still gets its claim closed."""
+    with scratch_apex([("alpha", "A.\n")]) as apex:
+        eq(cboot._root_is_gone("alpha")[0], False, "a live root is not gone")
+        _shutil.rmtree(apex / "alpha")
+        eq(cboot._root_is_gone("alpha")[0], True, "a deleted root is gone")
+
+    with scratch_apex([("beta", "B.\n")]) as apex:
+        (apex / "beta" / "CLAUDE.md").unlink()
+        eq(cboot._root_is_gone("beta")[0], True, "a root with no CLAUDE.md is gone")
+
+    with scratch_apex([("gamma", "G.\n")]) as apex:
+        (apex / "gamma" / "CLAUDE.md").write_text("---\nname: gamma\n---\n\nno longer a root\n")
+        eq(cboot._root_is_gone("gamma")[0], True, "dropping root: true is a real removal")
+
+    with scratch_apex([("delta", "D.\n")]) as apex:
+        (apex / "delta" / "CLAUDE.md").write_bytes(
+            "---\nroot: true\nname: delta\n---\n\ncafé\n".encode("utf-16"))
+        eq(cboot._root_is_gone("delta")[0], False, "an unreadable CLAUDE.md is not evidence")
 
 
 # ── runner + coverage ────────────────────────────────────────────────

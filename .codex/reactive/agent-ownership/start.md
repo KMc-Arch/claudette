@@ -55,7 +55,8 @@ Guessing is never safe: the failure modes are "delete a project's live agent" an
 | `owns(path, claims)` | Pure path lookup. Does not stat, open, decode, or parse. |
 | `is_tmp_artifact(path)` | `<name>.md.tmp` — cboot's own staging leftover, never hand-authored, always removable. |
 | `render_marker(rel_path, generated_at)` | Banner line. `rel_path` JSON-quoted so quotes/backslashes round-trip. |
-| `read_marker(path)` | Advisory `root=` value or `None`. **Never raises** — unreadable or undecodable yields `None`. |
+| `marker_matches(path, rel_path)` | The single "has a human been in this file" test. A missing marker and one retargeted to another root mean the same thing. NOT an ownership test — it only ever makes a caller do less. |
+| `read_marker(path)` | Advisory `root=` value or `None`. **Never raises** — unreadable or undecodable yields `None`. Prefer `marker_matches`. |
 | `derive_agent_name(basename)` | Leading punctuation stripped, case kept, everything outside `[A-Za-z0-9-]` collapsed to `-`. |
 | `yaml_scalar(value)` | JSON string form — always reads back as the same string. Unquoted, `name: 2025` is an int and `name: null` is None. |
 

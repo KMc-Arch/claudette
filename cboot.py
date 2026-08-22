@@ -872,26 +872,29 @@ def build_root_inventory(report):
         if rd in seen:
             continue
         # A directory symlink is followed by discover_roots (is_dir() follows
-        # links), so a root can resolve OUTSIDE the apex. Every consumer below
-        # assumes containment — rel_path is computed with relative_to() — and an
-        # escapee raised an uncaught ValueError that took down the entire boot
-        # before the report was even written. This tree really does contain such
-        # links (AggregatorM/Delivery points into OneDrive).
-        try:
-            rel_check = rd.relative_to(apex_abs)
-        except ValueError:
-            report.warn(f"Root inventory: {d.name} resolves outside the apex — skipped",
-                        f"{d} -> {rd}")
-            continue
-        # `_`-prefixed means invisible. discover_roots filters on the DIRENT name,
-        # so a normally-named symlink pointing at an invisible directory would
-        # launder it into the inventory and make it addressable.
-        if any(part.startswith("_") for part in rel_check.parts):
-            report.warn(f"Root inventory: {d.name} resolves into a `_` path — skipped",
-                        f"{d} -> {rd}")
+        # links), so a root's TARGET can sit outside the apex — this tree has such
+        # links (AggregatorM/Delivery points into OneDrive). Resolving the row's
+        # path then broke relative_to() with an uncaught ValueError.
+        #
+        # The row keeps the DIRENT path; the resolved path is used only as the
+        # de-duplication key. A project a user symlinked into the apex is a real
+        # project at a real in-apex path — child_propagate already provisions it —
+        # so excluding it from the inventory was the wrong call, and excluding it
+        # made the close loop below read it as deleted.
+        rel_check = d.relative_to(apex_abs)
+        # `_` (invisible) and `.` (Claude-internal) are excluded by discover_roots
+        # on the DIRENT name only, so a normally-named symlink pointing at such a
+        # directory would launder it in. Check the target too. Visibility is not
+        # negotiable, so this exclusion stays — it is safe because a claim is now
+        # closed only on POSITIVE evidence the project is gone.
+        hidden = next((part for part in rd.parts
+                       if part.startswith("_") or (part.startswith(".") and part != ".")), None)
+        if hidden is not None:
+            report.warn(f"Root inventory: {rel_check} resolves into `{hidden}` — skipped",
+                        f"{d} -> {rd}; its agent, if any, is left untouched")
             continue
         seen.add(rd)
-        descendants.append(rd)
+        descendants.append(d)
     all_roots = [apex_abs] + descendants
     root_set = set(all_roots)
 
@@ -1130,22 +1133,47 @@ def _default_description(text, fallback):
     return fallback
 
 
-def _any_unreadable_on_path(rel):
-    """True if this root, or any root: true ancestor of it, has an unreadable
-    CLAUDE.md.
+def _root_is_gone(rel):
+    """(True, "") if the project at `rel` is demonstrably gone; (False, why) if not.
 
-    discover_roots only descends into directories that are themselves roots, so
-    an undecodable CLAUDE.md removes its whole SUBTREE from the walk — not just
-    itself. Reading that as "these projects were deleted" closes the claims of
-    perfectly healthy nested roots and deletes their agent files. A file we
-    cannot read says nothing about any of them.
+    The ONLY basis on which a claim may be closed as root-removed. Absence from
+    the walk is not that basis: a root drops out of `discover_roots` for several
+    reasons that have nothing to do with the project being deleted — its own
+    CLAUDE.md is undecodable, an ANCESTOR's is (which removes the whole subtree),
+    the inventory write failed, or a visibility rule excluded it. Each of those,
+    read as a deletion, silently destroys a live project's agent file.
+
+    Deliberately conservative: anything we cannot positively establish counts as
+    still present. The cost of a false "gone" is a deleted agent and a closed
+    claim; the cost of a false "present" is a stale claim that the next boot
+    reconsiders. Those are not comparable.
     """
+    target = ROOT / rel
+    if not target.is_dir():
+        return True, ""
+
+    # An unreadable CLAUDE.md anywhere on the chain says nothing about any project
+    # on it — including this one, whose own file may read perfectly well.
     parts = Path(rel).parts
     for i in range(len(parts), 0, -1):
-        status, _ = _read_child_text(ROOT.joinpath(*parts[:i]) / "CLAUDE.md")
+        anc = ROOT.joinpath(*parts[:i])
+        status, _ = _read_child_text(anc / "CLAUDE.md")
         if status == "unreadable":
-            return True
-    return False
+            return False, f"{anc.name}/CLAUDE.md is unreadable"
+
+    status, text = _read_child_text(target / "CLAUDE.md")
+    if status == "missing":
+        return True, ""
+    if status == "unreadable":
+        return False, "its CLAUDE.md is unreadable"
+    # Present and readable: gone only if it deliberately stopped being a root.
+    child_propagate = _load_module(PREBOOT_DIR / "child_propagate.py")
+    try:
+        if child_propagate._has_root_true(target / "CLAUDE.md"):
+            return False, "it is still a root: true project"
+    except OSError:
+        return False, "its CLAUDE.md could not be re-read"
+    return True, ""
 
 
 def _free_name(candidate, taken, reserved):
@@ -1424,13 +1452,19 @@ def generate_agents(report, rows):
         for rel, row in current.items():
             reason = None
             if rel not in by_path:
-                # A root absent from the walk is not automatically gone. An
-                # unreadable or undecodable CLAUDE.md also drops a root out of
-                # discover_roots — and a file we cannot read says NOTHING about
-                # whether the project still wants an agent. Closing the claim
-                # there would delete a live project's agent over an encoding.
-                if _any_unreadable_on_path(rel):
-                    report.warn(f"Agents: {rel} CLAUDE.md unreadable — skipped this boot",
+                # ABSENCE FROM THE WALK IS NOT EVIDENCE OF DELETION, and treating
+                # it as such has been the same bug four times: a failed inventory,
+                # an undecodable CLAUDE.md, an undecodable ANCESTOR CLAUDE.md, and
+                # a root excluded by a visibility rule. Each time, a live project
+                # silently lost its agent.
+                #
+                # So the test is now positive: close the claim only when the
+                # project is demonstrably gone. Any other reason it left the walk
+                # leaves the claim and the file exactly as they are.
+                gone, why = _root_is_gone(rel)
+                if not gone:
+                    report.warn(f"Agents: {rel} is absent from the walk but still present "
+                                f"({why}) — skipped this boot",
                                 "claim and agent file left untouched")
                     skipped += 1
                     continue
