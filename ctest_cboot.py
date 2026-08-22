@@ -514,18 +514,26 @@ def _():
 
 @test("AG-03", "generate_agents")
 def _():
-    """A forged marker confers nothing: an unclaimed file is never touched."""
+    """A forged marker confers nothing, on the one stem the code actually visits.
+
+    The file is planted on the exact name an about-to-be-claimed root will ask
+    for, and its marker names that root — so a content-based ownership rule would
+    recognise it as cboot's own and overwrite it. Only the registry lookup treats
+    it as foreign. Planting it on some unrelated stem would prove nothing: no code
+    path visits a name nobody wants.
+    """
     with scratch_apex([("drawio", "A tool.\n")]) as apex:
-        ag_optin(apex, [("drawio", 1, "drawio", "A tool.")])
-        ag_boot(apex)
-        forged = apex / ".claude" / "agents" / "notmine.md"
-        forged.write_text('---\nname: notmine\n---\n\n'
+        forged = apex / ".claude" / "agents" / "drawio.md"
+        forged.write_text('---\nname: drawio\n---\n\n'
                           '<!-- cboot:agent root="drawio" generated="2026-01-01T00:00:00Z" -->\n'
                           'hand-written body\n')
         keep = forged.read_bytes()
+        ag_optin(apex, [("drawio", 1, "drawio", "A tool.")])
         ag_boot(apex)
-        truthy(forged.exists(), "forged-marker file survives")
-        eq(forged.read_bytes(), keep, "forged-marker file is unmodified")
+        eq(forged.read_bytes(), keep, "the forged file is not adopted or overwritten")
+        truthy((apex / ".claude" / "agents" / "drawio-2.md").exists(),
+               "and it blocks the name: %s"
+               % sorted(p.name for p in (apex / ".claude" / "agents").iterdir()))
 
 
 @test("AG-04", "generate_agents")
@@ -851,21 +859,43 @@ def _():
 
 @test("MU-01", "owns")
 def _():
-    """Revert ownership to a content heuristic -> AG-03's forged file is claimed."""
+    """Revert ownership to a content heuristic and AG-03's file IS overwritten.
+
+    A real mutant, not a simulation: owns() is replaced in a loaded copy of the
+    module by the rule the design removed — "carries a marker, therefore ours".
+    If AG-03 still passed under that, AG-03 would be proving nothing.
+    """
     ao = cboot._agent_ownership()
+    real_owns = ao.owns
+
+    def content_owns(path, claims):
+        return ao.read_marker(path) is not None
+
     with scratch_apex([("drawio", "A tool.\n")]) as apex:
-        ag_optin(apex, [("drawio", 1, "drawio", "A tool.")])
-        ag_boot(apex)
-        forged = apex / ".claude" / "agents" / "notmine.md"
-        forged.write_text('---\nname: notmine\n---\n\n'
+        forged = apex / ".claude" / "agents" / "drawio.md"
+        forged.write_text('---\nname: drawio\n---\n\n'
                           '<!-- cboot:agent root="drawio" generated="2026-01-01T00:00:00Z" -->\n'
                           'hand-written body\n')
-        claims = ao.claims_for(apex / ".state" / "roots.db",
-                               apex / ".claude" / "agents")
-        truthy(not ao.owns(forged, claims), "registry rule: not ours")
-        # The pre-fix heuristic: "has a marker => ours".
-        truthy(ao.read_marker(forged) is not None,
-               "the marker IS present — which is exactly why a content test fails here")
+        ag_optin(apex, [("drawio", 1, "drawio", "A tool.")])
+
+        # generate_agents loads its own instance of the module on every call, so
+        # the mutation has to go through the loader, not through this reference.
+        class _Mutant:
+            def __getattr__(self, k):
+                return getattr(ao, k)
+            owns = staticmethod(content_owns)
+            RegistryUnavailable = ao.RegistryUnavailable
+            AGENTS_REL = ao.AGENTS_REL
+            RESERVED_NAMES = ao.RESERVED_NAMES
+
+        saved = cboot._agent_ownership
+        cboot._agent_ownership = lambda: _Mutant()
+        try:
+            ag_boot(apex)
+        finally:
+            cboot._agent_ownership = saved
+        truthy("hand-written body" not in forged.read_text(),
+               "the mutation must destroy the file — otherwise AG-03 proves nothing")
 
 
 @test("MU-02", "generate_agents")
