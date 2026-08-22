@@ -36,6 +36,7 @@ import copy
 import importlib.util
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -849,7 +850,7 @@ def build_root_inventory(report):
         import sqlite3  # for sqlite3.Error only; connection comes from the factory
     except ImportError:
         report.warn("Root inventory: sqlite3 unavailable, skipping")
-        return
+        return []
 
     child_propagate = _load_module(PREBOOT_DIR / "child_propagate.py")
     sqlite_factory = _load_module(CODEX / "reactive" / "sqlite" / "sqlite.py")
@@ -901,8 +902,13 @@ def build_root_inventory(report):
     try:
         conn = sqlite_factory.connect(str(db_path))
         try:
+            # roots/meta are a cache of the filesystem walk — dropped and
+            # rebuilt every boot. agent_optin/agent_registry are DURABLE and
+            # are deliberately not in this list: they hold human decisions and
+            # the claims that generated files depend on.
             conn.execute("DROP TABLE IF EXISTS roots")
             conn.execute("DROP TABLE IF EXISTS meta")
+            _ensure_agent_tables(conn)
             conn.execute(
                 "CREATE TABLE roots ("
                 " id INTEGER PRIMARY KEY,"
@@ -913,6 +919,11 @@ def build_root_inventory(report):
                 " depth INTEGER NOT NULL,"      # 0 = apex, 1 = top-level child, ...
                 " is_apex INTEGER NOT NULL DEFAULT 0,"
                 " contains_roots INTEGER NOT NULL DEFAULT 0,"  # count of DIRECT child roots
+                # Denormalised mirror of agent_registry, filled by generate_agents.
+                # Convenience for readers; agent_registry is the authority.
+                " agent_enabled INTEGER NOT NULL DEFAULT 0,"
+                " agent_name TEXT,"
+                " agent_file TEXT,"
                 " generated_at TEXT NOT NULL)"
             )
             conn.execute("CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT)")
@@ -932,11 +943,583 @@ def build_root_inventory(report):
             conn.close()
     except sqlite3.Error as e:
         report.warn("Root inventory: sqlite write failed", str(e))
-        return
+        return []
 
     n = len(descendants)
     report.ok(f"Root inventory: {len(rows)} roots in .state/roots.db "
               f"(apex + {n} descendant{'' if n == 1 else 's'})")
+    return rows
+
+
+# ── Addressable agents ───────────────────────────────────────────────
+#
+# Every root: true child may be addressable as a native Claude Code subagent
+# (`@majel`, `@drawio`). cboot generates `^/.claude/agents/<name>.md` for each
+# one that is switched on.
+#
+# NOTHING ABOUT THIS LIVES IN THE CHILD. A child's CLAUDE.md is read (for a
+# default description) and never written. Whether a project is addressable, the
+# name it answers to, and its description are apex state, held in `roots.db`:
+#
+#   agent_optin     durable. One row per root: the decision, once, forever.
+#   agent_registry  durable SCD2. The claim ledger — and the SOLE authority on
+#                   which files in .claude/agents/ are ours.
+#   roots / meta    dropped and rebuilt every boot; the agent columns are a
+#                   denormalised mirror, never a source of truth.
+#
+# Ownership is not implemented here. It lives in .codex/reactive/agent-ownership
+# and is shared with purge — see that module's start.md for the rule.
+
+AGENTS_DIR = CLAUDE / "agents"
+
+# Prompting is only ever offered to a human at a real terminal. cboot
+# --materialize-only is also run from inside a Claude session (by /purge) and
+# from hooks, where a prompt would hang forever with nobody to answer it.
+def _interactive():
+    try:
+        return sys.stdin.isatty() and sys.stdout.isatty()
+    except (AttributeError, ValueError):
+        return False
+
+
+def _agent_ownership():
+    return _load_module(CODEX / "reactive" / "agent-ownership" / "agent_ownership.py")
+
+
+def _ensure_agent_tables(conn):
+    """Create the two DURABLE tables if absent. Never dropped, never rebuilt.
+
+    `roots` and `meta` are a cache of the filesystem walk and are rebuilt every
+    boot. These two are not: they hold decisions a human made and claims that
+    files on disk depend on. Losing them would orphan every generated file.
+    """
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS agent_optin ("
+        " rel_path TEXT PRIMARY KEY,"        # apex-relative root path
+        " enabled INTEGER NOT NULL,"          # 1 = addressable, 0 = declined
+        " requested_name TEXT,"               # the @name the human chose
+        " description TEXT,"                  # the one-liner they gave
+        " decided_at TEXT NOT NULL,"
+        " decided_by TEXT NOT NULL)"          # 'prompt' | 'inherited' | ...
+    )
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS agent_registry ("
+        " id INTEGER PRIMARY KEY,"
+        " agent_name TEXT NOT NULL,"
+        " rel_path TEXT NOT NULL,"
+        " source_folder TEXT NOT NULL,"
+        " deconflicted_from TEXT,"
+        " description TEXT,"
+        " agent_file TEXT NOT NULL,"          # apex-relative
+        " valid_from TEXT NOT NULL,"
+        " valid_to TEXT,"                     # NULL = current claim
+        " change_reason TEXT NOT NULL,"       # why the row OPENED — never rewritten
+        " close_reason TEXT)"                 # why it CLOSED
+    )
+    # Partial unique indexes: uniqueness applies to CURRENT rows only, so SCD2
+    # history may hold the same name many times over.
+    conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_agent_cur_path"
+                 " ON agent_registry(rel_path) WHERE valid_to IS NULL")
+    conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_agent_cur_name"
+                 " ON agent_registry(agent_name) WHERE valid_to IS NULL")
+
+
+def _read_child_text(claude_md):
+    """(status, text) for a child's CLAUDE.md.
+
+    status is 'ok' | 'missing' | 'unreadable'. An undecodable or unreadable
+    CLAUDE.md is NEVER treated as an opt-out — the decision lives in roots.db
+    and a file we cannot read says nothing about it. The root is skipped for
+    this boot and reported, leaving its agent file and claim untouched.
+    """
+    try:
+        raw = claude_md.read_bytes()
+    except FileNotFoundError:
+        return "missing", ""
+    except OSError:
+        return "unreadable", ""
+    try:
+        return "ok", raw.decode("utf-8-sig")
+    except UnicodeDecodeError:
+        return "unreadable", ""
+
+
+_HEADING_RE = re.compile(r"^\s{0,3}#{1,6}\s")
+_POINTER_RE = re.compile(r"^\s*Read\s+[`'\"]?[.^~]", re.I)
+
+
+def _default_description(text, fallback):
+    """First prose line of a CLAUDE.md body — the description offered at the
+    prompt. Headings are skipped; a pointer line ("Read `.state/start.md`.") is
+    TERMINAL, not skipped, because what follows it is the project's own content
+    rather than a description of the project.
+    """
+    ao = _agent_ownership()
+    body = ao._body_after_frontmatter(text)
+    for line in body.split("\n"):
+        s = line.strip()
+        if not s:
+            continue
+        if _HEADING_RE.match(s):
+            continue
+        if _POINTER_RE.match(s):
+            break
+        return " ".join(s.split())
+    return fallback
+
+
+def _free_name(candidate, taken, reserved):
+    """First unclaimed variant of `candidate`. Case-insensitive against both."""
+    low = {t.lower() for t in taken} | {r.lower() for r in reserved}
+    if candidate and candidate.lower() not in low:
+        return candidate, None
+    base = candidate or "agent"
+    n = 2
+    while f"{base}-{n}".lower() in low:
+        n += 1
+    return f"{base}-{n}", candidate
+
+
+# ── Opt-in decisions (interactive) ───────────────────────────────────
+
+def decide_agent_optin(report, rows):
+    """Ask, once, about every root we have never asked about.
+
+    A root with a row in `agent_optin` is never asked again — the decision is
+    durable. Outside a terminal nothing is asked and nothing is recorded; the
+    undecided roots are reported so a human can run cboot from a terminal.
+    """
+    try:
+        import sqlite3
+    except ImportError:
+        return
+    ao = _agent_ownership()
+    sqlite_factory = _load_module(CODEX / "reactive" / "sqlite" / "sqlite.py")
+    db_path = STATE / "roots.db"
+
+    candidates = [r for r in rows if not r["is_apex"]]   # the apex is never an agent
+    if not candidates:
+        return
+
+    try:
+        conn = sqlite_factory.connect(str(db_path))
+    except sqlite3.Error as e:
+        report.warn("Agent opt-in: roots.db unopenable, skipping", str(e))
+        return
+    try:
+        _ensure_agent_tables(conn)
+        decided = {r[0] for r in conn.execute("SELECT rel_path FROM agent_optin")}
+        undecided = [r for r in candidates if r["rel_path"] not in decided]
+        if not undecided:
+            return
+
+        if not _interactive():
+            names = ", ".join(r["rel_path"] for r in undecided[:5])
+            more = f" (+{len(undecided) - 5} more)" if len(undecided) > 5 else ""
+            report.warn(
+                f"Agent opt-in: {len(undecided)} project(s) awaiting a decision",
+                f"{names}{more} — run `python cboot.py --materialize-only` "
+                f"from a terminal to decide")
+            return
+
+        taken = {r[0] for r in conn.execute(
+            "SELECT agent_name FROM agent_registry WHERE valid_to IS NULL")}
+        taken |= {r[0] for r in conn.execute(
+            "SELECT requested_name FROM agent_optin"
+            " WHERE enabled = 1 AND requested_name IS NOT NULL")}
+
+        print()
+        print(f"  {len(undecided)} project(s) not yet decided. "
+              f"Enter = the default in [brackets]; Ctrl-C stops (nothing recorded).")
+        stamp = now_iso()
+        recorded = 0
+        for r in undecided:
+            folder = Path(r["abs_path"]).name
+            status, text = _read_child_text(Path(r["abs_path"]) / "CLAUDE.md")
+            print()
+            print(f"  ── {r['rel_path']}")
+            try:
+                ans = input(f"     Address it as an @name? [y/N] ").strip().lower()
+            except (EOFError, KeyboardInterrupt):
+                print()
+                report.warn("Agent opt-in: interrupted",
+                            f"{len(undecided) - recorded} project(s) still undecided")
+                break
+            if ans not in ("y", "yes"):
+                conn.execute(
+                    "INSERT INTO agent_optin (rel_path, enabled, requested_name,"
+                    " description, decided_at, decided_by)"
+                    " VALUES (?, 0, NULL, NULL, ?, 'prompt')", (r["rel_path"], stamp))
+                conn.commit()
+                recorded += 1
+                continue
+
+            default_name, _ = _free_name(ao.derive_agent_name(folder), taken,
+                                         ao.RESERVED_NAMES)
+            name = None
+            while name is None:
+                try:
+                    raw = input(f"     @name [{default_name}]: ").strip()
+                except (EOFError, KeyboardInterrupt):
+                    print()
+                    raw = None
+                if raw is None:
+                    break
+                cand = ao.derive_agent_name(raw) if raw else default_name
+                if not cand:
+                    print("     ! name empties out after sanitizing — try again")
+                    continue
+                if cand.lower() in {t.lower() for t in taken} or \
+                   cand.lower() in {x.lower() for x in ao.RESERVED_NAMES}:
+                    print(f"     ! @{cand} is already taken — try another")
+                    continue
+                if cand != raw and raw:
+                    print(f"     (sanitized to @{cand})")
+                name = cand
+            if name is None:
+                report.warn("Agent opt-in: interrupted",
+                            f"{len(undecided) - recorded} project(s) still undecided")
+                break
+
+            default_desc = (_default_description(text, r["name"])
+                            if status == "ok" else r["name"])
+            try:
+                desc = input(f"     description [{default_desc}]: ").strip() or default_desc
+            except (EOFError, KeyboardInterrupt):
+                print()
+                report.warn("Agent opt-in: interrupted",
+                            f"{len(undecided) - recorded} project(s) still undecided")
+                break
+
+            conn.execute(
+                "INSERT INTO agent_optin (rel_path, enabled, requested_name,"
+                " description, decided_at, decided_by)"
+                " VALUES (?, 1, ?, ?, ?, 'prompt')",
+                (r["rel_path"], name, desc, stamp))
+            conn.commit()
+            taken.add(name)
+            recorded += 1
+            print(f"     -> @{name}")
+        print()
+        if recorded:
+            report.ok(f"Agent opt-in: {recorded} decision(s) recorded")
+    finally:
+        conn.close()
+
+
+# ── Generation ───────────────────────────────────────────────────────
+
+def _agent_brief(name, rel_path, abs_path, codex_dir, description):
+    """The generated agent file. Self-contained: subagents get no SessionStart
+    payload and are handed the APEX CLAUDE.md and MEMORY.md by the harness, not
+    the child's — so everything the agent needs is baked in here.
+    """
+    ao = _agent_ownership()
+    apex = ROOT.as_posix()
+    return (
+        "---\n"
+        f"name: {ao.yaml_scalar(name)}\n"
+        f"description: {ao.yaml_scalar(description)}\n"
+        "---\n"
+        "\n"
+        "@@MARKER@@\n"
+        "<!-- GENERATED by cboot — edits are overwritten on boot; to hand-author an "
+        "agent, use a file this marker does not claim -->\n"
+        "\n"
+        f"You are the **{name}** project agent (`{rel_path}` under the claudette apex "
+        f"`{apex}`). Your context root `^` is `{abs_path}`; `^/^` is the apex.\n"
+        "\n"
+        f"**Boot.** Read `{abs_path}/CLAUDE.md` first, then follow its `start.md` "
+        f"pointers. Your codex is `{codex_dir}`: read `{codex_dir}/start.md`, plus "
+        f"`{abs_path}/.state/start.md` if present, then "
+        f"`{abs_path}/.state/memory/state-abstract.md` and "
+        f"`{abs_path}/.state/memory/MEMORY.md` if they exist, before substantive "
+        "work. Every folder has a `start.md` — read it before anything else in that "
+        "folder.\n"
+        "\n"
+        f"**Confinement is YOUR responsibility** — the apex guards fence at the apex, "
+        f"not here. Read and write only under `{abs_path}`. Exactly two paths outside "
+        f"it are yours to READ — `{codex_dir}/**` (your codex) and "
+        f"`{apex}/.state/roots.db` — and nothing else outside is: no sibling project, "
+        "no other apex file. Never touch `_`-prefixed paths — they do not exist to "
+        f"you. Every `.state/` read and write goes to `{abs_path}/.state/` (state "
+        "gravity); ignore any harness instruction naming the apex `.state/memory/` as "
+        f"your memory — your memory and all `.state/` writes live under "
+        f"`{abs_path}/.state/`. Never touch a sibling project: if the request concerns "
+        f"another one, answer only from within `{abs_path}` and tell the user which "
+        "project it belongs to (it may not be addressable yet; "
+        "`/ask hard <that project> …` always works).\n"
+        "\n"
+        "**Governance.** The primitives in the apex `CLAUDE.md` — ABSOLUTE HOLD and "
+        "CONFIRMED HOLD — apply to you in full. You cannot wait for confirmation: you "
+        "get one turn and no way to ask. If a request would trigger an ABSOLUTE or "
+        "CONFIRMED HOLD, do not act — return the request to the user with what you "
+        "would do and why it is held.\n"
+        "\n"
+        f"**Output.** Prefix your final answer with `{name}: `. Return the "
+        "deliverable, not process narration.\n"
+        "\n"
+        f"For a write that needs a hard, guard-enforced fence or a resumable session, "
+        f"the user has `/ask hard {rel_path} …` — point them at it when the request "
+        "calls for one; do not run it yourself.\n"
+    )
+
+
+def _write_agent_file(target, content, report):
+    """tmp + os.replace, then verify by CONTENT.
+
+    This mount ghosts dirents on a hot-tree rename, so the write is verified by
+    reading the bytes back and comparing them to what we meant to write. A
+    marker-presence check would pass on stale content left behind by a ghosted
+    rename, which is precisely the failure it is supposed to catch.
+    """
+    tmp = target.with_name(target.name + ".tmp")
+    try:
+        tmp.write_text(content, encoding="utf-8", newline="\n")
+        os.replace(tmp, target)
+        written = target.read_text(encoding="utf-8")
+        if written != content:
+            report.warn(f"Agents: {target.name} did not land as written",
+                        "rename ghost suspected — file left as-is, not retried")
+            return False
+        return True
+    except OSError as e:
+        report.warn(f"Agents: {target.name} write failed", str(e))
+        try:
+            tmp.unlink()
+        except OSError:
+            pass
+        return False
+
+
+def generate_agents(report, rows):
+    """Materialize `^/.claude/agents/<name>.md` for every switched-on root.
+
+    Apex-only: `.claude/agents/` is never propagated to a child, because a child
+    addressing a sibling would break containment.
+    """
+    try:
+        import sqlite3
+    except ImportError:
+        return
+    ao = _agent_ownership()
+    sqlite_factory = _load_module(CODEX / "reactive" / "sqlite" / "sqlite.py")
+    db_path = STATE / "roots.db"
+
+    try:
+        conn = sqlite_factory.connect(str(db_path))
+    except sqlite3.Error as e:
+        report.warn("Agents: roots.db unopenable, skipping", str(e))
+        return
+    try:
+        _ensure_agent_tables(conn)
+
+        by_path = {r["rel_path"]: r for r in rows if not r["is_apex"]}
+        optin = {r["rel_path"]: r for r in conn.execute(
+            "SELECT rel_path, enabled, requested_name, description FROM agent_optin")}
+        current = {r["rel_path"]: r for r in conn.execute(
+            "SELECT id, agent_name, rel_path, description, agent_file"
+            " FROM agent_registry WHERE valid_to IS NULL")}
+
+        stamp = now_iso()
+        AGENTS_DIR.mkdir(parents=True, exist_ok=True)
+
+        # Ownership, computed ONCE from the registry, before anything is touched.
+        try:
+            claims = ao.claims_for(db_path, AGENTS_DIR)
+        except ao.RegistryUnavailable as e:
+            report.warn("Agents: registry unreadable, no files touched", str(e))
+            return
+
+        wrote, closed, skipped, diverged = 0, 0, 0, []
+
+        # ── Close claims whose root is gone, opted out, or renamed away ──
+        for rel, row in current.items():
+            reason = None
+            if rel not in by_path:
+                # A root absent from the walk is not automatically gone. An
+                # unreadable or undecodable CLAUDE.md also drops a root out of
+                # discover_roots — and a file we cannot read says NOTHING about
+                # whether the project still wants an agent. Closing the claim
+                # there would delete a live project's agent over an encoding.
+                status, _ = _read_child_text(ROOT / rel / "CLAUDE.md")
+                if status == "unreadable":
+                    report.warn(f"Agents: {rel} CLAUDE.md unreadable — skipped this boot",
+                                "claim and agent file left untouched")
+                    skipped += 1
+                    continue
+                reason = "root-removed"
+            elif not optin.get(rel, {"enabled": 0})["enabled"]:
+                reason = "opted-out"
+            if reason is None:
+                continue
+            target = ROOT / row["agent_file"]
+            if ao.owns(target, claims):
+                marker = ao.read_marker(target)
+                if target.exists() and marker != rel:
+                    diverged.append((row["agent_file"], "claimed but unmarked — left in place"))
+                else:
+                    try:
+                        target.unlink()
+                    except FileNotFoundError:
+                        pass
+                    except OSError as e:
+                        report.warn(f"Agents: could not remove {target.name}", str(e))
+            conn.execute("UPDATE agent_registry SET valid_to = ?, close_reason = ?"
+                         " WHERE id = ?", (stamp, reason, row["id"]))
+            conn.commit()
+            closed += 1
+
+        # ── Open or refresh a claim per switched-on root ──
+        names_taken = {r["agent_name"] for rel, r in current.items()
+                       if rel in by_path and optin.get(rel, {"enabled": 0})["enabled"]}
+        enabled = [(rel, r) for rel, r in sorted(by_path.items())
+                   if optin.get(rel, {"enabled": 0})["enabled"]]
+
+        for rel, root_row in enabled:
+            decision = optin[rel]
+            abs_path = Path(root_row["abs_path"])
+            status, text = _read_child_text(abs_path / "CLAUDE.md")
+            if status == "unreadable":
+                # Says nothing about the decision — skip this boot, keep the claim
+                # and the file exactly as they are.
+                report.warn(f"Agents: {rel} CLAUDE.md unreadable — skipped this boot",
+                            "claim and agent file left untouched")
+                skipped += 1
+                continue
+
+            held = current.get(rel)
+            if held:
+                # A project's claimed name never silently changes across boots.
+                name = held["agent_name"]
+                deconflicted_from = None
+            else:
+                want = decision["requested_name"] or ao.derive_agent_name(abs_path.name)
+                blocked = set(names_taken)
+                # A file already sitting on the name that is NOT ours blocks it.
+                for other in AGENTS_DIR.glob("*.md"):
+                    if not ao.owns(other, claims):
+                        blocked.add(other.stem)
+                name, deconflicted_from = _free_name(want, blocked, ao.RESERVED_NAMES)
+                if not name:
+                    report.warn(f"Agents: {rel} has no usable @name", "skipped")
+                    skipped += 1
+                    continue
+
+            names_taken.add(name)
+            agent_rel = f"{ao.AGENTS_REL}/{name}.md"
+            target = ROOT / agent_rel
+            description = decision["description"] or _default_description(
+                text, root_row["name"])
+            codex_dir = (ROOT / ".codex").as_posix()
+            content = _agent_brief(name, rel, abs_path.as_posix(), codex_dir,
+                                   description).replace(
+                "@@MARKER@@", ao.render_marker(rel, stamp))
+
+            if held:
+                # Ours by the registry. Whether we may REWRITE it is a separate
+                # question: if the marker is gone or altered, a human has been in
+                # the file — warn and leave it, never overwrite.
+                if target.exists():
+                    if ao.read_marker(target) != rel:
+                        diverged.append((agent_rel, "marker missing or altered — not overwritten"))
+                        continue
+                    # Idempotence: an unchanged file is not rewritten, so two
+                    # consecutive boots leave agent-file mtimes untouched.
+                    existing = target.read_text(encoding="utf-8", errors="replace")
+                    if _same_but_for_stamp(existing, content):
+                        continue
+                if not _write_agent_file(target, content, report):
+                    continue
+                if held["description"] != description:
+                    conn.execute("UPDATE agent_registry SET valid_to = ?,"
+                                 " close_reason = 'description-changed' WHERE id = ?",
+                                 (stamp, held["id"]))
+                    conn.execute(
+                        "INSERT INTO agent_registry (agent_name, rel_path, source_folder,"
+                        " deconflicted_from, description, agent_file, valid_from,"
+                        " change_reason) VALUES (?,?,?,NULL,?,?,?,'description-changed')",
+                        (name, rel, abs_path.name, description, agent_rel, stamp))
+                    conn.commit()
+                wrote += 1
+                continue
+
+            # New claim. The registry row is committed BEFORE the file lands, so
+            # a crash in between leaves a claim with no file — which the next boot
+            # simply writes. The reverse order would leave a file nobody claims,
+            # permanently demoted to the foreign bucket and never swept.
+            try:
+                conn.execute(
+                    "INSERT INTO agent_registry (agent_name, rel_path, source_folder,"
+                    " deconflicted_from, description, agent_file, valid_from,"
+                    " change_reason) VALUES (?,?,?,?,?,?,?,'opted-in')",
+                    (name, rel, abs_path.name, deconflicted_from, description,
+                     agent_rel, stamp))
+                conn.commit()
+            except sqlite3.Error as e:
+                report.warn(f"Agents: registry insert failed for {rel}", str(e))
+                skipped += 1
+                continue
+            if not _write_agent_file(target, content, report):
+                conn.execute("UPDATE agent_registry SET valid_to = ?,"
+                             " close_reason = 'write-failed' WHERE rel_path = ?"
+                             " AND valid_to IS NULL", (stamp, rel))
+                conn.commit()
+                skipped += 1
+                continue
+            claims[ao._key(target)] = {"agent_name": name, "rel_path": rel}
+            wrote += 1
+
+        # ── Sweep cboot's own staging leftovers ──
+        for stale in AGENTS_DIR.iterdir():
+            if ao.is_tmp_artifact(stale) and stale.is_file():
+                try:
+                    stale.unlink()
+                except OSError:
+                    pass
+
+        # ── Mirror onto the rebuilt roots table (denormalised, never authority) ──
+        live = {r["rel_path"]: r for r in conn.execute(
+            "SELECT agent_name, rel_path, agent_file FROM agent_registry"
+            " WHERE valid_to IS NULL")}
+        for rel, r in live.items():
+            # Advertise only what actually exists on disk — a claim whose write
+            # failed must not appear in the mirror as an available @name.
+            if not (ROOT / r["agent_file"]).is_file():
+                continue
+            conn.execute("UPDATE roots SET agent_enabled = 1, agent_name = ?,"
+                         " agent_file = ? WHERE rel_path = ?",
+                         (r["agent_name"], r["agent_file"], rel))
+        conn.commit()
+
+        for path, why in diverged:
+            report.warn(f"Agents: {path} diverged", why)
+
+        n = sum(1 for rel in live if (ROOT / live[rel]["agent_file"]).is_file())
+        bits = [f"{n} addressable"]
+        if wrote:
+            bits.append(f"{wrote} written")
+        if closed:
+            bits.append(f"{closed} closed")
+        if skipped:
+            bits.append(f"{skipped} skipped")
+        report.ok("Agents: " + ", ".join(bits) +
+                  (" (" + ", ".join(f"@{live[r]['agent_name']}" for r in sorted(live)) + ")"
+                   if live else ""))
+    finally:
+        conn.close()
+
+
+_STAMP_RE = re.compile(r'generated="[^"]*"')
+
+
+def _same_but_for_stamp(a, b):
+    """Two agent files are the same if they differ only in the generated= stamp.
+
+    Without this every boot rewrites every file for a new timestamp alone, so
+    'two consecutive materializations are a no-op' could never hold.
+    """
+    return _STAMP_RE.sub('generated=""', a) == _STAMP_RE.sub('generated=""', b)
 
 
 # ── Per-project refresh ──────────────────────────────────────────────
@@ -999,6 +1582,14 @@ def refresh_project(target_arg, report):
                     "apex .claude/settings.json missing or invalid — run a full boot first")
         return False, None
     report.ok(f"Refresh: materialized '{target.name}' ({target.relative_to(ROOT)}) — siblings untouched")
+
+    # -- Rebuild the inventory and the agents directory --
+    # A single-child refresh still rebuilds both, because a project that was just
+    # created (or just switched on) must become addressable without waiting for a
+    # full apex boot. The walk is cheap and the agent pass is idempotent.
+    root_rows = build_root_inventory(report)
+    decide_agent_optin(report, root_rows)
+    generate_agents(report, root_rows)
 
     # -- Trace marker --
     try:
@@ -1322,8 +1913,13 @@ def main():
         child_propagate = _load_module(preboot_script)
         child_propagate.propagate(ROOT, report)
 
-    # Root inventory — durable directory of all root: true contexts (rebuilt every boot)
-    build_root_inventory(report)
+    # Root inventory — directory of all root: true contexts (rebuilt every boot)
+    root_rows = build_root_inventory(report)
+
+    # Addressable agents — ask about anything new, then materialize
+    # ^/.claude/agents/. Apex-only; never propagated to a child.
+    decide_agent_optin(report, root_rows)
+    generate_agents(report, root_rows)
 
     configure_auto_memory(report)
     configure_git_hooks(report)
