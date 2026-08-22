@@ -1022,6 +1022,20 @@ def _ensure_agent_tables(conn):
                  " ON agent_registry(rel_path) WHERE valid_to IS NULL")
     conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_agent_cur_name"
                  " ON agent_registry(agent_name) WHERE valid_to IS NULL")
+    # A live claim with no recorded decision predates the decision table. It is
+    # still evidence of a decision a human made — under the older design, by
+    # putting `agent: true` in the project's own CLAUDE.md. Inherit it rather
+    # than treating silence as a decline, which would delete three working
+    # agents and make the user re-answer for projects already switched on.
+    # Idempotent: a project that was later switched off has an enabled=0 row,
+    # so this can never resurrect it.
+    conn.execute(
+        "INSERT INTO agent_optin (rel_path, enabled, requested_name, description,"
+        " decided_at, decided_by)"
+        " SELECT r.rel_path, 1, r.agent_name, r.description, r.valid_from, 'inherited'"
+        " FROM agent_registry r"
+        " WHERE r.valid_to IS NULL"
+        "   AND NOT EXISTS (SELECT 1 FROM agent_optin o WHERE o.rel_path = r.rel_path)")
 
 
 def _read_child_text(claude_md):

@@ -19,6 +19,7 @@ import importlib.util
 import io
 import json
 import os
+import re
 import stat
 import sys
 import tempfile
@@ -49,6 +50,16 @@ COVERED = {
     "switch_command",
     "_filter_exec_passthrough",
     "build_root_inventory",
+    # Addressable agents. The ownership entries live in the shared module
+    # (.codex/reactive/agent-ownership) but are covered here because cboot and
+    # purge are the only two callers and they must never diverge.
+    "decide_agent_optin",
+    "generate_agents",
+    "claims_for",
+    "owns",
+    "derive_agent_name",
+    "render_marker",
+    "_purge_agents_dir",
 }
 
 
@@ -72,6 +83,37 @@ def eq(actual, expected, msg=""):
 def truthy(cond, msg=""):
     if not cond:
         raise Fail(msg or "expected truthy")
+
+
+# ── live-child fixture ───────────────────────────────────────────────
+
+def _discover_live_child():
+    """First direct child of the apex that is itself a root: true context.
+
+    Deliberately discovered, not hardcoded: this harness spent a while red on
+    main because it named a folder (`majel`) that had since been renamed
+    (`~majel`), and nothing in the failure said so.
+    """
+    for d in sorted(ROOT.iterdir()):
+        if not d.is_dir() or d.name.startswith((".", "_")):
+            continue
+        cm = d / "CLAUDE.md"
+        try:
+            head = cm.read_text(encoding="utf-8-sig")[:400]
+        except (OSError, UnicodeDecodeError):
+            continue
+        if re.search(r"^root:\s*true\s*$", head, re.M):
+            return d.name
+    return None
+
+
+LIVE_CHILD = _discover_live_child()
+
+
+def need_live_child():
+    if LIVE_CHILD is None:
+        raise Fail("no root: true child under the apex to test against")
+    return LIVE_CHILD
 
 
 # ── claude stub fixture ──────────────────────────────────────────────
@@ -175,8 +217,9 @@ def _():
 
 @test("RT-01", "_resolve_target")
 def _():
-    p, err = cboot._resolve_target("majel")
-    eq(err, None, "valid child resolves"); truthy(p and p.name == "majel")
+    child = need_live_child()
+    p, err = cboot._resolve_target(child)
+    eq(err, None, "valid child resolves"); truthy(p and p.name == child)
 
 @test("RT-02", "_resolve_target")
 def _():
@@ -236,21 +279,22 @@ def _():
 
 @test("EX-02", "exec_in_project")
 def _():
-    code, j, _ = run_exec("majel", "   ", [])   # empty prompt, valid target
+    code, j, _ = run_exec(need_live_child(), "   ", [])   # empty prompt, valid target
     eq(code, 1); eq(j["error"], "empty prompt")
-    truthy(j["root"] and j["root"]["name"] == "Majel", "empty-prompt error carries the resolved root")
+    truthy(j["root"] and j["root"]["rel_path"] == need_live_child(),
+           "empty-prompt error carries the resolved root")
 
 @test("EX-05", "exec_in_project")
 def _():
     with claude_stub():
-        code, j, _ = run_exec("majel", "hello", [])
+        code, j, _ = run_exec(need_live_child(), "hello", [])
     eq(code, 0); truthy(j is not None, "stdout is a single parseable JSON object")
     eq(j["kind"], "result")
 
 @test("EX-06", "exec_in_project")
 def _():
     with claude_stub():
-        _, j, _ = run_exec("majel", "hello", [])
+        _, j, _ = run_exec(need_live_child(), "hello", [])
     for k in ("kind", "mode", "root", "session_id", "result", "is_error",
               "cost_usd", "duration_ms", "num_turns"):
         truthy(k in j, f"envelope missing key {k}")
@@ -264,21 +308,22 @@ def _():
     os.environ["CLAUDE_PROJECT_DIR"] = "/WRONG/apex"
     try:
         with claude_stub() as rec:
-            run_exec("majel", "hello", [])
+            run_exec(need_live_child(), "hello", [])
             data = rec.read_text()
     finally:
         if saved is None:
             os.environ.pop("CLAUDE_PROJECT_DIR", None)
         else:
             os.environ["CLAUDE_PROJECT_DIR"] = saved
-    child = str((ROOT / "majel"))
+    child = str((ROOT / need_live_child()))
     truthy(f"CWD: {child}" in data, f"cwd not fenced at child:\n{data}")
     truthy(f"CPD: {child}" in data, f"CLAUDE_PROJECT_DIR not overridden to child:\n{data}")
 
 @test("EX-08", "exec_in_project")
 def _():
     with claude_stub() as rec:
-        _, _, err = run_exec("majel", "hello", ["--resume", "r1", "--dangerously-skip-permissions"])
+        _, _, err = run_exec(need_live_child(), "hello",
+                             ["--resume", "r1", "--dangerously-skip-permissions"])
         argv = rec.read_text()
     truthy("--resume r1" in argv, f"allowlisted passthrough not forwarded:\n{argv}")
     truthy("--dangerously-skip-permissions" not in argv, "governance flag reached claude")
@@ -289,14 +334,14 @@ def _():
     # is_error:true on a parseable (kind:"result") envelope — message in `result`,
     # NO top-level `error` key, exit 1.
     with claude_stub('{"is_error":true,"result":"boom","session_id":"s9"}'):
-        code, j, _ = run_exec("majel", "hello", [])
+        code, j, _ = run_exec(need_live_child(), "hello", [])
     eq(code, 1); eq(j["kind"], "result"); eq(j["is_error"], True)
     eq(j["result"], "boom"); truthy("error" not in j, "kind:result must not carry an `error` key")
 
 @test("EX-10", "exec_in_project")
 def _():
     with claude_stub("this is not json") as rec:
-        code, j, _ = run_exec("majel", "hello", [])
+        code, j, _ = run_exec(need_live_child(), "hello", [])
     eq(code, 1); eq(j["kind"], "error")
     truthy("no parseable JSON" in j["error"], f"got {j.get('error')!r}")
 
@@ -312,7 +357,7 @@ def _():
     (d / "req.txt").write_text(payload)
     try:
         with claude_stub() as rec:
-            code, j, _ = run_exec("majel", None, [], prompt_file=str(d / "req.txt"))
+            code, j, _ = run_exec(need_live_child(), None, [], prompt_file=str(d / "req.txt"))
             argv = rec.read_text()
     finally:
         import shutil
@@ -328,10 +373,10 @@ def _():
 def _():
     out = io.StringIO()
     with contextlib.redirect_stdout(out):
-        code = cboot.switch_command("majel")
+        code = cboot.switch_command(need_live_child())
     line = out.getvalue().strip()
     eq(code, 0)
-    eq(line, f'python cboot.py --project "{(ROOT/"majel").as_posix()}" --launch')
+    eq(line, f'python cboot.py --project "{(ROOT/LIVE_CHILD).as_posix()}" --launch')
 
 @test("SW-04", "switch_command")
 def _():
@@ -355,11 +400,502 @@ def _():
     conn = m.connect(str(db))
     cols = {r[1] for r in conn.execute("PRAGMA table_info(roots)")}
     eq(cols, {"id", "name", "abs_path", "rel_path", "parent_path", "depth",
-              "is_apex", "contains_roots", "generated_at"}, "roots schema")
+              "is_apex", "contains_roots", "agent_enabled", "agent_name",
+              "agent_file", "generated_at"}, "roots schema")
     apex = list(conn.execute("SELECT rel_path,depth,parent_path FROM roots WHERE is_apex=1"))
     eq(len(apex), 1, "exactly one apex row")
     eq(tuple(apex[0]), (".", 0, None), "apex row shape")
+    # roots/meta are rebuilt each boot; these two are DURABLE and must be present
+    # regardless, because every file in .claude/agents/ depends on them.
+    tables = {r[0] for r in conn.execute(
+        "SELECT name FROM sqlite_master WHERE type='table'")}
+    truthy({"agent_optin", "agent_registry"} <= tables,
+           "durable agent tables present: %s" % sorted(tables))
     conn.close()
+
+
+# ── Addressable agents (AG) ──────────────────────────────────────────
+#
+# Every AG test builds a throwaway apex in a temp dir and redirects cboot's
+# module globals at it. Nothing here reads or writes the live /mnt/claudette
+# .claude/agents/ or .state/roots.db — so there is no ring-fence to roll back
+# and no way for a test run to leave the live apex altered.
+
+import shutil as _shutil
+
+_PURGE_PY = ROOT / ".codex" / "explicit" / "purge" / "purge.py"
+
+
+def _load_purge():
+    spec = importlib.util.spec_from_file_location("purge_mod", _PURGE_PY)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+def _sqlite_factory():
+    sf = ROOT / ".codex" / "reactive" / "sqlite" / "sqlite.py"
+    spec = importlib.util.spec_from_file_location("sqlite_factory", sf)
+    m = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(m)
+    return m
+
+
+@contextlib.contextmanager
+def scratch_apex(children=()):
+    """A disposable apex with cboot's globals pointed at it.
+
+    children: iterable of (relative_folder, body_text_after_frontmatter).
+    """
+    tmp = Path(tempfile.mkdtemp(prefix="ctest-ag-"))
+    saved = (cboot.ROOT, cboot.STATE, cboot.CLAUDE, cboot.AGENTS_DIR)
+    try:
+        (tmp / ".claude" / "agents").mkdir(parents=True)
+        (tmp / ".state").mkdir(parents=True)
+        (tmp / "CLAUDE.md").write_text(
+            "---\nroot: true\napex-root: true\nname: apex\n---\n")
+        for rel, body in children:
+            d = tmp / rel
+            d.mkdir(parents=True, exist_ok=True)
+            (d / "CLAUDE.md").write_text(
+                "---\nroot: true\nname: %s\n---\n\n%s" % (rel.lstrip("~"), body))
+        cboot.ROOT = tmp
+        cboot.STATE = tmp / ".state"
+        cboot.CLAUDE = tmp / ".claude"
+        cboot.AGENTS_DIR = tmp / ".claude" / "agents"
+        yield tmp
+    finally:
+        cboot.ROOT, cboot.STATE, cboot.CLAUDE, cboot.AGENTS_DIR = saved
+        _shutil.rmtree(tmp, ignore_errors=True)
+
+
+def ag_optin(apex, rows):
+    """Record opt-in decisions the way the interactive prompt would."""
+    conn = _sqlite_factory().connect(str(apex / ".state" / "roots.db"))
+    cboot._ensure_agent_tables(conn)
+    for rel, enabled, name, desc in rows:
+        conn.execute(
+            "INSERT OR REPLACE INTO agent_optin VALUES (?,?,?,?,"
+            "'2026-01-01T00:00:00Z','prompt')", (rel, enabled, name, desc))
+    conn.commit()
+    conn.close()
+
+
+def ag_boot(apex):
+    rep = cboot.BootReport()
+    rows = cboot.build_root_inventory(rep)
+    cboot.generate_agents(rep, rows)
+    return rep
+
+
+@test("AG-01", "generate_agents")
+def _():
+    """Only switched-on roots get a file; a declined root gets none."""
+    with scratch_apex([("drawio", "A tool.\n"), ("zMisc", "Misc.\n")]) as apex:
+        ag_optin(apex, [("drawio", 1, "drawio", "A tool."), ("zMisc", 0, None, None)])
+        ag_boot(apex)
+        ag = apex / ".claude" / "agents"
+        truthy((ag / "drawio.md").exists(), "switched-on root has an agent file")
+        truthy(not (ag / "zMisc.md").exists(), "declined root has no agent file")
+
+
+@test("AG-02", "generate_agents")
+def _():
+    """Nothing is written into the child. Its CLAUDE.md is read, never edited."""
+    with scratch_apex([("drawio", "A tool.\n")]) as apex:
+        child = apex / "drawio" / "CLAUDE.md"
+        before = child.read_bytes()
+        ag_optin(apex, [("drawio", 1, "drawio", "A tool.")])
+        ag_boot(apex)
+        eq(child.read_bytes(), before, "child CLAUDE.md must be byte-identical")
+
+
+@test("AG-03", "generate_agents")
+def _():
+    """A forged marker confers nothing: an unclaimed file is never touched."""
+    with scratch_apex([("drawio", "A tool.\n")]) as apex:
+        ag_optin(apex, [("drawio", 1, "drawio", "A tool.")])
+        ag_boot(apex)
+        forged = apex / ".claude" / "agents" / "notmine.md"
+        forged.write_text('---\nname: notmine\n---\n\n'
+                          '<!-- cboot:agent root="drawio" generated="2026-01-01T00:00:00Z" -->\n'
+                          'hand-written body\n')
+        keep = forged.read_bytes()
+        ag_boot(apex)
+        truthy(forged.exists(), "forged-marker file survives")
+        eq(forged.read_bytes(), keep, "forged-marker file is unmodified")
+
+
+@test("AG-04", "generate_agents")
+def _():
+    """A non-UTF-8 file in agents/ neither crashes the pass nor is touched."""
+    with scratch_apex([("drawio", "A tool.\n")]) as apex:
+        ag_optin(apex, [("drawio", 1, "drawio", "A tool.")])
+        ag_boot(apex)
+        blob = apex / ".claude" / "agents" / "cp1252.md"
+        blob.write_bytes(b"---\nname: x\n---\n\ncaf\xe9 hand-written\n")
+        raw = blob.read_bytes()
+        ag_boot(apex)          # must not raise
+        eq(blob.read_bytes(), raw, "non-UTF-8 file untouched")
+
+
+@test("AG-05", "generate_agents")
+def _():
+    """Our own file, marker stripped by a human: warned, never overwritten."""
+    with scratch_apex([("drawio", "A tool.\n")]) as apex:
+        ag_optin(apex, [("drawio", 1, "drawio", "A tool.")])
+        ag_boot(apex)
+        f = apex / ".claude" / "agents" / "drawio.md"
+        f.write_text("---\nname: drawio\n---\n\nI edited this by hand.\n")
+        rep = ag_boot(apex)
+        truthy("I edited this by hand." in f.read_text(), "hand edit preserved")
+        truthy(any("diverged" in w for w in rep.warnings),
+               "divergence warned: %r" % (rep.warnings,))
+
+
+@test("AG-06", "generate_agents")
+def _():
+    """Opting out closes the claim and removes our file, keeping SCD2 history."""
+    with scratch_apex([("drawio", "A tool.\n")]) as apex:
+        ag_optin(apex, [("drawio", 1, "drawio", "A tool.")])
+        ag_boot(apex)
+        f = apex / ".claude" / "agents" / "drawio.md"
+        truthy(f.exists(), "file created first")
+        ag_optin(apex, [("drawio", 0, None, None)])
+        ag_boot(apex)
+        truthy(not f.exists(), "file removed on opt-out")
+        conn = _sqlite_factory().connect(str(apex / ".state" / "roots.db"))
+        row = conn.execute("SELECT valid_to, close_reason, change_reason"
+                           " FROM agent_registry").fetchone()
+        conn.close()
+        truthy(row[0] is not None, "row closed")
+        eq(row[1], "opted-out", "close_reason")
+        eq(row[2], "opted-in", "opening change_reason is never rewritten")
+
+
+@test("AG-07", "generate_agents")
+def _():
+    """An undecodable child CLAUDE.md is NOT an opt-out — skip, keep, warn."""
+    with scratch_apex([("drawio", "A tool.\n")]) as apex:
+        ag_optin(apex, [("drawio", 1, "drawio", "A tool.")])
+        ag_boot(apex)
+        f = apex / ".claude" / "agents" / "drawio.md"
+        before = f.read_bytes()
+        (apex / "drawio" / "CLAUDE.md").write_bytes(
+            "---\nroot: true\nname: drawio\n---\n\ncafé\n".encode("utf-16"))
+        rep = ag_boot(apex)
+        truthy(f.exists(), "agent file survives an undecodable child CLAUDE.md")
+        eq(f.read_bytes(), before, "agent file unchanged")
+        truthy(any("unreadable" in w for w in rep.warnings),
+               "skip is reported: %r" % (rep.warnings,))
+
+
+@test("AG-08", "generate_agents")
+def _():
+    """A removed root closes the claim and removes the file."""
+    with scratch_apex([("drawio", "A tool.\n")]) as apex:
+        ag_optin(apex, [("drawio", 1, "drawio", "A tool.")])
+        ag_boot(apex)
+        f = apex / ".claude" / "agents" / "drawio.md"
+        _shutil.rmtree(apex / "drawio")
+        ag_boot(apex)
+        truthy(not f.exists(), "file removed when the root is gone")
+
+
+@test("AG-09", "generate_agents")
+def _():
+    """A foreign file holding the name forces de-confliction; it is not evicted."""
+    with scratch_apex([("drawio", "A tool.\n")]) as apex:
+        (apex / ".claude" / "agents" / "drawio.md").write_text(
+            "---\nname: drawio\n---\n\nmine, hand-authored\n")
+        ag_optin(apex, [("drawio", 1, "drawio", "A tool.")])
+        ag_boot(apex)
+        ag = apex / ".claude" / "agents"
+        truthy("mine, hand-authored" in (ag / "drawio.md").read_text(),
+               "pre-existing file always wins")
+        truthy((ag / "drawio-2.md").exists(),
+               "newcomer de-conflicted: %s" % sorted(p.name for p in ag.iterdir()))
+
+
+@test("AG-10", "generate_agents")
+def _():
+    """YAML-hostile names are emitted quoted, so they read back as strings."""
+    with scratch_apex([("2025", "A year.\n"), ("null", "Nothing.\n")]) as apex:
+        ag_optin(apex, [("2025", 1, "2025", "A year."), ("null", 1, "null", "Nothing.")])
+        ag_boot(apex)
+        ag = apex / ".claude" / "agents"
+        truthy('name: "2025"' in (ag / "2025.md").read_text(), "numeric name quoted")
+        truthy('name: "null"' in (ag / "null.md").read_text(), "null name quoted")
+
+
+@test("AG-11", "generate_agents")
+def _():
+    """cboot's own .md.tmp staging leftovers are swept."""
+    with scratch_apex([("drawio", "A tool.\n")]) as apex:
+        ag_optin(apex, [("drawio", 1, "drawio", "A tool.")])
+        ag_boot(apex)
+        stale = apex / ".claude" / "agents" / "drawio.md.tmp"
+        stale.write_text("interrupted write\n")
+        ag_boot(apex)
+        truthy(not stale.exists(), ".md.tmp leftover removed")
+
+
+@test("AG-12", "generate_agents")
+def _():
+    """Two consecutive materializations are a no-op on agent-file mtimes."""
+    with scratch_apex([("drawio", "A tool.\n"), ("~majel", "Steward.\n")]) as apex:
+        ag_optin(apex, [("drawio", 1, "drawio", "A tool."),
+                        ("~majel", 1, "majel", "Steward.")])
+        ag_boot(apex)
+        ag = apex / ".claude" / "agents"
+        before = {p.name: p.stat().st_mtime_ns for p in ag.iterdir()}
+        ag_boot(apex)
+        after = {p.name: p.stat().st_mtime_ns for p in ag.iterdir()}
+        eq(after, before, "no rewrite on an unchanged boot")
+
+
+@test("AG-13", "decide_agent_optin")
+def _():
+    """Outside a terminal nothing is prompted and no decision is invented."""
+    with scratch_apex([("drawio", "A tool.\n")]) as apex:
+        rep = cboot.BootReport()
+        rows = cboot.build_root_inventory(rep)
+        cboot.decide_agent_optin(rep, rows)     # stdin is not a tty under the runner
+        conn = _sqlite_factory().connect(str(apex / ".state" / "roots.db"))
+        n = conn.execute("SELECT COUNT(*) FROM agent_optin").fetchone()[0]
+        conn.close()
+        eq(n, 0, "no decision recorded without a human")
+        truthy(any("awaiting a decision" in w for w in rep.warnings),
+               "undecided roots reported: %r" % (rep.warnings,))
+
+
+@test("AG-14", "claims_for")
+def _():
+    """A missing registry raises rather than returning a partial answer."""
+    ao = cboot._agent_ownership()
+    with scratch_apex() as apex:
+        raised = False
+        try:
+            ao.claims_for(apex / ".state" / "nope.db", apex / ".claude" / "agents")
+        except ao.RegistryUnavailable:
+            raised = True
+        truthy(raised, "missing db must raise RegistryUnavailable")
+
+
+@test("AG-15", "owns")
+def _():
+    """owns() is a path lookup — it never opens the file it is asked about."""
+    ao = cboot._agent_ownership()
+    with scratch_apex() as apex:
+        ag = apex / ".claude" / "agents"
+        claims = {ao._key(ag / "a.md"): {"agent_name": "a", "rel_path": "a"}}
+        truthy(ao.owns(ag / "a.md", claims), "claimed path owned even with no file on disk")
+        truthy(not ao.owns(ag / "b.md", claims), "unclaimed path not owned")
+
+
+@test("AG-16", "derive_agent_name")
+def _():
+    ao = cboot._agent_ownership()
+    eq(ao.derive_agent_name("~majel"), "majel", "leading punctuation stripped")
+    eq(ao.derive_agent_name("zMisc"), "zMisc", "case kept")
+    eq(ao.derive_agent_name("a #b"), "a-b", "spaces and punctuation collapse")
+    eq(ao.derive_agent_name("we:ird"), "we-ird", "a colon can never reach a filename")
+
+
+@test("AG-17", "render_marker")
+def _():
+    """A quote in a rel_path round-trips instead of terminating the attribute."""
+    ao = cboot._agent_ownership()
+    with scratch_apex() as apex:
+        f = apex / ".claude" / "agents" / "x.md"
+        rel = 'we"ird/path'
+        f.write_text("---\nname: x\n---\n\n%s\nbody\n"
+                     % ao.render_marker(rel, "2026-01-01T00:00:00Z"))
+        eq(ao.read_marker(f), rel, "marker round-trips a double quote")
+
+
+# ── purge side of the same rule (PG) ─────────────────────────────────
+
+@contextlib.contextmanager
+def purge_rig(claimed=("gen",), with_db=True):
+    tmp = Path(tempfile.mkdtemp(prefix="ctest-pg-"))
+    try:
+        ag = tmp / ".claude" / "agents"
+        ag.mkdir(parents=True)
+        (tmp / ".claude" / "skills" / "x").mkdir(parents=True)
+        (tmp / ".claude" / "skills" / "x" / "SKILL.md").write_text("shim\n")
+        (tmp / ".state").mkdir(parents=True)
+        if with_db:
+            conn = _sqlite_factory().connect(str(tmp / ".state" / "roots.db"))
+            cboot._ensure_agent_tables(conn)
+            for n in claimed:
+                conn.execute(
+                    "INSERT INTO agent_registry (agent_name, rel_path, source_folder,"
+                    " description, agent_file, valid_from, change_reason)"
+                    " VALUES (?,?,?,'d',?,'2026-01-01T00:00:00Z','opted-in')",
+                    (n, n, n, ".claude/agents/%s.md" % n))
+            conn.commit()
+            conn.close()
+        yield tmp, ag
+    finally:
+        _shutil.rmtree(tmp, ignore_errors=True)
+
+
+def pg_run(pg, root):
+    purger = pg.Purger(root, dry_run=False)
+    pg._purge_claude_dir(purger, root / ".claude", root)
+    return purger
+
+
+@test("PG-01", "_purge_agents_dir")
+def _():
+    """Claimed files go; hand-authored files stay."""
+    pg = _load_purge()
+    with purge_rig() as (root, ag):
+        (ag / "gen.md").write_text("generated\n")
+        (ag / "hand.md").write_text("hand written\n")
+        pg_run(pg, root)
+        truthy(not (ag / "gen.md").exists(), "claimed file removed")
+        truthy((ag / "hand.md").exists(), "hand-authored file preserved")
+
+
+@test("PG-02", "_purge_agents_dir")
+def _():
+    """A marker-shaped first line confers nothing — purge agrees with cboot."""
+    pg = _load_purge()
+    with purge_rig() as (root, ag):
+        (ag / "forged.md").write_text(
+            '<!-- cboot:agent root="gen" generated="2026-01-01T00:00:00Z" -->\n'
+            'hand written\n')
+        pg_run(pg, root)
+        truthy((ag / "forged.md").exists(), "unclaimed marker file preserved")
+
+
+@test("PG-03", "_purge_agents_dir")
+def _():
+    """A non-UTF-8 file neither crashes the purge nor is deleted."""
+    pg = _load_purge()
+    with purge_rig() as (root, ag):
+        (ag / "gen.md").write_text("generated\n")
+        (ag / "cp1252.md").write_bytes(b"caf\xe9 hand written\n")
+        pg_run(pg, root)                       # must not raise
+        truthy((ag / "cp1252.md").exists(), "non-UTF-8 file preserved")
+        truthy(not (ag / "gen.md").exists(), "purge ran to completion")
+
+
+@test("PG-04", "_purge_agents_dir")
+def _():
+    """A symlinked agents/ is never followed or deleted through."""
+    pg = _load_purge()
+    with purge_rig() as (root, ag):
+        _shutil.rmtree(ag)
+        real = root / "real-agents"
+        real.mkdir()
+        (real / "gen.md").write_text("generated\n")
+        try:
+            os.symlink(real, ag)
+        except (OSError, NotImplementedError):
+            return                              # platform cannot symlink; nothing to prove
+        p = pg_run(pg, root)
+        truthy((real / "gen.md").exists(), "link target contents intact")
+        truthy(any("PROTECTED" in s and "agents" in s for s in p.skipped),
+               "reported PROTECTED: %r" % (p.skipped,))
+
+
+@test("PG-05", "_purge_agents_dir")
+def _():
+    """No registry means cboot owns nothing: preserve everything."""
+    pg = _load_purge()
+    with purge_rig(with_db=False) as (root, ag):
+        (ag / "gen.md").write_text("generated\n")
+        (ag / "hand.md").write_text("hand written\n")
+        p = pg_run(pg, root)
+        truthy((ag / "gen.md").exists() and (ag / "hand.md").exists(),
+               "nothing deleted without a registry")
+        truthy(any("PRESERVED" in s for s in p.skipped),
+               "preservation reported: %r" % (p.skipped,))
+
+
+@test("PG-06", "_purge_agents_dir")
+def _():
+    """.md.tmp staging leftovers are reachable and removed."""
+    pg = _load_purge()
+    with purge_rig() as (root, ag):
+        (ag / "gen.md").write_text("generated\n")
+        (ag / "gen.md.tmp").write_text("interrupted\n")
+        pg_run(pg, root)
+        truthy(not (ag / "gen.md.tmp").exists(), ".md.tmp removed")
+
+
+@test("PG-07", "_purge_agents_dir")
+def _():
+    """skills/ is still removed wholesale, and roots.db is on the hard floor."""
+    pg = _load_purge()
+    with purge_rig() as (root, ag):
+        pg_run(pg, root)
+        truthy(not (root / ".claude" / "skills").exists(), "skills/ removed")
+        truthy(pg._is_protected(root / ".state" / "roots.db", root),
+               "roots.db protected in every scope")
+
+
+# ── Mutation proofs (MU) ─────────────────────────────────────────────
+#
+# Each proof reverts one fix in memory and asserts the behaviour actually
+# changes — so the corresponding test above is discriminating, not incidental.
+
+@test("MU-01", "owns")
+def _():
+    """Revert ownership to a content heuristic -> AG-03's forged file is claimed."""
+    ao = cboot._agent_ownership()
+    with scratch_apex([("drawio", "A tool.\n")]) as apex:
+        ag_optin(apex, [("drawio", 1, "drawio", "A tool.")])
+        ag_boot(apex)
+        forged = apex / ".claude" / "agents" / "notmine.md"
+        forged.write_text('---\nname: notmine\n---\n\n'
+                          '<!-- cboot:agent root="drawio" generated="2026-01-01T00:00:00Z" -->\n'
+                          'hand-written body\n')
+        claims = ao.claims_for(apex / ".state" / "roots.db",
+                               apex / ".claude" / "agents")
+        truthy(not ao.owns(forged, claims), "registry rule: not ours")
+        # The pre-fix heuristic: "has a marker => ours".
+        truthy(ao.read_marker(forged) is not None,
+               "the marker IS present — which is exactly why a content test fails here")
+
+
+@test("MU-02", "generate_agents")
+def _():
+    """Treat an undecodable CLAUDE.md as readable -> AG-07's file is deleted."""
+    with scratch_apex([("drawio", "A tool.\n")]) as apex:
+        ag_optin(apex, [("drawio", 1, "drawio", "A tool.")])
+        ag_boot(apex)
+        f = apex / ".claude" / "agents" / "drawio.md"
+        (apex / "drawio" / "CLAUDE.md").write_bytes(
+            "---\nroot: true\nname: drawio\n---\n\ncafé\n".encode("utf-16"))
+        original = cboot._read_child_text
+        cboot._read_child_text = lambda p: ("missing", "")   # the pre-fix reading
+        try:
+            ag_boot(apex)
+            broke = not f.exists()
+        finally:
+            cboot._read_child_text = original
+        truthy(broke, "mutation must delete the file — otherwise AG-07 proves nothing")
+
+
+@test("MU-03", "_purge_agents_dir")
+def _():
+    """Drop the shared module -> purge preserves rather than guessing."""
+    pg = _load_purge()
+    with purge_rig() as (root, ag):
+        (ag / "gen.md").write_text("generated\n")
+        original = pg._agent_ownership
+        pg._agent_ownership = lambda: None
+        try:
+            p = pg_run(pg, root)
+        finally:
+            pg._agent_ownership = original
+        truthy((ag / "gen.md").exists(),
+               "without the module purge must delete nothing")
+        truthy(any("PRESERVED" in s for s in p.skipped), "and must say so")
 
 
 # ── runner + coverage ────────────────────────────────────────────────
