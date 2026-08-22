@@ -1352,6 +1352,89 @@ def _():
         eq(cboot._root_is_gone("delta")[0], False, "an unreadable CLAUDE.md is not evidence")
 
 
+@test("AG-31", "build_root_inventory")
+def _():
+    """An apex under a dot- or underscore-prefixed directory still finds its roots.
+
+    The visibility check must be APEX-RELATIVE. Scanning the whole absolute
+    resolved path made the apex's own ancestors decide the verdict, so an install
+    at ~/.local/share/claudette — or this repo's own mirror apex under .tmp/ —
+    dropped every descendant on every boot, permanently.
+    """
+    for holder in (".local", "_vault", "normal"):
+        base = Path(tempfile.mkdtemp(prefix="ctest-holder-"))
+        try:
+            apex = base / holder / "apexroot"
+            (apex / ".claude" / "agents").mkdir(parents=True)
+            (apex / ".state").mkdir(parents=True)
+            (apex / "CLAUDE.md").write_text(
+                "---\nroot: true\napex-root: true\nname: apex\n---\n")
+            for c in ("alpha", "beta"):
+                (apex / c).mkdir()
+                (apex / c / "CLAUDE.md").write_text(
+                    "---\nroot: true\nname: %s\n---\n\n%s desc.\n" % (c, c))
+            saved = (cboot.ROOT, cboot.STATE, cboot.CLAUDE, cboot.AGENTS_DIR)
+            cboot.ROOT, cboot.STATE = apex, apex / ".state"
+            cboot.CLAUDE, cboot.AGENTS_DIR = apex / ".claude", apex / ".claude" / "agents"
+            try:
+                rep = cboot.BootReport()
+                rows = cboot.build_root_inventory(rep)
+                rels = sorted(r["rel_path"] for r in rows)
+                eq(rels, [".", "alpha", "beta"],
+                   "apex under %r must still see its children (warnings: %r)"
+                   % (holder, rep.warnings))
+            finally:
+                cboot.ROOT, cboot.STATE, cboot.CLAUDE, cboot.AGENTS_DIR = saved
+        finally:
+            _shutil.rmtree(base, ignore_errors=True)
+
+
+@test("AG-32", "build_root_inventory")
+def _():
+    """A symlink alias beside its target does not evict the real project."""
+    with scratch_apex([("alpha", "A.\n")]) as apex:
+        try:
+            os.symlink(apex / "alpha", apex / "zzz-alias")
+        except (OSError, NotImplementedError):
+            return
+        for _attempt in range(3):
+            rep = cboot.BootReport()
+            rows = cboot.build_root_inventory(rep)
+            rels = sorted(r["rel_path"] for r in rows)
+            eq(rels, [".", "alpha"],
+               "the real directory survives dedup, not the alias: %s" % rels)
+
+
+@test("AG-33", "_resolve_target")
+def _():
+    """--project accepts exactly the roots the inventory admits.
+
+    A project symlinked into the apex is in the inventory and has an @name; if
+    _resolve_target resolved through the link it rejected that same project as
+    "outside apex", so the two disagreed on what counts as a project.
+    """
+    outside = Path(tempfile.mkdtemp(prefix="ctest-outside-"))
+    try:
+        (outside / "CLAUDE.md").write_text("---\nroot: true\nname: outsider\n---\n\nO.\n")
+        with scratch_apex([]) as apex:
+            try:
+                os.symlink(outside, apex / "linked")
+            except (OSError, NotImplementedError):
+                return
+            saved = cboot.ROOT
+            cboot.ROOT = apex
+            try:
+                p, err = cboot._resolve_target("linked")
+                eq(err, None, "a symlinked-in project resolves: %r" % (err,))
+                # And traversal is still refused.
+                _, err2 = cboot._resolve_target("../escape")
+                truthy(err2 is not None, "`..` traversal is still rejected")
+            finally:
+                cboot.ROOT = saved
+    finally:
+        _shutil.rmtree(outside, ignore_errors=True)
+
+
 # ── runner + coverage ────────────────────────────────────────────────
 
 def main():

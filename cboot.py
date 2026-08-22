@@ -867,7 +867,13 @@ def build_root_inventory(report):
     # another root yields two dirents that resolve to one directory, which used to
     # violate roots.abs_path UNIQUE and fail the entire inventory write.
     descendants, seen = [], {apex_abs}
-    for d in child_propagate.discover_roots(ROOT):
+    # Sort real directories ahead of symlinks, then by path. Two dirents can
+    # resolve to one directory (an alias beside the project it points at) and
+    # only one row may survive: it must be the real project, deterministically,
+    # or the surviving @name flaps between boots with the iteration order.
+    walk = sorted(child_propagate.discover_roots(ROOT),
+                  key=lambda p: (p.is_symlink(), p.as_posix()))
+    for d in walk:
         rd = d.resolve()
         if rd in seen:
             continue
@@ -881,13 +887,32 @@ def build_root_inventory(report):
         # project at a real in-apex path — child_propagate already provisions it —
         # so excluding it from the inventory was the wrong call, and excluding it
         # made the close loop below read it as deleted.
-        rel_check = d.relative_to(apex_abs)
+        try:
+            rel_check = d.relative_to(apex_abs)
+        except ValueError:
+            # discover_roots only yields descendants, so this should not happen —
+            # but ROOT itself can be a symlink, and an unguarded relative_to here
+            # would abort the whole boot rather than skip one row.
+            report.warn(f"Root inventory: {d} is not under the apex — skipped", str(apex_abs))
+            continue
+
         # `_` (invisible) and `.` (Claude-internal) are excluded by discover_roots
         # on the DIRENT name only, so a normally-named symlink pointing at such a
-        # directory would launder it in. Check the target too. Visibility is not
-        # negotiable, so this exclusion stays — it is safe because a claim is now
-        # closed only on POSITIVE evidence the project is gone.
-        hidden = next((part for part in rd.parts
+        # directory inside the apex would launder it back in. Check the resolved
+        # path too — but ONLY the part of it inside the apex.
+        #
+        # Scanning the whole absolute path is wrong: the apex's own ancestors are
+        # not ours to interpret. An apex living at ~/.local/share/claudette, or
+        # the mirror apex under .tmp/ that this repo uses for sandboxing, would
+        # have every single descendant excluded on every boot. Likewise a target
+        # OUTSIDE the apex is an external project — `_` and `.` carry no meaning
+        # there, and the dirent name has already passed discover_roots' filter.
+        candidates = [rel_check]
+        try:
+            candidates.append(rd.relative_to(apex_abs))
+        except ValueError:
+            pass
+        hidden = next((part for rel in candidates for part in rel.parts
                        if part.startswith("_") or (part.startswith(".") and part != ".")), None)
         if hidden is not None:
             report.warn(f"Root inventory: {rel_check} resolves into `{hidden}` — skipped",
@@ -1683,7 +1708,12 @@ def refresh_project(target_arg, report):
     target = Path(target_arg)
     if not target.is_absolute():
         target = ROOT / target_arg
-    target = target.resolve()
+    # Normalise LEXICALLY rather than resolving. resolve() follows symlinks, so a
+    # project the user symlinked into the apex resolved to its target outside and
+    # was rejected as "outside apex" — while build_root_inventory admits it and
+    # gives it an @name. The two must agree on what counts as a project. `..` is
+    # still collapsed, so this does not weaken the containment check.
+    target = Path(os.path.normpath(target))
 
     # -- Validate: real dir, strict descendant of apex, root: true project --
     if not target.is_dir():
@@ -1749,7 +1779,12 @@ def _resolve_target(target_arg):
     target = Path(target_arg)
     if not target.is_absolute():
         target = ROOT / target_arg
-    target = target.resolve()
+    # Normalise LEXICALLY rather than resolving. resolve() follows symlinks, so a
+    # project the user symlinked into the apex resolved to its target outside and
+    # was rejected as "outside apex" — while build_root_inventory admits it and
+    # gives it an @name. The two must agree on what counts as a project. `..` is
+    # still collapsed here, so containment is not weakened.
+    target = Path(os.path.normpath(target))
     if not target.is_dir():
         return None, f"target not found: {target_arg}"
     if target == ROOT or ROOT not in target.parents:
