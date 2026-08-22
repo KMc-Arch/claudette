@@ -64,6 +64,10 @@ COVERED = {
     "_ensure_agent_tables",
     "marker_matches",
     "_root_is_gone",
+    "_classify_root",
+    "_select_roots",
+    "_walk_candidate_roots",
+    "RootRows",
 }
 
 
@@ -1433,6 +1437,127 @@ def _():
                 cboot.ROOT = saved
     finally:
         _shutil.rmtree(outside, ignore_errors=True)
+
+
+# ── Round 3: the walk, separated (WK) ────────────────────────────────
+
+@test("WK-01", "_classify_root")
+def _():
+    """Policy is a pure function of paths — testable with no filesystem at all.
+
+    This is the point of separating it. Every regression in this area came from
+    policy being tangled with discovery and de-duplication inside one loop, where
+    it could only be exercised through a full boot.
+    """
+    apex = Path("/apex")
+    cases = [
+        (Path("/apex/alpha"),            "alpha",       None),
+        (Path("/apex/a/b"),              "a/b",         None),
+        (Path("/apex/_private"),         "_private",    "resolves into `_private`"),
+        (Path("/apex/.internal"),        ".internal",   "resolves into `.internal`"),
+        (Path("/apex/a/_x/b"),           "a/_x/b",      "resolves into `_x`"),
+        (Path("/apex/a/.x/b"),           "a/.x/b",      "resolves into `.x`"),
+        (Path("/elsewhere/alpha"),       None,          "not under the apex"),
+    ]
+    for dirent, want_rel, want_reason in cases:
+        rel, reason = cboot._classify_root(dirent, apex)
+        eq(rel, want_rel, "rel for %s" % dirent)
+        if want_reason is None:
+            eq(reason, None, "reason for %s" % dirent)
+        else:
+            truthy(reason and want_reason in reason,
+                   "reason for %s: %r" % (dirent, reason))
+
+
+@test("WK-02", "_classify_root")
+def _():
+    """The apex's OWN ancestors never decide the verdict.
+
+    An apex at ~/.local/share/claudette, or this repo's mirror apex under .tmp/,
+    dropped every descendant on every boot when this check went absolute.
+    """
+    for apex in (Path("/home/u/.local/share/claudette"),
+                 Path("/mnt/claudette/.tmp/mut-ag/apex"),
+                 Path("/srv/_vault/claudette")):
+        rel, reason = cboot._classify_root(apex / "alpha", apex)
+        eq(rel, "alpha", "rel under %s" % apex)
+        eq(reason, None, "apex ancestors must not exclude a child (apex=%s)" % apex)
+
+
+@test("WK-03", "_select_roots")
+def _():
+    """Selection returns BOTH what it admitted and what it excluded, by reason."""
+    with scratch_apex([("alpha", "A.\n")]) as apex:
+        hidden = apex / "_private"
+        hidden.mkdir()
+        (hidden / "CLAUDE.md").write_text("---\nroot: true\nname: p\n---\n\nP.\n")
+        try:
+            os.symlink(hidden, apex / "visible")
+        except (OSError, NotImplementedError):
+            return
+        admitted, excluded = cboot._select_roots(cboot.BootReport(), apex.resolve())
+        eq(sorted(d.name for d in admitted), ["alpha"], "admitted")
+        eq(sorted(excluded), ["visible"], "excluded, keyed by rel_path")
+        truthy("_private" in excluded["visible"], "with a reason: %r" % excluded)
+
+
+@test("WK-04", "_walk_candidate_roots")
+def _():
+    """Discovery is deterministic, and prefers a real directory over an alias."""
+    with scratch_apex([("alpha", "A.\n")]) as apex:
+        try:
+            os.symlink(apex / "alpha", apex / "aaa-alias")
+        except (OSError, NotImplementedError):
+            return
+        seen = [tuple(p.name for p in cboot._walk_candidate_roots()) for _ in range(3)]
+        eq(len(set(seen)), 1, "stable across runs: %r" % (seen,))
+        # The alias sorts first alphabetically; the real directory must still win.
+        eq(seen[0][0], "alpha", "real directory ordered ahead of the alias: %r" % (seen[0],))
+
+
+@test("WK-05", "generate_agents")
+def _():
+    """An excluded root can NEVER cause a deletion — proven by excluding everything.
+
+    The structural guarantee the redesign exists to provide. The policy is
+    replaced with one that rejects every root, which is the most hostile
+    filtering change possible; not one agent file may be removed, and no claim
+    may close, across repeated boots.
+    """
+    with scratch_apex([("alpha", "A.\n"), ("beta", "B.\n")]) as apex:
+        ag_optin(apex, [("alpha", 1, "alpha", "A."), ("beta", 1, "beta", "B.")])
+        ag_boot(apex)
+        ag = apex / ".claude" / "agents"
+        eq(sorted(p.name for p in ag.iterdir()), ["alpha.md", "beta.md"], "setup")
+
+        real = cboot._classify_root
+        cboot._classify_root = lambda d, apex_abs: (
+            d.relative_to(apex_abs).as_posix(), "excluded by a hostile policy")
+        try:
+            for i in range(3):
+                rep = cboot.BootReport()
+                rows = cboot.build_root_inventory(rep)
+                cboot.generate_agents(rep, rows)
+                eq(sorted(p.name for p in ag.iterdir()), ["alpha.md", "beta.md"],
+                   "no file removed on boot %d of a total exclusion" % (i + 1))
+        finally:
+            cboot._classify_root = real
+
+        conn = _sqlite_factory().connect(str(apex / ".state" / "roots.db"))
+        n = conn.execute("SELECT COUNT(*) FROM agent_registry"
+                         " WHERE valid_to IS NULL").fetchone()[0]
+        conn.close()
+        eq(n, 2, "and no claim closed")
+
+
+@test("WK-06", "RootRows")
+def _():
+    """RootRows behaves as the row list every existing caller expects."""
+    rows = cboot.RootRows([{"rel_path": "a"}, {"rel_path": "b"}], {"c": "why"})
+    eq(len(rows), 2, "len")
+    eq([r["rel_path"] for r in rows], ["a", "b"], "iteration")
+    eq(rows.excluded, {"c": "why"}, "exclusions carried alongside")
+    eq(cboot.RootRows([]).excluded, {}, "defaults to empty")
 
 
 # ── runner + coverage ────────────────────────────────────────────────

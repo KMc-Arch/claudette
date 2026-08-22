@@ -831,6 +831,109 @@ def _extract_root_name(claude_md: Path, fallback: str) -> str:
     return fallback
 
 
+class RootRows(list):
+    """The rows of one filesystem walk, plus what that walk deliberately EXCLUDED.
+
+    The exclusions are the reason this is not a plain list. A root that a policy
+    filtered out is PRESENT on disk — it is simply not eligible for a row. If the
+    only thing downstream sees is the row list, it cannot tell that apart from a
+    project that was deleted, and getting that difference wrong destroyed live
+    agent files three separate times.
+
+    Carrying the exclusions makes the distinction structural rather than
+    inferential: generate_agents skips an excluded path by LOOKUP, so a change to
+    the filtering rules below cannot reach a delete path at all.
+    """
+
+    def __init__(self, rows, excluded=()):
+        super().__init__(rows)
+        self.excluded = dict(excluded)
+
+
+def _walk_candidate_roots():
+    """Every `root: true` directory under the apex, in a DETERMINISTIC order.
+
+    Discovery only — no policy, no de-duplication. Real directories sort ahead of
+    symlinks, then by path: two dirents can resolve to one directory (an alias
+    beside the project it points at) and only one may survive de-duplication, so
+    the survivor must be the real project rather than whichever the filesystem
+    happened to yield first.
+    """
+    child_propagate = _load_module(PREBOOT_DIR / "child_propagate.py")
+    return sorted(child_propagate.discover_roots(ROOT),
+                  key=lambda p: (p.is_symlink(), p.as_posix()))
+
+
+def _classify_root(dirent, apex_abs):
+    """Policy, as a pure function of paths. -> (rel_path or None, reason or None).
+
+    A reason means "found, but not eligible for a row". It never means "gone" —
+    the directory is right there. Separating this from the walk is deliberate:
+    every regression in this area came from a filtering change silently becoming
+    a deletion, and a pure function returning a REASON cannot do that.
+
+    Two rules, and only two:
+
+    - **Containment.** The row keeps the DIRENT path. A directory symlink is
+      followed by discover_roots (`is_dir()` follows links), so a root's target
+      can sit outside the apex — this tree has such links. Excluding those was
+      wrong: a project a user symlinked in is a real project at a real in-apex
+      path, and child_propagate already provisions it. Only a dirent that is not
+      under the apex at all is rejected, which discover_roots should never yield.
+
+    - **Visibility.** `_` (invisible) and `.` (Claude-internal) are filtered by
+      discover_roots on the DIRENT NAME only, so a normally-named symlink into
+      such a directory would launder it back in. The resolved path is checked
+      too — but only the part of it INSIDE the apex. Scanning the whole absolute
+      path made the apex's own ancestors decide the verdict, so an apex at
+      ~/.local/share/claudette, or the mirror apex under .tmp/, excluded every
+      descendant on every boot. A target outside the apex is an external project,
+      where `_` and `.` carry no meaning.
+    """
+    try:
+        rel = dirent.relative_to(apex_abs)
+    except ValueError:
+        # discover_roots yields only descendants, so this should not happen — but
+        # ROOT itself can be a symlink, and an unguarded relative_to() here would
+        # abort the whole boot rather than skip one row.
+        return None, f"not under the apex ({dirent})"
+
+    inside = [rel]
+    try:
+        inside.append(dirent.resolve().relative_to(apex_abs))
+    except ValueError:
+        pass                      # resolves outside the apex: external, allowed
+    hidden = next((part for r in inside for part in r.parts
+                   if part.startswith("_") or (part.startswith(".") and part != ".")), None)
+    if hidden is not None:
+        return rel.as_posix(), f"resolves into `{hidden}`"
+    return rel.as_posix(), None
+
+
+def _select_roots(report, apex_abs):
+    """-> (admitted dirents, {rel_path: reason}). Applies policy, then de-duplicates.
+
+    De-duplication is LAST and separate: it is a fact about the filesystem (two
+    names, one directory), not a judgement about a project, and conflating the
+    two is what made this function hard to reason about.
+    """
+    admitted, excluded, seen = [], {}, {apex_abs}
+    for dirent in _walk_candidate_roots():
+        rel, reason = _classify_root(dirent, apex_abs)
+        if reason is not None:
+            if rel is not None:
+                excluded[rel] = reason
+            report.warn(f"Root inventory: {rel or dirent} {reason} — skipped",
+                        "it is still on disk; its agent, if any, is left untouched")
+            continue
+        resolved = dirent.resolve()
+        if resolved in seen:
+            continue              # an alias for a directory already admitted
+        seen.add(resolved)
+        admitted.append(dirent)
+    return admitted, excluded
+
+
 def build_root_inventory(report):
     """Materialize .state/roots.db — the directory of every root: true context
     under the apex, including the apex itself.
@@ -858,68 +961,11 @@ def build_root_inventory(report):
         report.warn("Root inventory: sqlite3 unavailable, skipping")
         return None
 
-    child_propagate = _load_module(PREBOOT_DIR / "child_propagate.py")
     sqlite_factory = _load_module(CODEX / "reactive" / "sqlite" / "sqlite.py")
 
-    # Apex is the ceiling row; discovered descendants follow. Resolve to absolute.
+    # Apex is the ceiling row; discovered descendants follow.
     apex_abs = ROOT.resolve()
-    # De-duplicate on the RESOLVED path: a symlink inside the apex pointing at
-    # another root yields two dirents that resolve to one directory, which used to
-    # violate roots.abs_path UNIQUE and fail the entire inventory write.
-    descendants, seen = [], {apex_abs}
-    # Sort real directories ahead of symlinks, then by path. Two dirents can
-    # resolve to one directory (an alias beside the project it points at) and
-    # only one row may survive: it must be the real project, deterministically,
-    # or the surviving @name flaps between boots with the iteration order.
-    walk = sorted(child_propagate.discover_roots(ROOT),
-                  key=lambda p: (p.is_symlink(), p.as_posix()))
-    for d in walk:
-        rd = d.resolve()
-        if rd in seen:
-            continue
-        # A directory symlink is followed by discover_roots (is_dir() follows
-        # links), so a root's TARGET can sit outside the apex — this tree has such
-        # links (AggregatorM/Delivery points into OneDrive). Resolving the row's
-        # path then broke relative_to() with an uncaught ValueError.
-        #
-        # The row keeps the DIRENT path; the resolved path is used only as the
-        # de-duplication key. A project a user symlinked into the apex is a real
-        # project at a real in-apex path — child_propagate already provisions it —
-        # so excluding it from the inventory was the wrong call, and excluding it
-        # made the close loop below read it as deleted.
-        try:
-            rel_check = d.relative_to(apex_abs)
-        except ValueError:
-            # discover_roots only yields descendants, so this should not happen —
-            # but ROOT itself can be a symlink, and an unguarded relative_to here
-            # would abort the whole boot rather than skip one row.
-            report.warn(f"Root inventory: {d} is not under the apex — skipped", str(apex_abs))
-            continue
-
-        # `_` (invisible) and `.` (Claude-internal) are excluded by discover_roots
-        # on the DIRENT name only, so a normally-named symlink pointing at such a
-        # directory inside the apex would launder it back in. Check the resolved
-        # path too — but ONLY the part of it inside the apex.
-        #
-        # Scanning the whole absolute path is wrong: the apex's own ancestors are
-        # not ours to interpret. An apex living at ~/.local/share/claudette, or
-        # the mirror apex under .tmp/ that this repo uses for sandboxing, would
-        # have every single descendant excluded on every boot. Likewise a target
-        # OUTSIDE the apex is an external project — `_` and `.` carry no meaning
-        # there, and the dirent name has already passed discover_roots' filter.
-        candidates = [rel_check]
-        try:
-            candidates.append(rd.relative_to(apex_abs))
-        except ValueError:
-            pass
-        hidden = next((part for rel in candidates for part in rel.parts
-                       if part.startswith("_") or (part.startswith(".") and part != ".")), None)
-        if hidden is not None:
-            report.warn(f"Root inventory: {rel_check} resolves into `{hidden}` — skipped",
-                        f"{d} -> {rd}; its agent, if any, is left untouched")
-            continue
-        seen.add(rd)
-        descendants.append(d)
+    descendants, excluded = _select_roots(report, apex_abs)
     all_roots = [apex_abs] + descendants
     root_set = set(all_roots)
 
@@ -1013,7 +1059,7 @@ def build_root_inventory(report):
     n = len(descendants)
     report.ok(f"Root inventory: {len(rows)} roots in .state/roots.db "
               f"(apex + {n} descendant{'' if n == 1 else 's'})")
-    return rows
+    return RootRows(rows, excluded)
 
 
 # ── Addressable agents ───────────────────────────────────────────────
@@ -1455,6 +1501,9 @@ def generate_agents(report, rows):
         _ensure_agent_tables(conn)
 
         by_path = {r["rel_path"]: r for r in rows if not r["is_apex"]}
+        # Roots the walk found and deliberately excluded. Present on disk, not
+        # eligible for a row — and never a reason to close a claim.
+        excluded = dict(getattr(rows, "excluded", {}) or {})
         optin = {r["rel_path"]: r for r in conn.execute(
             "SELECT rel_path, enabled, requested_name, description FROM agent_optin")}
         current = {r["rel_path"]: r for r in conn.execute(
@@ -1483,9 +1532,17 @@ def generate_agents(report, rows):
                 # a root excluded by a visibility rule. Each time, a live project
                 # silently lost its agent.
                 #
-                # So the test is now positive: close the claim only when the
-                # project is demonstrably gone. Any other reason it left the walk
-                # leaves the claim and the file exactly as they are.
+                # Two defences. First, structural: a root the walk deliberately
+                # EXCLUDED is named in `excluded`, so it is skipped by lookup and
+                # a change to the filtering rules cannot reach this delete path at
+                # all. Second, positive: for everything else, close the claim only
+                # on evidence the project is really gone.
+                if rel in excluded:
+                    report.warn(f"Agents: {rel} was excluded from the walk "
+                                f"({excluded[rel]}) — skipped this boot",
+                                "claim and agent file left untouched")
+                    skipped += 1
+                    continue
                 gone, why = _root_is_gone(rel)
                 if not gone:
                     report.warn(f"Agents: {rel} is absent from the walk but still present "
