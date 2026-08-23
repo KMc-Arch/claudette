@@ -38,6 +38,12 @@ AGENTS_REL = ".claude/agents"
 # Suffix of cboot's own staging artifacts. Never hand-authored; always cruft.
 TMP_SUFFIX = ".md.tmp"
 
+# Namespace suffix for cboot-generated agent names: the invocable @name and its
+# filename both carry it (`drawio` -> `@drawio-pj`, `drawio-pj.md`), so cboot's
+# names and files never share the namespace of hand-authored agents. Prose spells
+# the role out ("project agent") and never shows the abbreviation.
+SUFFIX = "-pj"
+
 # Marker: FIRST body line of a generated file. Anchored fullmatch, never a
 # search — a file that merely quotes the marker in its prose is not matched.
 _MARKER_RE = re.compile(
@@ -237,6 +243,15 @@ def derive_agent_name(folder_basename):
     s = re.sub(r"[^A-Za-z0-9-]+", "-", s)
     s = re.sub(r"-{2,}", "-", s).strip("-")
     return s
+
+
+def suffixed(base):
+    """Append the project-agent namespace suffix to a clean base name.
+
+    An empty base stays empty — an unusable name is caught by the caller, never
+    turned into a bare `-pj`.
+    """
+    return f"{base}{SUFFIX}" if base else base
 
 
 def yaml_scalar(value):

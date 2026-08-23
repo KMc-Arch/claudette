@@ -56,6 +56,8 @@ COVERED = {
     # purge are the only two callers and they must never diverge.
     "decide_agent_optin",
     "generate_agents",
+    "_write_agent_file",
+    "suffixed",
     "claims_for",
     "owns",
     "derive_agent_name",
@@ -504,8 +506,8 @@ def _():
         ag_optin(apex, [("drawio", 1, "drawio", "A tool."), ("zMisc", 0, None, None)])
         ag_boot(apex)
         ag = apex / ".claude" / "agents"
-        truthy((ag / "drawio.md").exists(), "switched-on root has an agent file")
-        truthy(not (ag / "zMisc.md").exists(), "declined root has no agent file")
+        truthy((ag / "drawio-pj.md").exists(), "switched-on root has an agent file")
+        truthy(not (ag / "zMisc-pj.md").exists(), "declined root has no agent file")
 
 
 @test("AG-02", "generate_agents")
@@ -530,7 +532,7 @@ def _():
     path visits a name nobody wants.
     """
     with scratch_apex([("drawio", "A tool.\n")]) as apex:
-        forged = apex / ".claude" / "agents" / "drawio.md"
+        forged = apex / ".claude" / "agents" / "drawio-pj.md"
         forged.write_text('---\nname: drawio\n---\n\n'
                           '<!-- cboot:agent root="drawio" generated="2026-01-01T00:00:00Z" -->\n'
                           'hand-written body\n')
@@ -538,7 +540,7 @@ def _():
         ag_optin(apex, [("drawio", 1, "drawio", "A tool.")])
         ag_boot(apex)
         eq(forged.read_bytes(), keep, "the forged file is not adopted or overwritten")
-        truthy((apex / ".claude" / "agents" / "drawio-2.md").exists(),
+        truthy((apex / ".claude" / "agents" / "drawio-pj-2.md").exists(),
                "and it blocks the name: %s"
                % sorted(p.name for p in (apex / ".claude" / "agents").iterdir()))
 
@@ -562,7 +564,7 @@ def _():
     with scratch_apex([("drawio", "A tool.\n")]) as apex:
         ag_optin(apex, [("drawio", 1, "drawio", "A tool.")])
         ag_boot(apex)
-        f = apex / ".claude" / "agents" / "drawio.md"
+        f = apex / ".claude" / "agents" / "drawio-pj.md"
         f.write_text("---\nname: drawio\n---\n\nI edited this by hand.\n")
         rep = ag_boot(apex)
         truthy("I edited this by hand." in f.read_text(), "hand edit preserved")
@@ -576,7 +578,7 @@ def _():
     with scratch_apex([("drawio", "A tool.\n")]) as apex:
         ag_optin(apex, [("drawio", 1, "drawio", "A tool.")])
         ag_boot(apex)
-        f = apex / ".claude" / "agents" / "drawio.md"
+        f = apex / ".claude" / "agents" / "drawio-pj.md"
         truthy(f.exists(), "file created first")
         ag_optin(apex, [("drawio", 0, None, None)])
         ag_boot(apex)
@@ -596,7 +598,7 @@ def _():
     with scratch_apex([("drawio", "A tool.\n")]) as apex:
         ag_optin(apex, [("drawio", 1, "drawio", "A tool.")])
         ag_boot(apex)
-        f = apex / ".claude" / "agents" / "drawio.md"
+        f = apex / ".claude" / "agents" / "drawio-pj.md"
         before = f.read_bytes()
         (apex / "drawio" / "CLAUDE.md").write_bytes(
             "---\nroot: true\nname: drawio\n---\n\ncafé\n".encode("utf-16"))
@@ -613,7 +615,7 @@ def _():
     with scratch_apex([("drawio", "A tool.\n")]) as apex:
         ag_optin(apex, [("drawio", 1, "drawio", "A tool.")])
         ag_boot(apex)
-        f = apex / ".claude" / "agents" / "drawio.md"
+        f = apex / ".claude" / "agents" / "drawio-pj.md"
         _shutil.rmtree(apex / "drawio")
         ag_boot(apex)
         truthy(not f.exists(), "file removed when the root is gone")
@@ -623,14 +625,14 @@ def _():
 def _():
     """A foreign file holding the name forces de-confliction; it is not evicted."""
     with scratch_apex([("drawio", "A tool.\n")]) as apex:
-        (apex / ".claude" / "agents" / "drawio.md").write_text(
+        (apex / ".claude" / "agents" / "drawio-pj.md").write_text(
             "---\nname: drawio\n---\n\nmine, hand-authored\n")
         ag_optin(apex, [("drawio", 1, "drawio", "A tool.")])
         ag_boot(apex)
         ag = apex / ".claude" / "agents"
-        truthy("mine, hand-authored" in (ag / "drawio.md").read_text(),
+        truthy("mine, hand-authored" in (ag / "drawio-pj.md").read_text(),
                "pre-existing file always wins")
-        truthy((ag / "drawio-2.md").exists(),
+        truthy((ag / "drawio-pj-2.md").exists(),
                "newcomer de-conflicted: %s" % sorted(p.name for p in ag.iterdir()))
 
 
@@ -641,8 +643,8 @@ def _():
         ag_optin(apex, [("2025", 1, "2025", "A year."), ("null", 1, "null", "Nothing.")])
         ag_boot(apex)
         ag = apex / ".claude" / "agents"
-        truthy('name: "2025"' in (ag / "2025.md").read_text(), "numeric name quoted")
-        truthy('name: "null"' in (ag / "null.md").read_text(), "null name quoted")
+        truthy('name: "2025-pj"' in (ag / "2025-pj.md").read_text(), "numeric name quoted")
+        truthy('name: "null-pj"' in (ag / "null-pj.md").read_text(), "null name quoted")
 
 
 @test("AG-11", "generate_agents")
@@ -729,6 +731,55 @@ def _():
         f.write_text("---\nname: x\n---\n\n%s\nbody\n"
                      % ao.render_marker(rel, "2026-01-01T00:00:00Z"))
         eq(ao.read_marker(f), rel, "marker round-trips a double quote")
+
+
+@test("AG-34", "suffixed")
+def _():
+    ao = cboot._agent_ownership()
+    eq(ao.suffixed("drawio"), "drawio-pj", "base gets the -pj namespace suffix")
+    eq(ao.suffixed("zMisc"), "zMisc-pj", "case preserved through the suffix")
+    eq(ao.suffixed(""), "", "an empty base stays empty, never a bare suffix")
+
+
+@test("AG-35", "generate_agents")
+def _():
+    """A foreign agent file whose extension differs only in CASE still blocks the
+    stem: the de-confliction glob is case-folded (PLAT-05, discovery half). On a
+    case-sensitive test FS the variant is a distinct file, so this pins the glob
+    pattern, not the mount."""
+    with scratch_apex([("drawio", "A tool.\n")]) as apex:
+        ag = apex / ".claude" / "agents"
+        foreign = ag / "DRAWIO-PJ.MD"          # a hand-authored case variant
+        foreign.write_text("---\nname: drawio-pj\n---\n\nmine, upper-case ext\n")
+        ag_optin(apex, [("drawio", 1, "drawio", "A tool.")])
+        ag_boot(apex)
+        truthy("mine, upper-case ext" in foreign.read_text(),
+               "case-variant foreign file untouched")
+        truthy((ag / "drawio-pj-2.md").exists(),
+               "newcomer de-conflicted around the case variant: %s"
+               % sorted(p.name for p in ag.iterdir()))
+
+
+@test("AG-36", "_write_agent_file")
+def _():
+    """The writer refuses to clobber a file it does not own and rewrites one it
+    does: the syscall-level backstop that survives a case-blind de-confliction
+    (PLAT-05, write half). open(..., "x") is what the real mount uses to catch a
+    case-variant the glob missed."""
+    with scratch_apex() as apex:
+        ag = apex / ".claude" / "agents"
+        target = ag / "victim-pj.md"
+        target.write_text("HAND-AUTHORED - must survive\n")
+        rep = cboot.BootReport()
+        ok = cboot._write_agent_file(target, "GENERATED\n", rep, owned=False)
+        eq(ok, False, "refused to write an unowned pre-existing file")
+        truthy("HAND-AUTHORED" in target.read_text(), "the file is left intact")
+        truthy(any("refused to overwrite unowned" in w for w in rep.warnings),
+               "refusal is reported: %r" % (rep.warnings,))
+        rep2 = cboot.BootReport()
+        ok2 = cboot._write_agent_file(target, "REWRITTEN\n", rep2, owned=True)
+        eq(ok2, True, "an owned file is rewritten")
+        eq(target.read_text(), "REWRITTEN\n", "owned rewrite lands")
 
 
 # ── purge side of the same rule (PG) ─────────────────────────────────
@@ -866,20 +917,25 @@ def _():
 
 @test("MU-01", "owns")
 def _():
-    """Revert ownership to a content heuristic and AG-03's file IS overwritten.
+    """Revert ownership to a content heuristic and AG-03 stops de-conflicting.
 
     A real mutant, not a simulation: owns() is replaced in a loaded copy of the
     module by the rule the design removed — "carries a marker, therefore ours".
-    If AG-03 still passed under that, AG-03 would be proving nothing.
+    Under it the forged file reads as cboot's own, so its stem is NOT blocked and
+    the newcomer never de-conflicts: AG-03's `drawio-pj-2.md` never appears.
+
+    The forged file itself now survives the mutation too — `_write_agent_file`'s
+    exclusive create refuses to clobber an unowned dirent (a second, syscall-level
+    layer). So the observable AG-03 relies on is the de-confliction, and that is
+    what this proof flips.
     """
     ao = cboot._agent_ownership()
-    real_owns = ao.owns
 
     def content_owns(path, claims):
         return ao.read_marker(path) is not None
 
     with scratch_apex([("drawio", "A tool.\n")]) as apex:
-        forged = apex / ".claude" / "agents" / "drawio.md"
+        forged = apex / ".claude" / "agents" / "drawio-pj.md"
         forged.write_text('---\nname: drawio\n---\n\n'
                           '<!-- cboot:agent root="drawio" generated="2026-01-01T00:00:00Z" -->\n'
                           'hand-written body\n')
@@ -901,8 +957,10 @@ def _():
             ag_boot(apex)
         finally:
             cboot._agent_ownership = saved
-        truthy("hand-written body" not in forged.read_text(),
-               "the mutation must destroy the file — otherwise AG-03 proves nothing")
+        truthy(not (apex / ".claude" / "agents" / "drawio-pj-2.md").exists(),
+               "content-ownership stops the stem being blocked, so the newcomer "
+               "no longer de-conflicts — AG-03's drawio-pj-2.md never appears, "
+               "which is what makes AG-03 discriminating")
 
 
 @test("MU-02", "generate_agents")
@@ -911,7 +969,7 @@ def _():
     with scratch_apex([("drawio", "A tool.\n")]) as apex:
         ag_optin(apex, [("drawio", 1, "drawio", "A tool.")])
         ag_boot(apex)
-        f = apex / ".claude" / "agents" / "drawio.md"
+        f = apex / ".claude" / "agents" / "drawio-pj.md"
         (apex / "drawio" / "CLAUDE.md").write_bytes(
             "---\nroot: true\nname: drawio\n---\n\ncafé\n".encode("utf-16"))
         original = cboot._read_child_text
@@ -980,10 +1038,10 @@ def _():
         ag_optin(apex, [("alpha", 1, "alpha", "A."), ("beta", 1, "beta", "B.")])
         ag_boot(apex)
         ag = apex / ".claude" / "agents"
-        eq(sorted(p.name for p in ag.iterdir()), ["alpha.md", "beta.md"], "setup")
+        eq(sorted(p.name for p in ag.iterdir()), ["alpha-pj.md", "beta-pj.md"], "setup")
         rep = cboot.BootReport()
         cboot.generate_agents(rep, [])            # what `return []` used to feed
-        eq(sorted(p.name for p in ag.iterdir()), ["alpha.md", "beta.md"],
+        eq(sorted(p.name for p in ag.iterdir()), ["alpha-pj.md", "beta-pj.md"],
            "both agents survive an empty inventory")
         truthy(any("still present" in w for w in rep.warnings),
                "and the skip is reported: %r" % (rep.warnings,))
@@ -1004,7 +1062,7 @@ def _():
                "a convenience symlink inside the apex must not break the walk: %r"
                % (rep.warnings,))
         cboot.generate_agents(rep, rows)
-        truthy((apex / ".claude" / "agents" / "alpha.md").exists(), "agent still generated")
+        truthy((apex / ".claude" / "agents" / "alpha-pj.md").exists(), "agent still generated")
 
 
 @test("AG-20", "generate_agents")
@@ -1022,8 +1080,8 @@ def _():
                         ("new-home", 0, None, None)])
         ag_boot(apex)
         ag = apex / ".claude" / "agents"
-        f = ag / "tools.md"
-        truthy(f.exists(), "setup: tools.md claimed by old-home")
+        f = ag / "tools-pj.md"
+        truthy(f.exists(), "setup: tools-pj.md claimed by old-home")
 
         f.write_text("---\nname: tools\n---\n\n%s\n" % HUMAN)   # a human edits it
         _shutil.rmtree(apex / "old-home")                        # its project goes away
@@ -1031,7 +1089,7 @@ def _():
         ag_boot(apex)
 
         truthy(f.exists() and HUMAN in f.read_text(), "the human's edit survives")
-        truthy((ag / "tools-2.md").exists(),
+        truthy((ag / "tools-pj-2.md").exists(),
                "newcomer de-conflicted: %s" % sorted(p.name for p in ag.iterdir()))
 
 
@@ -1077,7 +1135,8 @@ def _():
         ag_boot(apex)                                     # must not raise
         truthy(not f.exists(), "file removed")
         row = sqlite3.connect(db).execute(
-            "SELECT valid_to, close_reason FROM agent_registry").fetchone()
+            "SELECT valid_to, close_reason FROM agent_registry"
+            " ORDER BY id DESC LIMIT 1").fetchone()
         truthy(row[0] is not None and row[1] == "root-removed", "row closed: %r" % (row,))
 
 
@@ -1153,7 +1212,7 @@ def _():
             truthy("linked" in rels, "the symlinked root is admitted: %s" % sorted(rels))
             ag_optin(apex, [("linked", 1, "outsider", "O.")])
             cboot.generate_agents(cboot.BootReport(), cboot.build_root_inventory(rep))
-            truthy((apex / ".claude" / "agents" / "outsider.md").exists(),
+            truthy((apex / ".claude" / "agents" / "outsider-pj.md").exists(),
                    "and it can be addressable like any other project")
     finally:
         _shutil.rmtree(outside, ignore_errors=True)
@@ -1199,12 +1258,12 @@ def _():
                         ("grp/a", 1, "aa", "A."), ("grp/b", 1, "bb", "B.")])
         ag_boot(apex)
         ag = apex / ".claude" / "agents"
-        eq(sorted(p.name for p in ag.iterdir()), ["aa.md", "bb.md"], "setup")
+        eq(sorted(p.name for p in ag.iterdir()), ["aa-pj.md", "bb-pj.md"], "setup")
 
         (apex / "grp" / "CLAUDE.md").write_bytes(
             "---\nroot: true\nname: grp\n---\n\ncafé\n".encode("utf-16"))
         rep = ag_boot(apex)
-        eq(sorted(p.name for p in ag.iterdir()), ["aa.md", "bb.md"],
+        eq(sorted(p.name for p in ag.iterdir()), ["aa-pj.md", "bb-pj.md"],
            "the children's agents survive their parent being unreadable")
         conn = _sqlite_factory().connect(str(apex / ".state" / "roots.db"))
         n = conn.execute("SELECT COUNT(*) FROM agent_registry"
@@ -1224,7 +1283,7 @@ def _():
         ag_optin(apex, [("gone-away", 1, "shared", "Old."), ("beta", 1, "shared", "New.")])
         ag_boot(apex)
         ag = apex / ".claude" / "agents"
-        truthy((ag / "shared.md").exists(),
+        truthy((ag / "shared-pj.md").exists(),
                "the live project gets the name the dead one was holding: %s"
                % sorted(p.name for p in ag.iterdir()))
 
@@ -1235,9 +1294,9 @@ def _():
     with scratch_apex([("drawio", "A tool.\n")]) as apex:
         ag_optin(apex, [("drawio", 1, "drawio", "Handles @@MARKER@@ tokens in text.")])
         ag_boot(apex)
-        text = (apex / ".claude" / "agents" / "drawio.md").read_text()
-        truthy('description: "Handles @@MARKER@@ tokens in text."' in text,
-               "the description survives verbatim")
+        text = (apex / ".claude" / "agents" / "drawio-pj.md").read_text()
+        truthy('description: "Project agent for drawio \u2014 Handles @@MARKER@@ tokens in text."' in text,
+               "the description survives verbatim under the role prefix")
         eq(text.count("<!-- cboot:agent root="), 1, "exactly one marker in the file")
 
 
@@ -1308,7 +1367,7 @@ def _():
     with scratch_apex([("delivery", "D.\n")]) as apex:
         ag_optin(apex, [("delivery", 1, "delivery", "D.")])
         ag_boot(apex)
-        f = apex / ".claude" / "agents" / "delivery.md"
+        f = apex / ".claude" / "agents" / "delivery-pj.md"
         truthy(f.exists(), "setup: the project has an agent")
 
         # Exclude it from the walk without deleting it, exactly as a visibility
@@ -1530,7 +1589,7 @@ def _():
         ag_optin(apex, [("alpha", 1, "alpha", "A."), ("beta", 1, "beta", "B.")])
         ag_boot(apex)
         ag = apex / ".claude" / "agents"
-        eq(sorted(p.name for p in ag.iterdir()), ["alpha.md", "beta.md"], "setup")
+        eq(sorted(p.name for p in ag.iterdir()), ["alpha-pj.md", "beta-pj.md"], "setup")
 
         real = cboot._classify_root
         cboot._classify_root = lambda d, apex_abs: (
@@ -1540,7 +1599,7 @@ def _():
                 rep = cboot.BootReport()
                 rows = cboot.build_root_inventory(rep)
                 cboot.generate_agents(rep, rows)
-                eq(sorted(p.name for p in ag.iterdir()), ["alpha.md", "beta.md"],
+                eq(sorted(p.name for p in ag.iterdir()), ["alpha-pj.md", "beta-pj.md"],
                    "no file removed on boot %d of a total exclusion" % (i + 1))
         finally:
             cboot._classify_root = real
@@ -1576,7 +1635,7 @@ def _():
         ag_optin(apex, [("alpha", 1, "alpha", "A."), ("beta", 1, "beta", "B.")])
         ag_boot(apex)
         ag = apex / ".claude" / "agents"
-        eq(sorted(p.name for p in ag.iterdir()), ["alpha.md", "beta.md"], "setup")
+        eq(sorted(p.name for p in ag.iterdir()), ["alpha-pj.md", "beta-pj.md"], "setup")
 
         try:
             os.chmod(apex / "beta", 0o000)
@@ -1592,7 +1651,7 @@ def _():
                 rows = cboot.build_root_inventory(rep)     # must not raise
                 truthy(rows is not None, "the walk completes despite an unreadable dir")
                 cboot.generate_agents(rep, rows)
-                eq(sorted(p.name for p in ag.iterdir()), ["alpha.md", "beta.md"],
+                eq(sorted(p.name for p in ag.iterdir()), ["alpha-pj.md", "beta-pj.md"],
                    "no agent removed on boot %d" % (i + 1))
         finally:
             os.chmod(apex / "beta", 0o755)
@@ -1713,7 +1772,7 @@ def _():
     with scratch_apex([("one", "O.\n"), ("two", "T.\n")]) as apex:
         ag_optin(apex, [("one", 1, "shared", "O."), ("two", 0, None, None)])
         ag_boot(apex)
-        truthy((apex / ".claude" / "agents" / "shared.md").exists(), "setup")
+        truthy((apex / ".claude" / "agents" / "shared-pj.md").exists(), "setup")
 
         # `one` drops out of the walk but keeps its claim.
         (apex / "one" / "CLAUDE.md").write_bytes(
@@ -1723,8 +1782,8 @@ def _():
 
         ag = apex / ".claude" / "agents"
         names = sorted(p.name for p in ag.iterdir())
-        truthy("shared.md" in names, "the skipped project keeps its file: %s" % names)
-        truthy("Shared.md" not in names,
+        truthy("shared-pj.md" in names, "the skipped project keeps its file: %s" % names)
+        truthy("Shared-pj.md" not in names,
                "the newcomer does not get a case-variant of a live claim: %s" % names)
 
 
