@@ -112,11 +112,21 @@ def claims_for(db_path, agents_dir):
 
 
 def _key(path):
-    """Canonical comparison key for a path — absolute, symlinks NOT followed.
+    """Canonical comparison key for a path — absolute, symlinks NOT followed,
+    case-folded.
 
     `Path.resolve()` would follow a symlinked `agents/` and let a claim match a
     file outside the directory. `absolute()` + manual `..` collapse keeps the
     comparison lexical, which is what an ownership check wants.
+
+    Case-FOLDED because `.claude/agents/` lives on a case-insensitive, case-
+    preserving mount (9p/drvfs): a claim stored as `zMisc-pj.md` and the same
+    dirent later listed as `zmisc-pj.md` are ONE file, and a case-sensitive
+    comparison would call cboot's own file foreign — purge would then mislabel it
+    "hand-authored" forever and the project's re-claim would bump to `-2`. The
+    result is only ever a dict/comparison key, never a path to open, so folding is
+    safe; neighbours (_free_name, the de-confliction glob) already fold for the
+    same reason.
     """
     p = Path(path)
     if not p.is_absolute():
@@ -128,7 +138,7 @@ def _key(path):
                 parts.pop()
         elif part != ".":
             parts.append(part)
-    return Path(*parts).as_posix()
+    return Path(*parts).as_posix().casefold()
 
 
 def owns(path, claims):

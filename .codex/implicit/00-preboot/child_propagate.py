@@ -29,7 +29,7 @@ _BROKEN_BASH_RULE = re.compile(r"^Bash\(command:(.+?)\s*\*\)$")
 # ── Discovery ───────────────────────────────────────────────────────
 
 
-def discover_roots(root):
+def discover_roots(root, _ancestors=None):
     """Find all root: true descendants, recursing through nested roots.
 
     Skips dot-prefixed (internal) and underscore-prefixed (invisible) dirs.
@@ -46,6 +46,17 @@ def discover_roots(root):
     same principle applied everywhere else in this system.
     """
     roots = []
+    # Resolved real paths on the CURRENT recursion branch (the DFS ancestor
+    # stack) — NOT a global visited set. A global set would dedupe distinct
+    # sibling aliases and rob _select_roots of the real path to prefer; the
+    # ancestor stack cuts only a back-edge onto the current path.
+    try:
+        root_real = root.resolve()
+    except OSError:
+        root_real = None
+    _ancestors = (_ancestors or frozenset())
+    if root_real is not None:
+        _ancestors = _ancestors | {root_real}
     try:
         entries = sorted(root.iterdir())
     except OSError:
@@ -65,27 +76,52 @@ def discover_roots(root):
             continue
         if is_root:
             roots.append(d)
-            # Recurse — this root may contain nested roots (group pattern)
-            roots.extend(discover_roots(d))
+            # Recurse — this root may contain nested roots (group pattern) — but
+            # NOT into a directory already on the current path. is_dir()/exists()
+            # follow symlinks, so a link resolving to an ancestor or self (a
+            # child's `up -> ..`, a `current -> .`) would be re-entered without
+            # bound: ELOOP caps resolution DEPTH, not branching, so two such links
+            # in one tree grow the walk until OOM. The alias itself is still
+            # appended and deduplicated downstream by _select_roots (which prefers
+            # the real path); only the back-edge is cut here.
+            try:
+                real = d.resolve()
+            except OSError:
+                real = None
+            if real is not None and real not in _ancestors:
+                roots.extend(discover_roots(d, _ancestors))
     return roots
 
 
+_FM_FENCE_RE = re.compile(r"^---[ \t]*$", re.M)
+
+
 def _has_root_true(claude_md):
-    """Check if CLAUDE.md declares root: true in frontmatter."""
+    """Check if CLAUDE.md declares root: true / apex-root: true in frontmatter.
+
+    The closing fence is the next LINE that is exactly ``---`` (anchored), NOT the
+    next ``---`` substring: a value that merely contains ``---`` (e.g.
+    ``description: cost --- benefit``) must not truncate the frontmatter and hide
+    the ``root:`` line below it. Value matching tolerates the ordinary YAML a human
+    writes — a capitalised ``True``, a trailing ``# comment``, surrounding quotes —
+    because this predicate GATES DELETION (via _root_is_gone): a false negative
+    reads a live project as removed and unlinks its agent file.
+    """
     try:
         text = claude_md.read_text(encoding="utf-8-sig")
-        if not text.startswith("---"):
-            return False
-        end = text.find("---", 3)
-        if end == -1:
-            return False
-        frontmatter = text[3:end]
-        for line in frontmatter.splitlines():
-            stripped = line.strip()
-            if stripped in ("root: true", "root:true", "apex-root: true", "apex-root:true"):
-                return True
     except (OSError, UnicodeDecodeError):
-        pass
+        return False
+    if not text.startswith("---"):
+        return False
+    m = _FM_FENCE_RE.search(text, 3)
+    if not m:
+        return False
+    for line in text[3:m.start()].splitlines():
+        key, sep, val = line.partition(":")
+        if not sep or key.strip() not in ("root", "apex-root"):
+            continue
+        if val.split("#", 1)[0].strip().strip("'\"").strip().lower() == "true":
+            return True
     return False
 
 

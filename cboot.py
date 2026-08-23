@@ -1054,9 +1054,16 @@ def build_root_inventory(report):
             # rebuilt every boot. agent_optin/agent_registry are DURABLE and
             # are deliberately not in this list: they hold human decisions and
             # the claims that generated files depend on.
+            #
+            # The cache is rebuilt and COMMITTED first, on its own. DROP TABLE
+            # autocommits (DDL, no enclosing transaction), so an exception between
+            # the DROP and the CREATE used to leave roots/meta permanently gone —
+            # reachable when a legacy/restored/hand-edited db carries a duplicate
+            # current agent_registry row and the durable-table CREATE UNIQUE INDEX
+            # then raises. _ensure_agent_tables therefore runs AFTER this commit,
+            # isolated, so it can never strand the cache.
             conn.execute("DROP TABLE IF EXISTS roots")
             conn.execute("DROP TABLE IF EXISTS meta")
-            _ensure_agent_tables(conn)
             conn.execute(
                 "CREATE TABLE roots ("
                 " id INTEGER PRIMARY KEY,"
@@ -1087,6 +1094,16 @@ def build_root_inventory(report):
                  ("root_count", str(len(rows)))],
             )
             conn.commit()
+            # Durable tables, isolated from the cache rebuild above. If a legacy/
+            # restored/hand-edited db carries a duplicate current row, the partial
+            # CREATE UNIQUE INDEX raises here — warn and carry on rather than let it
+            # propagate: roots/meta are already safe and committed, and the agent
+            # pass re-checks these tables and skips itself if they are unusable.
+            try:
+                _ensure_agent_tables(conn)
+            except sqlite3.Error as e:
+                report.warn("Root inventory: durable agent tables unavailable "
+                            "(agent pass will be skipped this boot)", str(e))
         finally:
             conn.close()
     except sqlite3.Error as e:
@@ -1500,6 +1517,21 @@ def _agent_brief(name, base, rel_path, abs_path, codex_dir, description, marker)
     )
 
 
+def _within_agents_dir(target):
+    """True iff `target`'s parent resolves to exactly AGENTS_DIR.
+
+    The single containment predicate both the write and the delete paths use to
+    refuse an agent path that escapes ``.claude/agents/`` — a hostile/legacy/
+    restored registry row whose ``agent_file`` (or ``agent_name``) carries ``..``
+    or an absolute path. ``resolve()`` propagates EACCES/EIO on this mount, so a
+    path we cannot resolve is treated as NOT contained (refuse), never as a pass.
+    """
+    try:
+        return target.parent.resolve() == AGENTS_DIR.resolve()
+    except OSError:
+        return False
+
+
 def _write_agent_file(target, content, report, *, owned):
     """Write a generated agent file, then verify by CONTENT.
 
@@ -1520,8 +1552,8 @@ def _write_agent_file(target, content, report, *, owned):
     # Containment belt. Everything upstream sanitizes the name, but this is the
     # single function that writes, and the cost of being wrong is a user's file
     # overwritten with no ownership check and no warning.
-    if target.parent.resolve() != AGENTS_DIR.resolve():
-        report.warn(f"Agents: refused to write outside the agents directory",
+    if not _within_agents_dir(target):
+        report.warn("Agents: refused to write outside the agents directory",
                     str(target))
         return False
     if owned:
@@ -1546,18 +1578,37 @@ def _write_agent_file(target, content, report, *, owned):
                         "agent not written")
             return False
         except OSError as e:
+            # open("x") created the dirent, then the write failed partway
+            # (ENOSPC/EIO). Remove the truncated orphan: left behind it is
+            # unclaimed (the caller closes the claim 'write-failed'), so purge
+            # would mislabel it "hand-authored" forever and it would block its own
+            # stem, bumping the real project to `-2` on the next boot.
             report.warn(f"Agents: {target.name} write failed", str(e))
+            _unlink_orphan(target)
             return False
     try:
         written = target.read_text(encoding="utf-8")
     except OSError as e:
         report.warn(f"Agents: {target.name} unreadable after write", str(e))
+        if not owned:
+            _unlink_orphan(target)
         return False
     if written != content:
         report.warn(f"Agents: {target.name} did not land as written",
-                    "rename ghost suspected — file left as-is, not retried")
+                    "rename ghost suspected — "
+                    + ("orphan removed" if not owned else "file left as-is, not retried"))
+        if not owned:
+            _unlink_orphan(target)
         return False
     return True
+
+
+def _unlink_orphan(target):
+    """Best-effort removal of a just-created file whose write did not complete."""
+    try:
+        target.unlink()
+    except OSError:
+        pass
 
 
 def generate_agents(report, rows):
@@ -1640,7 +1691,19 @@ def generate_agents(report, rows):
                 continue
             target = ROOT / row["agent_file"]
             if ao.owns(target, claims):
-                if target.exists() and not ao.marker_matches(target, rel):
+                if not _within_agents_dir(target):
+                    # The claim's agent_file escapes the agents directory — only
+                    # a hand-edited/restored/foreign row can produce this (cboot
+                    # sanitizes every name it writes). owns() is self-consistent
+                    # by construction (claims_for keys off this same string), so
+                    # it is no guard at all; the write path already refuses such a
+                    # target and the delete path must too, or closing a crafted
+                    # claim becomes an arbitrary unlink outside .claude/agents/.
+                    # Close the claim (below) so it stops recurring, but never
+                    # unlink.
+                    report.warn("Agents: refused to remove a claim file outside "
+                                "the agents directory", str(target))
+                elif target.exists() and not ao.marker_matches(target, rel):
                     diverged.append((row["agent_file"], "claimed but unmarked — left in place"))
                 else:
                     try:
@@ -1692,6 +1755,17 @@ def generate_agents(report, rows):
                 name = held["agent_name"]
                 deconflicted_from = None
             else:
+                if not base:
+                    # derive_agent_name emptied out — a folder (or a hand-written
+                    # requested_name) with no [A-Za-z0-9] content (e.g. a purely
+                    # non-Latin or all-punctuation name). Skip rather than fall
+                    # through to _free_name, whose "agent" fallback would hand back
+                    # a bare `agent-2`, OUTSIDE the -pj namespace the ownership
+                    # model relies on to stay disjoint from hand-authored agents.
+                    report.warn(f"Agents: {rel} has no addressable @name",
+                                "folder name has no [A-Za-z0-9] characters — skipped")
+                    skipped += 1
+                    continue
                 # Sanitize unconditionally. The prompt already does, but a row
                 # written by hand, by future tooling, or by a restored roots.db
                 # would otherwise reach the filename raw — and a `..` in it makes
@@ -1704,8 +1778,12 @@ def generate_agents(report, rows):
                 # A file already sitting on the name that is NOT ours blocks it.
                 # Case-folded glob: the mount is case-insensitive, so a foreign
                 # `Foo.MD` holds the `foo` dirent and must block that stem —
-                # a plain `*.md` glob was blind to it (PLAT-05).
-                for other in AGENTS_DIR.glob("*.[mM][dD]"):
+                # a plain `*.md` glob was blind to it (PLAT-05). RECURSIVE (`**`)
+                # because Claude Code discovers `.claude/agents/**` recursively and
+                # a duplicate frontmatter `name:` silently shadows — a hand-authored
+                # `mine/foo-pj.md` a top-level-only glob could not see must still
+                # block the `foo-pj` stem.
+                for other in AGENTS_DIR.glob("**/*.[mM][dD]"):
                     if not ao.owns(other, claims):
                         blocked.add(other.stem)
                 name, deconflicted_from = _free_name(want, blocked, ao.RESERVED_NAMES)
@@ -1717,6 +1795,21 @@ def generate_agents(report, rows):
             names_taken.add(name)
             agent_rel = f"{ao.AGENTS_REL}/{name}.md"
             target = ROOT / agent_rel
+            if held and not _within_agents_dir(target):
+                # A held claim whose stored @name escapes the agents directory:
+                # only a hand-edited/restored/foreign row can produce this (cboot
+                # sanitizes every name it writes). Left alone it re-fails the write
+                # belt every boot forever; close the corrupt claim so the next boot
+                # reopens a sanitized one instead of wedging.
+                report.warn(f"Agents: {rel} held @name is malformed — closing the "
+                            f"corrupt claim", agent_rel)
+                conn.execute("UPDATE agent_registry SET valid_to = ?,"
+                             " close_reason = 'invalid-name' WHERE id = ?",
+                             (stamp, held["id"]))
+                conn.commit()
+                claims.pop(ao._key(target), None)
+                skipped += 1
+                continue
             clean_desc = decision["description"] or _default_description(
                 text, root_row["name"])
             # Prepend the role uniformly at emit time so it holds even over a
@@ -1785,8 +1878,21 @@ def generate_agents(report, rows):
             wrote += 1
 
         # ── Sweep cboot's own staging leftovers ──
-        for stale in AGENTS_DIR.iterdir():
-            if ao.is_tmp_artifact(stale) and stale.is_file():
+        # iterdir()/is_file() propagate EACCES/EIO on this mount; an unreadable
+        # agents dir must not abort the boot (past this point lie the report and
+        # the launch), the same reason discover_roots guards its own walk. The
+        # enclosing handler catches only sqlite3.Error, so guard here.
+        try:
+            stale_entries = list(AGENTS_DIR.iterdir())
+        except OSError as e:
+            report.warn("Agents: could not sweep staging leftovers", str(e))
+            stale_entries = []
+        for stale in stale_entries:
+            try:
+                is_stale = ao.is_tmp_artifact(stale) and stale.is_file()
+            except OSError:
+                continue
+            if is_stale:
                 try:
                     stale.unlink()
                 except OSError:

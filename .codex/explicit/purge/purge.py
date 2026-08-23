@@ -346,8 +346,29 @@ def _purge_agents_dir(purger: Purger, agents_dir: Path, project_root: Path) -> N
             f"{purger._label(agents_dir)} [{e}]")
         return
 
-    for item in sorted(agents_dir.iterdir()):
-        if _is_underscore_prefixed(item) or item.is_dir():
+    try:
+        entries = sorted(agents_dir.iterdir())
+    except OSError as e:
+        # iterdir() propagates EACCES/EIO on this mount; the module's contract is
+        # preserve-and-report, never crash the purge on an unreadable dir.
+        purger.skipped.append(
+            f"  PRESERVED (agents dir unreadable): {purger._label(agents_dir)} [{e}]")
+        return
+    for item in entries:
+        if _is_underscore_prefixed(item):
+            continue
+        try:
+            is_dir = item.is_dir()
+        except OSError:
+            purger.skipped.append(f"  PRESERVED (unstattable): {purger._label(item)}")
+            continue
+        if is_dir:
+            # Never swept — a subdirectory may hold hand-authored agents that
+            # Claude Code discovers recursively (`.claude/agents/**`). Reported,
+            # not silently skipped, so a stray or shadowing subdir is visible in
+            # the purge output like every other unhandled entry.
+            purger.skipped.append(
+                f"  PRESERVED (subdirectory — not swept): {purger._label(item)}")
             continue
         # cboot's own interrupted-write staging file. Never hand-authored, so it
         # is removable without consulting the registry.

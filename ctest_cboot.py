@@ -1787,6 +1787,260 @@ def _():
                "the newcomer does not get a case-variant of a live claim: %s" % names)
 
 
+# ── mileqa round-1 fixes (2026-08-23) ────────────────────────────────
+
+@test("MQ-01", "_walk_candidate_roots")
+def _():
+    """discover_roots TERMINATES when a root holds symlinks resolving to itself.
+
+    is_dir() follows symlinks, so `l0 -> .`/`l1 -> .` re-enter the directory;
+    ELOOP caps resolution depth, not branching, so two such links used to grow
+    the walk until OOM. The ancestor-stack cut breaks the back-edge onto the
+    current path while still appending the alias for downstream de-duplication.
+    """
+    cp = cboot._load_module(cboot.PREBOOT_DIR / "child_propagate.py")
+    with scratch_apex([("A", "a\n")]) as apex:
+        try:
+            os.symlink(apex / "A", apex / "A" / "l0")
+            os.symlink(apex / "A", apex / "A" / "l1")
+        except (OSError, NotImplementedError):
+            return
+        roots = cp.discover_roots(apex)   # must return, not hang/OOM
+        truthy(1 <= len(roots) <= 4, "the walk is bounded: %d roots" % len(roots))
+        truthy(any(r.name == "A" for r in roots), "the real root A is present")
+
+
+@test("MQ-02", "_root_is_gone")
+def _():
+    """A live project with ordinary YAML frontmatter is never read as removed.
+
+    The deletion oracle _has_root_true used a naive `find('---')` plus exact
+    string equality; a `---` inside a value, a capitalised True, or a trailing
+    comment made a present project look gone and unlinked its agent file.
+    """
+    with scratch_apex([("p", "P.\n")]) as apex:
+        cm = apex / "p" / "CLAUDE.md"
+        for fm in (
+            "---\ndescription: cost --- benefit\nroot: true\nname: p\n---\n",
+            "---\nroot: True\nname: p\n---\n",
+            "---\nroot: true  # addressable\nname: p\n---\n",
+        ):
+            cm.write_text(fm)
+            gone, why = cboot._root_is_gone("p")
+            truthy(not gone, "%r must NOT read as gone (why=%r)" % (fm, why))
+
+
+@test("MQ-03", "generate_agents")
+def _():
+    """The close path refuses to unlink a claim file outside the agents dir.
+
+    A hand-edited/restored row whose agent_file carries `..` used to be unlinked:
+    owns() is self-consistent by construction (its key comes from that same
+    string) and the delete path had no containment belt.
+    """
+    with scratch_apex([]) as apex:
+        victim = apex / "VICTIM_OUTSIDE.md"
+        victim.write_text(GEN_BODY % "ghost")   # carries a cboot marker for 'ghost'
+        conn = _sqlite_factory().connect(str(apex / ".state" / "roots.db"))
+        cboot._ensure_agent_tables(conn)
+        conn.execute(
+            "INSERT INTO agent_registry (agent_name, rel_path, source_folder,"
+            " description, agent_file, valid_from, change_reason)"
+            " VALUES ('ghost','ghost','ghost','d',"
+            "'.claude/agents/../../VICTIM_OUTSIDE.md','2026-01-01T00:00:00Z','opted-in')")
+        conn.commit()
+        conn.close()
+        rep = cboot.BootReport()
+        rows = cboot.build_root_inventory(rep)
+        cboot.generate_agents(rep, rows)       # 'ghost' absent from walk -> close path
+        truthy(victim.exists(),
+               "a claim file resolving outside .claude/agents/ is not unlinked")
+
+
+@test("MQ-04", "_write_agent_file")
+def _():
+    """The write belt refuses a target outside the agents directory (kills M11)."""
+    with scratch_apex([]) as apex:
+        escaped = cboot.AGENTS_DIR / ".." / ".." / "ESCAPED.md"
+        rep = cboot.BootReport()
+        ok = cboot._write_agent_file(escaped, "x", rep, owned=False)
+        truthy(not ok, "an escaping write is refused")
+        truthy(not (apex / "ESCAPED.md").exists(), "no file is written outside the agents dir")
+
+
+@test("MQ-05", "_write_agent_file")
+def _():
+    """A failed new-claim write leaves no orphan (AT2).
+
+    open('x') creates the dirent; if the write then fails (ENOSPC/EIO) the
+    truncated file used to be left behind — unclaimed, so purge mislabels it
+    'hand-authored' forever and it blocks its own stem, bumping the real project.
+    """
+    import builtins
+    with scratch_apex([]) as apex:
+        target = cboot.AGENTS_DIR / "orphan-pj.md"
+        real_open = builtins.open
+
+        def flaky(path, mode="r", *a, **k):
+            if "x" in mode:
+                real_open(path, "w").close()                  # create the dirent...
+                raise OSError(28, "No space left on device")  # ...then fail the write
+            return real_open(path, mode, *a, **k)
+
+        cboot.open = flaky
+        try:
+            rep = cboot.BootReport()
+            ok = cboot._write_agent_file(target, "content", rep, owned=False)
+        finally:
+            del cboot.open
+        truthy(not ok, "the write reports failure")
+        truthy(not target.exists(), "the truncated orphan was removed")
+
+
+@test("MQ-06", "generate_agents")
+def _():
+    """A folder that transliterates to an empty base is skipped, never `agent-2`.
+
+    _free_name's 'agent' fallback would escape the -pj namespace; the guard now
+    skips such a root before it can reach that fallback.
+    """
+    with scratch_apex([("日本語", "J.\n")]) as apex:
+        ag_optin(apex, [("日本語", 1, None, "J.")])
+        ag_boot(apex)
+        names = sorted(p.name for p in (apex / ".claude" / "agents").iterdir())
+        truthy("agent-2.md" not in names, "no bare agent-2 file: %s" % names)
+        truthy(names == [], "nothing materialized for an unaddressable folder: %s" % names)
+
+
+@test("MQ-07", "owns")
+def _():
+    """owns() matches a case-variant dirent — the agents mount is case-insensitive."""
+    ao = cboot._agent_ownership()
+    claims = {ao._key(cboot.AGENTS_DIR / "zMisc-pj.md"): {"agent_name": "z", "rel_path": "zMisc"}}
+    truthy(ao.owns(cboot.AGENTS_DIR / "zmisc-pj.md", claims),
+           "a lowercase dirent is owned by the mixed-case claim")
+    truthy(ao.owns(cboot.AGENTS_DIR / "ZMISC-PJ.MD", claims), "an uppercase dirent too")
+
+
+@test("MQ-08", "generate_agents")
+def _():
+    """De-confliction sees a hand-authored agent in a subdirectory (AT4).
+
+    Claude Code discovers .claude/agents/** recursively; a top-level-only glob let
+    cboot generate a duplicate @name that silently shadowed the human's file.
+    """
+    with scratch_apex([("drawio", "A tool.\n")]) as apex:
+        sub = apex / ".claude" / "agents" / "mine"
+        sub.mkdir(parents=True)
+        (sub / "drawio-pj.md").write_text("---\nname: drawio-pj\n---\nhand\n")
+        ag_optin(apex, [("drawio", 1, "drawio", "A tool.")])
+        ag_boot(apex)
+        ag = apex / ".claude" / "agents"
+        truthy((sub / "drawio-pj.md").read_text().endswith("hand\n"),
+               "the hand-authored nested file is untouched")
+        truthy(not (ag / "drawio-pj.md").exists(),
+               "cboot did not generate a top-level duplicate of the nested @name")
+        truthy((ag / "drawio-pj-2.md").exists(), "it de-conflicted to a fresh name instead")
+
+
+@test("MQ-09", "build_root_inventory")
+def _():
+    """A duplicate current row must not destroy the roots/meta cache (R3).
+
+    DROP TABLE autocommits; the durable-table CREATE UNIQUE INDEX then raising on
+    a legacy/restored/hand-edited duplicate used to leave roots/meta permanently
+    gone, self-perpetuating every boot.
+    """
+    with scratch_apex([("a", "A.\n")]) as apex:
+        db = apex / ".state" / "roots.db"
+        conn = _sqlite_factory().connect(str(db))
+        cboot._ensure_agent_tables(conn)
+        conn.execute("DROP INDEX IF EXISTS idx_agent_cur_path")
+        conn.execute("DROP INDEX IF EXISTS idx_agent_cur_name")
+        for i in (1, 2):
+            conn.execute(
+                "INSERT INTO agent_registry (agent_name, rel_path, source_folder,"
+                " description, agent_file, valid_from, change_reason)"
+                " VALUES (?,?,?,'d',?,'2026-01-01T00:00:00Z','opted-in')",
+                ("dup%d" % i, "a", "a", ".claude/agents/dup%d.md" % i))
+        conn.commit()
+        conn.close()
+
+        rep = cboot.BootReport()
+        rows = cboot.build_root_inventory(rep)
+        conn = _sqlite_factory().connect(str(db))
+        tables = {r[0] for r in conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table'")}
+        conn.close()
+        truthy("roots" in tables and "meta" in tables,
+               "roots/meta survive a durable-table failure: %s" % sorted(tables))
+        truthy(rows is not None, "the inventory still returns the rebuilt cache")
+
+
+@test("MQ-10", "generate_agents")
+def _():
+    """The structural excluded-guard alone prevents deletion (kills M12).
+
+    Even with _root_is_gone forced to report every project gone, a root the walk
+    EXCLUDED must keep its agent — the excluded lookup is a guard independent of
+    the positive gone-gate.
+    """
+    with scratch_apex([("alpha", "A.\n"), ("beta", "B.\n")]) as apex:
+        ag_optin(apex, [("alpha", 1, "alpha", "A."), ("beta", 1, "beta", "B.")])
+        ag_boot(apex)
+        ag = apex / ".claude" / "agents"
+        eq(sorted(p.name for p in ag.iterdir()), ["alpha-pj.md", "beta-pj.md"], "setup")
+
+        real_classify = cboot._classify_root
+        real_gone = cboot._root_is_gone
+        cboot._classify_root = lambda d, apex_abs: (
+            d.relative_to(apex_abs).as_posix(), "excluded by a hostile policy")
+        cboot._root_is_gone = lambda rel: (True, "")   # the positive gate would delete
+        try:
+            rep = cboot.BootReport()
+            rows = cboot.build_root_inventory(rep)
+            cboot.generate_agents(rep, rows)
+        finally:
+            cboot._classify_root = real_classify
+            cboot._root_is_gone = real_gone
+        eq(sorted(p.name for p in ag.iterdir()), ["alpha-pj.md", "beta-pj.md"],
+           "excluded roots are not deleted even when the gone-gate says gone")
+
+
+@test("MQ-11", "generate_agents")
+def _():
+    """A held claim whose stored @name escapes the agents dir is closed, not wedged.
+
+    The held branch used to take agent_name raw; a `..`-bearing name re-failed the
+    write belt every boot forever. It is now closed 'invalid-name' so the next
+    boot reopens a sanitized claim, and no file is written outside the dir.
+    """
+    with scratch_apex([("a", "A.\n")]) as apex:
+        ag_optin(apex, [("a", 1, "a", "A.")])
+        db = apex / ".state" / "roots.db"
+        conn = _sqlite_factory().connect(str(db))
+        cboot._ensure_agent_tables(conn)
+        conn.execute(
+            "INSERT INTO agent_registry (agent_name, rel_path, source_folder,"
+            " description, agent_file, valid_from, change_reason)"
+            " VALUES ('../../EVIL','a','a','d',"
+            "'.claude/agents/../../EVIL.md','2026-01-01T00:00:00Z','opted-in')")
+        conn.commit()
+        conn.close()
+
+        rep = cboot.BootReport()
+        rows = cboot.build_root_inventory(rep)
+        cboot.generate_agents(rep, rows)
+
+        conn = _sqlite_factory().connect(str(db))
+        closed = conn.execute(
+            "SELECT COUNT(*) FROM agent_registry"
+            " WHERE rel_path='a' AND close_reason='invalid-name'").fetchone()[0]
+        conn.close()
+        truthy(not (apex / "EVIL.md").exists(), "no EVIL.md written outside the agents dir")
+        truthy(closed == 1, "the corrupt held claim was closed invalid-name")
+
+
 # ── runner + coverage ────────────────────────────────────────────────
 
 def main():
