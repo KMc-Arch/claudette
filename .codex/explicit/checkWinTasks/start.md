@@ -1,6 +1,7 @@
 ---
 version: 1
 short-desc: Check and kick stale Windows scheduled tasks
+writes: []
 ---
 
 # checkWinTasks
