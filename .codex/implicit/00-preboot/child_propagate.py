@@ -52,7 +52,7 @@ def discover_roots(root, _ancestors=None):
     # ancestor stack cuts only a back-edge onto the current path.
     try:
         root_real = root.resolve()
-    except OSError:
+    except (OSError, RuntimeError):   # RuntimeError: Py3.12 symlink-loop on resolve()
         root_real = None
     _ancestors = (_ancestors or frozenset())
     if root_real is not None:
@@ -86,7 +86,7 @@ def discover_roots(root, _ancestors=None):
             # the real path); only the back-edge is cut here.
             try:
                 real = d.resolve()
-            except OSError:
+            except (OSError, RuntimeError):   # RuntimeError: Py3.12 symlink-loop
                 real = None
             if real is not None and real not in _ancestors:
                 roots.extend(discover_roots(d, _ancestors))

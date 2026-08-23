@@ -1101,6 +1101,12 @@ def build_root_inventory(report):
             # pass re-checks these tables and skips itself if they are unusable.
             try:
                 _ensure_agent_tables(conn)
+                # Persist the durable-table work — its trailing backfill INSERT
+                # (inheriting an agent_optin row for a pre-optin live claim) is
+                # DML, so without an explicit commit it would be discarded by the
+                # close() below. Before the R3 reorder it rode the roots/meta
+                # commit above; now that it runs after, it needs its own.
+                conn.commit()
             except sqlite3.Error as e:
                 report.warn("Root inventory: durable agent tables unavailable "
                             "(agent pass will be skipped this boot)", str(e))
@@ -1528,7 +1534,7 @@ def _within_agents_dir(target):
     """
     try:
         return target.parent.resolve() == AGENTS_DIR.resolve()
-    except OSError:
+    except (OSError, RuntimeError):   # RuntimeError: Py3.12 symlink-loop on resolve()
         return False
 
 

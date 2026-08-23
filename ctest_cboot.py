@@ -2041,6 +2041,39 @@ def _():
         truthy(closed == 1, "the corrupt held claim was closed invalid-name")
 
 
+@test("MQ-12", "build_root_inventory")
+def _():
+    """The inherited-optin backfill PERSISTS across the inventory pass.
+
+    _ensure_agent_tables ends in a DML backfill INSERT (giving a pre-optin live
+    claim an `inherited` agent_optin row). The R3 reorder runs it after the
+    roots/meta commit, so it needs its own commit or close() discards it every
+    boot — a pre-optin project would silently never inherit its decision.
+    """
+    with scratch_apex([("x", "X.\n")]) as apex:
+        db = apex / ".state" / "roots.db"
+        conn = _sqlite_factory().connect(str(db))
+        cboot._ensure_agent_tables(conn)
+        conn.execute(
+            "INSERT INTO agent_registry (agent_name, rel_path, source_folder,"
+            " description, agent_file, valid_from, change_reason)"
+            " VALUES ('x-pj','x','x','d','.claude/agents/x-pj.md',"
+            "'2026-01-01T00:00:00Z','opted-in')")
+        conn.execute("DELETE FROM agent_optin WHERE rel_path='x'")  # pre-optin claim
+        conn.commit()
+        conn.close()
+
+        rep = cboot.BootReport()
+        cboot.build_root_inventory(rep)   # must persist the inherited backfill
+
+        conn = _sqlite_factory().connect(str(db))
+        row = conn.execute("SELECT enabled, decided_by FROM agent_optin"
+                           " WHERE rel_path='x'").fetchone()
+        conn.close()
+        truthy(row is not None, "the inherited agent_optin row persisted the pass")
+        truthy(row is not None and row["decided_by"] == "inherited", "and is marked inherited")
+
+
 # ── runner + coverage ────────────────────────────────────────────────
 
 def main():
