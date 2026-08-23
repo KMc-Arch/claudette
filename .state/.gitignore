@@ -11,3 +11,7 @@
 # Keep manifests and this gitignore
 !start.md
 !.gitignore
+
+# mileqa run sandboxes are disposable full-tree clones for isolated testing —
+# their start.md copies are scratch, not manifests; re-exclude after the blanket keep above
+tests/mileqa/*/sb/
