@@ -1,6 +1,6 @@
 ---
-version: 5
-short-desc: "Route a request to a subproject — soft (default), hard, or switch"
+version: 6
+short-desc: "Route a request to a subproject — hard (fenced worker) or switch"
 isolation: subagent
 reads:
   - "^/.state/roots.db"
@@ -13,33 +13,38 @@ writes:
 
 # ask
 
-Route a one-shot request to a named subproject, in one of three modes. `/ask` runs as an isolated subagent — the **intermediary** — which resolves the subproject against the root inventory (`.state/roots.db`) and then either does the work itself, dispatches a hard-rooted worker, or hands you a session-switch command. The apex sees only the intermediary's final message.
+Route a one-shot request to a named subproject, in one of two modes. `/ask` runs as an isolated subagent — the **intermediary** — which resolves the subproject against the root inventory (`.state/roots.db`) and then either dispatches a hard-rooted worker or hands you a session-switch command. The apex sees only the intermediary's final message.
+
+**There is no `soft` mode.** `@name` is the soft path: an addressable project answers directly, with resolution precomputed at boot and several addressable in one prompt. The invocable token carries the `-pj` project-agent suffix cboot materializes — the project the user opts in as `drawio` is addressed `@drawio-pj` (the suffix keeps cboot's namespace disjoint from hand-authored agents; it never appears in prose). `soft` spent an intermediary hop re-resolving the name in-model on every call to reach the same place. `/ask hard` remains the only guard-enforced fence, and works for every project whether or not it is addressable.
 
 ## Modes
 
 | mode | what runs | rooting | returns | agents |
 |---|---|---|---|---|
-| **soft** *(default)* | the intermediary does the work itself | soft (discipline) | the answer | caller + intermediary |
 | **hard** | intermediary spawns a headless worker via `cboot --exec-file` | **hard** (guard-enforced) | the answer + resumable `session_id` | caller + intermediary + worker |
 | **switch** | nothing — intermediary emits a launch command | — | a `!`-command for you to run | caller + intermediary |
+| *(no mode)* | — | — | usage line | — |
 
 ## Usage
 
-`/ask [mode] <subproject> <request> [--resume <session_id>]`
+`/ask <mode> <subproject> <request> [--resume <session_id>]`
 
-- `[mode]` — optional first token: `soft` (default), `hard`, or `switch`. If the first (unquoted) token isn't one of these three, it is taken as part of `<subproject>` and the mode is `soft`.
+- `<mode>` — **required** first token: `hard` or `switch`. There is no default and no
+  inference: if the first (unquoted) token is neither, refuse with the usage line. A bare
+  `soft` is refused with a pointer to `@<name>-pj` (or to `hard` if the project is not
+  addressable) — never silently upgraded to `hard`, which would run a fenced worker the
+  user did not ask for.
 - `<subproject>` — a root's `name`, apex-relative path, or directory basename (case-insensitive). Multi-word names (e.g. `PBIR Composer`, `Agentic Primitives`) are resolved by longest match against the inventory; you may also quote them.
 - `<request>` — the task. Optional for `switch` (nothing runs).
 - `--resume <session_id>` — **`hard` only**, and only as the **final** two tokens; continue a prior worker session using a `session_id` a previous `hard` call returned.
 
 Examples:
-- `/ask AggregatorM what is the current backlog?` — soft
-- `/ask hard majel run the safe tests and report` — hard
+- `/ask hard ~majel run the safe tests and report` — hard
 - `/ask hard "PBIR Composer" summarize the architecture` — hard, quoted name
 - `/ask hard Fidelity1 "what's the next step?" --resume 4f2a…` — hard, continued
 - `/ask switch fabriceng/pbir-composer` — switch
 
-An empty `<subproject>`, or an empty `<request>` in soft/hard, is an error — refuse with the usage line.
+A missing mode, an empty `<subproject>`, or an empty `<request>` in `hard`, is an error — refuse with the usage line.
 
 ## Dispatch (apex, on invocation)
 
@@ -50,8 +55,8 @@ An empty `<subproject>`, or an empty `<request>` in soft/hard, is an error — r
 Your final message is relayed verbatim to the user, who sees only that message — not your tool output. Return only the deliverable.
 
 1. **Parse the mode and a trailing `--resume`.**
-   - If the first token is `soft`/`hard`/`switch` (case-insensitive, unquoted), that's the mode; otherwise mode = `soft`.
-   - `--resume <id>` is recognized ONLY as the final two tokens of the whole invocation, ONLY in `hard`, and only when `<id>` looks like a session id (hex and dashes, e.g. a UUID). Strip them if so. `--resume` appearing anywhere else, or with a non-id-shaped value, is ordinary request text — do NOT extract it. A trailing `--resume` with no id is an error (`--resume needs a session id`). If `--resume` is present in `soft`/`switch`, refuse: `mode <mode> does not accept --resume`.
+   - The first token MUST be `hard` or `switch` (case-insensitive, unquoted). Anything else is a usage error — there is no default mode. If it is `soft`, say so explicitly: `soft mode was removed — address the project directly as @<name>-pj, or use /ask hard <subproject> …`. Never substitute a mode the user did not name.
+   - `--resume <id>` is recognized ONLY as the final two tokens of the whole invocation, ONLY in `hard`, and only when `<id>` looks like a session id (hex and dashes, e.g. a UUID). Strip them if so. `--resume` appearing anywhere else, or with a non-id-shaped value, is ordinary request text — do NOT extract it. A trailing `--resume` with no id is an error (`--resume needs a session id`). If `--resume` is present in `switch`, refuse: `mode switch does not accept --resume`.
 
 2. **Resolve the subproject** against `^/.state/roots.db` (load all rows, match in-model; never hand-build SQL from user input):
 
@@ -67,11 +72,9 @@ Your final message is relayed verbatim to the user, who sees only that message �
    - Exactly one root matches the chosen run → capture `name` + `abs_path`; go to step 3.
    - The chosen run matches MORE THAN ONE root, or no leading run matches any root → do not guess; list the candidate roots (`name` + `rel_path`) and ask the user to re-issue (quoting the name). Stop.
    - Match is the apex (`is_apex = 1`) → refuse: `/ask` targets subprojects. Stop.
-   - Missing `<subproject>`, or empty `<request>` for soft/hard → usage line. Stop.
+   - Missing `<subproject>`, or empty `<request>` for `hard` → usage line. Stop.
 
 3. **Branch on mode.**
-
-   **soft** — Adopt `<abs_path>` as your context root (`^`). Read `<abs_path>/CLAUDE.md` and follow its `start.md` pointers (inherits `^/^/.codex`). **Confinement is YOUR responsibility** — the apex guards fence at the apex, not here. Do not read or write outside `<abs_path>` except `^/.state/roots.db` and the inherited `^/^/.codex` files; never touch `_`-prefixed paths; `.state/` writes go to `<abs_path>/.state/`. If `<request>` references another root, answer only from within `<abs_path>` and tell the user to issue a separate `/ask` for it. Carry out `<request>`. Return the answer prefixed `<name>: `.
 
    **hard** — Deliver the request as a FILE so its bytes never sit on a shell command line, then run the worker:
    1. Pick a fresh, unique scratch path under `.tmp/` (inside the apex fence, so it is writable) — e.g. `.tmp/ask-req-<6–8 random chars>.txt`. It must not already exist.
@@ -80,7 +83,7 @@ Your final message is relayed verbatim to the user, who sees only that message �
       ```
       python cboot.py --project '<abs_path>' --exec-file '<reqfile>'
       ```
-   4. Delete the scratch file: `rm -f '<reqfile>'`.
+   4. Delete the scratch file: `rm -f '<reqfile>'`. (`rm` may be permission-denied to you; if it is, say the file was left behind rather than reporting a clean run.)
 
    Then read cboot's stdout and branch:
    - **stdout is not JSON** → cboot itself failed (crash / missing python). Surface as ERROR: `<name>: exec failed — <stderr or raw stdout>`. Not a runnable `!`-command.
@@ -99,4 +102,6 @@ Your final message is relayed verbatim to the user, who sees only that message �
 
 ## Rooting note
 
-Neither `soft` nor `hard` makes the apex rebind its guards for *you*, the intermediary. `soft`'s confinement is discipline — and the apex guards allow any within-apex write, so a mis-resolved soft target could clobber a *sibling*; resolve carefully. `hard`'s fence is real but lives in the **worker** session — `cboot --exec-file` sets `CLAUDE_PROJECT_DIR=<abs_path>` so that session's guards fence at the child. `switch` is the only mode that puts a human into a natively hard-rooted interactive session. For the mechanics, see the root inventory and `cboot.py`'s `--exec-file` / `--switch`.
+`hard` does not make the apex rebind its guards for *you*, the intermediary. Its fence is real but lives in the **worker** session — `cboot --exec-file` sets `CLAUDE_PROJECT_DIR=<abs_path>` so that session's guards fence at the child. `switch` is the only mode that puts a human into a natively hard-rooted interactive session. For the mechanics, see the root inventory and `cboot.py`'s `--exec-file` / `--switch`.
+
+An `@name` subagent is soft-rooted the way the old `soft` mode was: its confinement is discipline, stated in its generated brief, and the apex guards allow any within-apex write. That is the trade `@name` makes for precomputed resolution and parallel dispatch. When a write genuinely needs a guard-enforced fence, that is what `hard` is for.

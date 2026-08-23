@@ -24,8 +24,9 @@ Runs at boot as part of `01b-materialization`. Must complete before user interac
 | Codex source | Platform target | Condition |
 |---|---|---|
 | Each folder in `explicit/` | `.claude/skills/<name>/SKILL.md` | Entry exists |
-| Any module with `isolation: subagent` | `.claude/agents/<name>.md` | `isolation: subagent` in frontmatter |
 | Reflexive temporal triggers | Cron task registration | `trigger: "cron ..."` in frontmatter |
+
+`.claude/agents/<name>.md` is NOT generated here. Project agents come from `cboot.py::generate_agents`, driven by the opt-in decisions and claims held in `.state/roots.db` — not by any walk of the codex. Module-shim generation for `isolation: subagent` (the row this table used to carry) remains unimplemented.
 
 ## Shim Format
 
@@ -47,12 +48,12 @@ Reads `.codex/settings.json`, resolves module references in the `modules` map, a
 
 If this module fails, shims can be written manually. The failure mode is missing registrations (obvious — slash commands don't work), not wrong registrations (silent — wrong behavior). The system degrades to manual setup, not to corruption.
 
-**Current status:** Step 1 of the walk algorithm (explicit -> skill shims) is handled by `cboot.py` pre-launch. `boot-inject.py` (SessionStart hook) handles context injection only. Steps 2-4 are deferred until modules declare `isolation: subagent` or `trigger: "cron ..."`.
+**Current status:** Step 1 of the walk algorithm (explicit -> skill shims) is handled by `cboot.py` pre-launch. `boot-inject.py` (SessionStart hook) handles context injection only. Project agent files are handled separately by `cboot.py::generate_agents` (decision-driven, not by this walk). Steps 2-4 are deferred until modules declare `trigger: "cron ..."`; a module-shim step for `isolation: subagent` was never implemented.
 
 ## Walk Algorithm
 
 1. List all folders in `.codex/explicit/`. For each, generate a skill shim.
-2. Scan all `start.md` files across `.codex/` for `isolation: subagent`. For each, generate an agent shim.
+2. (Deferred, unimplemented) Scan all `start.md` files across `.codex/` for `isolation: subagent`. For each, generate an agent shim. Project agents in `.claude/agents/` are generated separately by `cboot.py::generate_agents`, not by this step.
 3. Scan `.codex/reflexive/` for `trigger: "cron ..."`. For each, register a cron task.
 4. Read `.codex/settings.json`. For each key in `modules`, read the referenced module `settings.json` and merge into the output.
 5. Write all artifacts to `.claude/`.

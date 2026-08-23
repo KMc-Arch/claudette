@@ -7,6 +7,7 @@ reads:
   - "^/.state/"
   - "^/.claude/"
   - "^/.tmp/"
+  - "^/.codex/reactive/agent-ownership/"  # loads agent_ownership.py to gate .claude/agents/ deletions
   - "~/.claude/projects/<slug>/"   # external transcript store — resolved under `purge all`
 writes:
   - "^/.state/"
@@ -37,7 +38,8 @@ in which allowlisted categories are in play and whether recency-sparing applies.
 Removes only regenerable / genuinely-transient state, and prunes keep-recent dirs:
 
 - `.claude/` files (`.jsonl`, `.md`) — preserves `settings*.json` and `_`-prefixed
-- `.claude/skills/` and `.claude/agents/` (generated shims — regenerated at next boot)
+- `.claude/skills/` (generated shims — regenerated at next boot)
+- `.claude/agents/` — **only the files cboot currently claims**. Ownership is a lookup of each file's path against the current `agent_registry` rows in `.state/roots.db`, never a guess from the file's contents: nothing here opens or decodes a candidate file. A hand-authored agent is preserved and reported, whatever it contains — including one that carries a marker-shaped line. A file the registry DOES claim is also preserved if its marker is gone or altered: cboot refuses to overwrite such a file because a human has edited it, and purge deleting what cboot preserves would be the two tools disagreeing. Reading the marker there only ever prevents a deletion, so ownership is still decided by the registry alone. If the registry is missing or unreadable, cboot owns **nothing** and the whole directory is preserved. `<name>.md.tmp` staging leftovers are always removed. The rule is shared with cboot, in `.codex/reactive/agent-ownership` — purge does not carry its own copy.
 - `.state/prefs-resolved.json` (regenerated at next boot)
 - `.state/tests/` transient outputs (compliance logs etc. — NOT audits, NOT boot)
 - **Keep-recent**, pruned to the newest `KEEP_RECENT` (5) of **each kind**:
@@ -98,6 +100,7 @@ Never on any allowlist, in any scope — also guarded by separate boundaries:
 
 - `.codex/` — the framework definition
 - `.state/tests/audits/` — immutable records (audit-immutability boundary)
+- `.state/roots.db` — the durable registry. It stopped being a rebuildable cache when it took on `agent_optin` (decisions a human made once) and `agent_registry` (the claims every generated agent file depends on). Deleting it would orphan them all, and would leave purge permanently unable to tell cboot's files from hand-authored ones.
 - `start.md` files — structural manifests (includes `.tmp/start.md`)
 - `_`-prefixed items — invisible to every op: not listed, not counted toward a
   keep-recent window, not recursed into. Protected at **every depth** — a directory
@@ -105,7 +108,9 @@ Never on any allowlist, in any scope — also guarded by separate boundaries:
   buried `start.md` is never destroyed by a blind recursive delete.
 - **Symlinks** — never followed and never deleted, at any depth. A symlinked file or
   directory is treated as protected, so `purge all` never reaches its target *through*
-  the link (a dir holding a symlink survives, holding the link).
+  the link (a dir holding a symlink survives, holding the link). This covers a
+  symlinked `.claude/agents/` as much as a symlinked `skills/`: the per-file sweep
+  checks the directory itself before iterating it.
 
 ## Scoped to Child Project
 
@@ -140,7 +145,8 @@ python .codex/explicit/purge/purge.py [default|all|<project>] --project-root ^ [
    skip the interactive prompt once the user has confirmed).
 4. Report what was removed and what was detected-but-kept.
 5. **Rematerialize** (skip entirely on `--dry-run`). Purge deletes regenerable
-   boot artifacts — `.claude/skills/`, `.claude/agents/`, `prefs-resolved.json` —
+   boot artifacts — `.claude/skills/`, cboot's own `.claude/agents/` files,
+   `prefs-resolved.json` —
    so immediately regenerate them rather than leaving them missing until the next
    boot. This restores only *generated* artifacts; user content removed by
    `purge all` (memory, work, …) is intentionally not restored.

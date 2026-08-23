@@ -38,15 +38,42 @@ from __future__ import annotations
 
 import argparse
 import fnmatch
+import importlib.util
 import re
 import shutil
 import sys
 from pathlib import Path
 
+# Ownership of files in .claude/agents/ is NOT decided here. purge and cboot
+# share one implementation — two divergent copies of that test is exactly how
+# purge came to delete files cboot would have preserved.
+_AO_PATH = (Path(__file__).resolve().parents[3]
+            / ".codex" / "reactive" / "agent-ownership" / "agent_ownership.py")
+
+
+def _agent_ownership():
+    """Load the shared ownership module, or None if it is unavailable.
+
+    None means 'ownership cannot be established', which for a deleter is the
+    same as 'owns nothing' — preserve everything.
+    """
+    try:
+        spec = importlib.util.spec_from_file_location("agent_ownership", _AO_PATH)
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        return mod
+    except (OSError, ImportError, AttributeError):
+        return None
+
 # Hard floor — never on any allowlist. Also enforced by separate boundaries
 # (framework immutability, audit-immutability-guard); listed here so purge is
 # self-evidently incapable of reaching them.
-NEVER_PURGE = {".codex", ".state/tests/audits"}
+# `.state/roots.db` is on the floor because it is no longer a rebuildable cache:
+# its agent_optin and agent_registry tables hold decisions a human made once and
+# the claims every file in .claude/agents/ depends on. Deleting it would orphan
+# them all — and, since ownership is a registry lookup, would leave purge itself
+# unable to tell its own files from hand-authored ones ever again.
+NEVER_PURGE = {".codex", ".state/tests/audits", ".state/roots.db"}
 
 # Keep-recent dirs retain their newest N files under bare purge; `purge all`
 # passes keep=0 to wipe them. One constant, one rule ("keep the N newest files
@@ -280,15 +307,105 @@ class Purger:
 
 # ── SAFE tier (deleted in every scope) ─────────────────────────────────────
 
-def _purge_claude_dir(purger: Purger, claude_dir: Path) -> None:
-    """Clean .claude/ — remove .jsonl, .md; skills/; agents/. Preserve settings*.json and _-prefixed."""
+def _purge_agents_dir(purger: Purger, agents_dir: Path, project_root: Path) -> None:
+    """Remove only the files cboot currently CLAIMS in .claude/agents/.
+
+    Ownership is a lookup of each file's path against the current rows of
+    agent_registry in .state/roots.db — never a guess from the file's contents.
+    Nothing here opens or decodes a candidate file, so a hand-authored file
+    cannot be deleted for looking generated, and a non-UTF-8 one cannot crash
+    the purge mid-run.
+
+    Fail-safe: if the registry is missing, locked, or unreadable, cboot owns
+    NOTHING and every file is preserved. Guessing the other way deletes a live
+    project's agent.
+    """
+    if not agents_dir.exists():
+        return
+    # A symlinked agents/ is never followed and never deleted through — the same
+    # protection remove_dir() gives skills/. Iterating it would delete the
+    # link target's contents.
+    if _is_protected(agents_dir, purger.root):
+        purger.skipped.append(f"  PROTECTED: {purger._label(agents_dir)}")
+        return
+    if not agents_dir.is_dir():
+        return
+
+    ao = _agent_ownership()
+    if ao is None:
+        purger.skipped.append(
+            f"  PRESERVED (ownership module unavailable): {purger._label(agents_dir)}")
+        return
+
+    db_path = project_root / ".state" / "roots.db"
+    try:
+        claims = ao.claims_for(db_path, agents_dir)
+    except ao.RegistryUnavailable as e:
+        purger.skipped.append(
+            f"  PRESERVED (registry unreadable — cboot owns nothing): "
+            f"{purger._label(agents_dir)} [{e}]")
+        return
+
+    try:
+        entries = sorted(agents_dir.iterdir())
+    except OSError as e:
+        # iterdir() propagates EACCES/EIO on this mount; the module's contract is
+        # preserve-and-report, never crash the purge on an unreadable dir.
+        purger.skipped.append(
+            f"  PRESERVED (agents dir unreadable): {purger._label(agents_dir)} [{e}]")
+        return
+    for item in entries:
+        if _is_underscore_prefixed(item):
+            continue
+        try:
+            is_dir = item.is_dir()
+        except OSError:
+            purger.skipped.append(f"  PRESERVED (unstattable): {purger._label(item)}")
+            continue
+        if is_dir:
+            # Never swept — a subdirectory may hold hand-authored agents that
+            # Claude Code discovers recursively (`.claude/agents/**`). Reported,
+            # not silently skipped, so a stray or shadowing subdir is visible in
+            # the purge output like every other unhandled entry.
+            purger.skipped.append(
+                f"  PRESERVED (subdirectory — not swept): {purger._label(item)}")
+            continue
+        # cboot's own interrupted-write staging file. Never hand-authored, so it
+        # is removable without consulting the registry.
+        if ao.is_tmp_artifact(item):
+            purger.remove_file(item)
+            continue
+        if ao.owns(item, claims):
+            # Ours by the registry — but if the marker is gone or altered, a human
+            # has been in the file, and cboot has already refused to overwrite it
+            # for that reason. Deleting what cboot preserves is the two callers
+            # disagreeing, which is the whole failure this module exists to stop.
+            # Reading the marker here only ever PREVENTS a deletion, so it does
+            # not reintroduce deciding ownership from content.
+            if not ao.marker_matches(item, claims[ao._key(item)]["rel_path"]):
+                purger.skipped.append(
+                    f"  PRESERVED (claimed but hand-edited): {purger._label(item)}")
+            else:
+                purger.remove_file(item)
+        else:
+            purger.skipped.append(f"  PRESERVED (hand-authored): {purger._label(item)}")
+
+
+def _purge_claude_dir(purger: Purger, claude_dir: Path,
+                      project_root: Path | None = None) -> None:
+    """Clean .claude/ — remove .jsonl, .md; skills/; claimed agents/ files.
+    Preserve settings*.json, hand-authored agents, and _-prefixed."""
     if not claude_dir.is_dir():
         return
 
-    for subdir_name in ("skills", "agents"):
-        subdir = claude_dir / subdir_name
-        if subdir.is_dir() and not _is_underscore_prefixed(subdir):
-            purger.remove_dir(subdir)
+    skills = claude_dir / "skills"
+    if skills.is_dir() and not _is_underscore_prefixed(skills):
+        purger.remove_dir(skills)
+
+    # agents/ is NOT wholesale-removable: it mixes cboot's generated files with
+    # hand-authored ones the user owns.
+    _purge_agents_dir(purger, claude_dir / "agents",
+                      project_root if project_root is not None else claude_dir.parent)
 
     for item in claude_dir.iterdir():
         if _is_underscore_prefixed(item):
@@ -441,7 +558,7 @@ def _detect_tmp_stragglers(purger: Purger, project_root: Path, tmp_dir: Path) ->
 
 def _purge_common_safe(purger: Purger, project_root: Path, keep: int) -> None:
     """The floor of every scope: SAFE tier + keep-recent (pruned to `keep`)."""
-    _purge_claude_dir(purger, project_root / ".claude")
+    _purge_claude_dir(purger, project_root / ".claude", project_root)
     _purge_safe_state(purger, project_root / ".state")
     _purge_keep_recent(purger, project_root / ".state", keep)
 

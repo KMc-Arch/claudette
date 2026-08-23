@@ -68,7 +68,7 @@ The next day, start a new session and say "unpause" -- Claude reads the pause fi
 | **audit** | Run quality specs against a project. Dispatches sub-agents. | Writes findings |
 | **mileqa** | Pre-milestone holistic QA: blind multi-agent panels, fix critical/high, repeat until clean. | Yes (commits to a feature branch) |
 | **milestone** | Persist session knowledge to durable state. | Yes |
-| **ask** | Route a request to a subproject (soft/hard/switch). | Per request |
+| **ask** | Route a request to a subproject (hard/switch). For the soft path, address the project directly as `@<name>-pj` (cboot materializes each addressable project as an `@…-pj` agent). | Per request |
 | **new-project** | Scaffold a child project with standard structure. | Creates directory |
 | **pause** | Save session context for later resumption. | Writes pause files |
 | **unpause** | Restore a previously paused session. | No |
