@@ -75,7 +75,7 @@ Condition: body text contains both strings
 
 **T03a** — Backstop ↔ sentinel token contract
 Condition: three sub-checks (the layer-2 backstop must fire iff governance failed to load; token drift on either side makes it always-fire or never-fire — the CONFIRMED-critical class the mileqa cadre caught live):
-1. The CLAUDE.md backstop line conditions on the literal trigger token `=== BOOT INSTRUCTIONS ===` and includes the dispatched-subagent carve-out (anchor: the literal `Dispatched subagents` on the same line)
+1. The CLAUDE.md backstop conditions on the literal trigger token `=== BOOT INSTRUCTIONS ===` (interactive-session recovery) AND carries the dispatched-subagent carve-out (anchor: the literal `Dispatched subagents`). Both anchors must be present in the pre-`boot-core:begin` backstop region; they may share one line or sit on adjacent backstop bullets (fc26b38 split the single paragraph into an Interactive-Sessions bullet and a Dispatched-subagents bullet — the drift this guards against is an anchor going *missing*, not the two living on separate lines)
 2. `boot-inject.py` contains exactly one occurrence of that token, and it sits inside the branch taken when governance sources loaded (statically: within the `else` arm of the `if not sources:` fork — not in the GOVERNANCE FAILED block, not unconditional before/after the branch, and with NO intervening compound statement (`if`/`for`/`while`/`try`) between the `else:` line and the emission: the emission sits one indentation level below the `else:`)
 3. The failure-branch marker `GOVERNANCE FAILED TO LOAD` is present in `boot-inject.py` (sentinel-withholding path intact)
 

@@ -15,7 +15,7 @@ writes:
 
 Route a one-shot request to a named subproject, in one of two modes. `/ask` runs as an isolated subagent — the **intermediary** — which resolves the subproject against the root inventory (`.state/roots.db`) and then either dispatches a hard-rooted worker or hands you a session-switch command. The apex sees only the intermediary's final message.
 
-**There is no `soft` mode.** `@name` is the soft path: an addressable project answers directly, with resolution precomputed at boot and several addressable in one prompt. `soft` spent an intermediary hop re-resolving the name in-model on every call to reach the same place. `/ask hard` remains the only guard-enforced fence, and works for every project whether or not it is addressable.
+**There is no `soft` mode.** `@name` is the soft path: an addressable project answers directly, with resolution precomputed at boot and several addressable in one prompt. The invocable token carries the `-pj` project-agent suffix cboot materializes — the project the user opts in as `drawio` is addressed `@drawio-pj` (the suffix keeps cboot's namespace disjoint from hand-authored agents; it never appears in prose). `soft` spent an intermediary hop re-resolving the name in-model on every call to reach the same place. `/ask hard` remains the only guard-enforced fence, and works for every project whether or not it is addressable.
 
 ## Modes
 
@@ -31,7 +31,7 @@ Route a one-shot request to a named subproject, in one of two modes. `/ask` runs
 
 - `<mode>` — **required** first token: `hard` or `switch`. There is no default and no
   inference: if the first (unquoted) token is neither, refuse with the usage line. A bare
-  `soft` is refused with a pointer to `@<name>` (or to `hard` if the project is not
+  `soft` is refused with a pointer to `@<name>-pj` (or to `hard` if the project is not
   addressable) — never silently upgraded to `hard`, which would run a fenced worker the
   user did not ask for.
 - `<subproject>` — a root's `name`, apex-relative path, or directory basename (case-insensitive). Multi-word names (e.g. `PBIR Composer`, `Agentic Primitives`) are resolved by longest match against the inventory; you may also quote them.
@@ -55,7 +55,7 @@ A missing mode, an empty `<subproject>`, or an empty `<request>` in `hard`, is a
 Your final message is relayed verbatim to the user, who sees only that message — not your tool output. Return only the deliverable.
 
 1. **Parse the mode and a trailing `--resume`.**
-   - The first token MUST be `hard` or `switch` (case-insensitive, unquoted). Anything else is a usage error — there is no default mode. If it is `soft`, say so explicitly: `soft mode was removed — address the project directly as @<name>, or use /ask hard <subproject> …`. Never substitute a mode the user did not name.
+   - The first token MUST be `hard` or `switch` (case-insensitive, unquoted). Anything else is a usage error — there is no default mode. If it is `soft`, say so explicitly: `soft mode was removed — address the project directly as @<name>-pj, or use /ask hard <subproject> …`. Never substitute a mode the user did not name.
    - `--resume <id>` is recognized ONLY as the final two tokens of the whole invocation, ONLY in `hard`, and only when `<id>` looks like a session id (hex and dashes, e.g. a UUID). Strip them if so. `--resume` appearing anywhere else, or with a non-id-shaped value, is ordinary request text — do NOT extract it. A trailing `--resume` with no id is an error (`--resume needs a session id`). If `--resume` is present in `switch`, refuse: `mode switch does not accept --resume`.
 
 2. **Resolve the subproject** against `^/.state/roots.db` (load all rows, match in-model; never hand-build SQL from user input):

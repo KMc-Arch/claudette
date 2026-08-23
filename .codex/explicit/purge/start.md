@@ -7,6 +7,7 @@ reads:
   - "^/.state/"
   - "^/.claude/"
   - "^/.tmp/"
+  - "^/.codex/reactive/agent-ownership/"  # loads agent_ownership.py to gate .claude/agents/ deletions
   - "~/.claude/projects/<slug>/"   # external transcript store — resolved under `purge all`
 writes:
   - "^/.state/"

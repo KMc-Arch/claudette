@@ -10,7 +10,9 @@ subfolder here; nothing is written across the fence into the recipient's tree.
     ~outbox/<recipient>/<ITEM>.md          # one file per item (single file — the claim is an atomic rename)
     ~outbox/<recipient>/inflight/<ITEM>.md # claimed by the recipient; a crash leaves it here (orphan)
 
-`~`-prefixed folders are visible (not `.`-internal, not `_`-invisible) and never git-tracked.
+`~`-prefixed folders are visible (not `.`-internal, not `_`-invisible). Tracking follows the
+location's ignore rules: under `Testing/**` these are git-tracked fixtures (committed in 66d277d);
+a real child project's mailboxes follow that child repo's own `.gitignore`.
 Convention established 2026-08-09 (`~majel/~outbox`); item metadata spec added 2026-08-15 for Heartbeat.
 
 ## Recipients

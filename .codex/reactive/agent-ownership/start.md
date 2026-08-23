@@ -5,6 +5,7 @@ runtime: python
 reads:
   - "./agent_ownership.py"
   - "^/.state/roots.db"
+  - "^/.claude/agents/"             # read_marker() reads a candidate file's first body line (marker check)
 writes: []
 short-desc: "Single implementation of who owns a file in .claude/agents/"
 ---
