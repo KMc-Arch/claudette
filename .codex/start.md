@@ -1,5 +1,5 @@
 ---
-version: 2
+version: 3
 ---
 
 # Codex
@@ -132,6 +132,7 @@ Implicit entries are organized into numbered priority tiers. Tiers load sequenti
 
 | Tier | Name | Purpose |
 |---|---|---|
+| `00-preboot/` | preboot | Python modules called by cboot.py — not Claude directives. Prepares child projects before any session starts. |
 | `01-infrastructural/` | infrastructural | Must load before ANY output. Boot-critical. |
 | `02-foundational/` | foundational | Core rules. Load after 01. |
 | `03-standard/` | standard | Normal boot entries. |
