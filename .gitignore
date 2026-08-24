@@ -59,6 +59,10 @@ desktop.ini
 # !/Testing/** and !/.templates/** would otherwise re-include these.
 **/.state/tests/explicit/scrub/
 
-# ── Tilde-prefixed mailboxes (visible, never tracked) — except Heartbeat's templates ──
+# ── Tilde-prefixed mailboxes: box is contractual (charter tracked), drop contents are ephemeral (never tracked) ──
 **/~*/
+!/~inbox/
+!/~inbox/start.md
+!/~outbox/
+!/~outbox/start.md
 !/.hb-heartbeat/templates/~*/

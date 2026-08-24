@@ -2,6 +2,10 @@ _*
 .claude/
 .tmp/*
 !.tmp/start.md
+~inbox/*
+!~inbox/start.md
+~outbox/*
+!~outbox/start.md
 .DS_Store
 Thumbs.db
 desktop.ini
