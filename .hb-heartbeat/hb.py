@@ -203,8 +203,11 @@ def read_flag() -> dict | None:
         return None
     except OSError as e:
         # every sibling reader (read_night/read_quota/read_loop/keepalive/status) catches OSError;
-        # read_flag was the odd one out, so a GO that was a directory or unreadable wedged EVERY
-        # command — including `hb kill`, the kill switch itself.
+        # read_flag was the odd one out, so a GO that was a directory or unreadable crashed every
+        # command that reads it — tick, status, window open/close. (`hb kill` never called
+        # read_flag; what wedged the kill switch was remove_flag's missing except OSError, fixed
+        # separately below. `window open` can still fail on a directory GO — write_atomic's
+        # os.replace raises on a directory target; tracked in BL-52.)
         log(f"ERROR GO unreadable ({e!r}); treating as corrupt")
         return {"status": "corrupt", "_error": repr(e)}
     try:
@@ -486,6 +489,16 @@ def parse_item(path: Path) -> tuple[dict, str, list[str]]:
         int(fm.get("attempts", 0))
     except (TypeError, ValueError):
         errs.append("attempts not int")
+    # attempts_max is user-authored and optional, and BOTH sweep sites int()-coerce it bare.
+    # Unvalidated, `attempts_max: many` passed validation, got claimed, and then raised
+    # ValueError inside orphan_sweep — which window_open calls BEFORE issue_flag, so GO was
+    # never issued again on any subsequent night. Same permanent-wedge class as the
+    # UnicodeDecodeError above, reached through a sibling field.
+    if fm.get("attempts_max") is not None:
+        try:
+            int(fm["attempts_max"])
+        except (TypeError, ValueError):
+            errs.append("attempts_max not int")
     return fm, m.group(2), errs
 
 
@@ -555,8 +568,15 @@ def list_candidates() -> tuple[list[dict], list[dict]]:
         if not box.is_dir():
             continue
         for p in sorted(box.glob("*.md")):
-            if p.name.lower() == "start.md" or not p.is_file():
-                continue          # a DIRECTORY named <ID>.md crashed the sweep's write_atomic
+            if p.name.lower() == "start.md":
+                continue
+            if not p.is_file():
+                # a DIRECTORY named <ID>.md crashed the sweep's write_atomic. Report it the way
+                # orphan_sweep does — dropping it silently made the item vanish from `hb status`
+                # with no reason given, which is the failure mode this whole pass exists to kill.
+                invalid.append({"path": p, "root": root, "root_name": r["name"], "fm": {}, "body": "",
+                                "errors": ["not a regular file"]})
+                continue
             fm, body, errs = parse_item(p)
             if not errs:
                 errs += project_errors(root, fm)
@@ -794,8 +814,12 @@ def window_open(cfg: dict, force: bool = False) -> None:
     # the count_cap gate, licensing another cap's worth of unattended runs. `window_close` and
     # `run_once` both already carry the equivalent guard; this one was the asymmetry.
     n = read_night()
-    if n.get("night") == night_key(closes) and not n.get("closed"):
+    # Preserve only a live SCHEDULED ledger. `hb run`'s one-shot writes closes_at: None on the
+    # same night key, and inheriting it would hand the scheduled night a cap already spent by
+    # the manual run — with count_cap: 1 (the shipped default) the night would process nothing.
+    if n.get("night") == night_key(closes) and not n.get("closed") and n.get("closes_at"):
         n["closes_at"] = iso(closes)
+        n["count_cap"] = cfg.get("count_cap")          # re-read cfg; the old value may be stale
         n.setdefault("notes", []).extend(
             ["re-open of an already-open night (replayed trigger); ledger preserved"] + events)
         write_night(n)
@@ -1294,7 +1318,13 @@ def main(argv: list[str]) -> int:
     if cmd == "status":
         print(status(cfg)); return 0
     if cmd == "kill":
-        remove_flag("kill switch via hb.py kill"); print("GO removed" if not GO.exists() else "GO still present?!"); return 0
+        # exit non-zero when the kill did NOT take: a $?-checking caller was previously told the
+        # kill switch had fired while GO was still sitting there (e.g. GO is a directory).
+        remove_flag("kill switch via hb.py kill")
+        if GO.exists():
+            print("GO still present after kill — NOT disarmed; inspect .hb-heartbeat/state/GO", file=sys.stderr)
+            return 1
+        print("GO removed"); return 0
     if cmd == "summary":
         print(write_summary(cfg)); return 0
     print(f"unknown command {cmd}", file=sys.stderr)

@@ -84,15 +84,28 @@ INTERPRETERS = {"python", "python3", "python2", "perl", "node", "ruby", "php", "
 # other binary fall through to "allow", so `curl`, `nc`, `ssh`, `scp`, `rsync` and friends all
 # passed (verified: rc=0 for each). That made the WebFetch/WebSearch denial cosmetic — the
 # Bash channel routed around every structural control the design leans on (credential-less
-# git, runner-side push, pre-push scrub). No legitimate backlog item needs to open a socket:
-# the runner does all publishing itself. Package managers are included because an install
-# script is arbitrary remote code execution.
+# git, runner-side push, pre-push scrub). No legitimate backlog item needs a general-purpose
+# socket: the runner does all publishing itself.
+# SCOPE, HONESTLY: this closes the named-client route only. It is dispatched AFTER the
+# INTERPRETERS branch, so `python3 -c "import urllib..."`, `node -e "require('https')..."`
+# and friends still reach the network — and cannot be stopped by enumeration, because inline
+# interpreter code is arbitrary code execution. See BL-53: the guard raises the cost of
+# egress; it does not prevent it. `git fetch/pull` and `gh pr view` also open sockets by
+# design and are allowed.
 NET_EXE = {"curl", "wget", "nc", "ncat", "netcat", "socat", "ssh", "scp", "sftp", "rsync",
-           "telnet", "ftp", "lftp", "aria2c", "http", "https", "httpie", "wget2",
-           "pip", "pip3", "pipx", "npm", "npx", "yarn", "pnpm", "bun", "gem", "cargo", "go"}
-# /dev/tcp//dev/udp never tokenize as an executable — bash opens them as redirect targets,
-# so they must be caught on the raw string.
-NET_RAW_RE = re.compile(r"/dev/(tcp|udp)/")
+           "telnet", "ftp", "lftp", "aria2c", "http", "https", "httpie", "wget2"}
+# Package managers are BUILD tools first: `go test`, `cargo test`, `npm test`, `pip3 --version`
+# touch no network, and prompt-worker.md explicitly instructs the worker to run the project's
+# test harness. Blocking them by executable name wedged every non-Python root — the item would
+# exhaust its attempts and land in ~inbox as failed-repeatedly, with the real cause visible only
+# as a BLOCKED line inside the transcript. Gate the fetching SUBCOMMANDS instead.
+PKG_EXE = {"pip", "pip3", "pipx", "npm", "yarn", "pnpm", "bun", "gem", "cargo", "go", "npx"}
+PKG_FETCH_SUB = {"install", "add", "get", "download", "publish", "fetch", "update", "upgrade",
+                 "ci", "audit", "outdated"}
+# /dev/tcp and /dev/udp never tokenize as an executable — bash opens them as redirect targets,
+# so they must be caught on the raw string. Anchored to a redirect operator or a word boundary
+# after whitespace, so merely GREPPING for or documenting the string is not refused.
+NET_RAW_RE = re.compile(r"(?:[<>]&?\s*|(?:^|\s))/dev/(?:tcp|udp)/")
 SECRET_RE = re.compile(r"(\.config/gh\b|hosts\.yml|\.claude/\.credentials|\bGH_TOKEN\b|\bGITHUB_TOKEN\b|\bGH_ENTERPRISE_TOKEN\b|\.git-credentials|\.netrc\b|id_rsa|id_ed25519)")
 PROTECTED_VARS = r"(GIT_EDITOR|EDITOR|VISUAL|PAGER|GIT_PAGER|GIT_SEQUENCE_EDITOR|GIT_EXTERNAL_DIFF|GIT_PROXY_COMMAND|GIT_SSH_VARIANT|BROWSER|LESSOPEN|LESSCLOSE|GIT_DIFF_OPTS|GIT_TEMPLATE_DIR|GIT_ATTR_NOSYSTEM|GIT_ALLOW_PROTOCOL|GIT_PROTOCOL_FROM_USER|GIT_CURL_VERBOSE|GIT_TRACE[A-Z0-9_]*|HB_HOME|HB_SANDBOX|HB_APEX_ALIASES|CLAUDE_PROJECT_DIR|CLAUDE_CONFIG_DIR|GH_CONFIG_DIR|GH_TOKEN|GITHUB_TOKEN|GH_ENTERPRISE_TOKEN|GH_HOST|GIT_CONFIG_[A-Z0-9_]+|GIT_DIR|GIT_WORK_TREE|GIT_COMMON_DIR|GIT_ASKPASS|SSH_ASKPASS|GIT_SSH|GIT_SSH_COMMAND|GIT_TERMINAL_PROMPT|GIT_EXEC_PATH|GIT_CEILING_DIRECTORIES|GIT_ALTERNATE_OBJECT_DIRECTORIES|GIT_OBJECT_DIRECTORY|PATH|HOME|XDG_CONFIG_HOME|GIT_CONFIG_GLOBAL|GIT_CONFIG_SYSTEM|GIT_CONFIG_NOSYSTEM|GIT_NAMESPACE|LD_PRELOAD|LD_LIBRARY_PATH|PYTHONPATH|PYTHONSTARTUP|BASH_ENV|ENV|PROMPT_COMMAND)"
 ENV_ASSIGN_RE = re.compile(r"^" + PROTECTED_VARS + r"=")
@@ -242,12 +255,8 @@ def path_check(tok: str, cwd: Path, sandbox):
         for rp in cands:
             if _in_apex_not_sandbox(rp, sandbox):
                 block(f"'{tok}' resolves to the LIVE tree ({rp}) — the sandbox worker may only touch its own worktree")
-        try:
-            real = Path(os.path.realpath(str(rp)))
-            if real != rp and _in_apex_not_sandbox(real, sandbox):
-                block(f"'{tok}' resolves (via symlink) to the LIVE tree ({real})")
-        except OSError:
-            pass
+        # (the old single-candidate symlink follow-up lived here; realpath is now one of the
+        # candidates above, and keeping it made the block message depend on set iteration order)
 
 
 def _glob_check(t: str, cwd: Path, sandbox, tok: str):
@@ -458,8 +467,17 @@ def inspect_tokens(toks: list, cwd: Path, sandbox, depth: int = 0):
     if exe == "gh":
         return check_gh(args)
     if exe in NET_EXE:
-        block(f"'{exe}' opens a network connection — the sandbox has no egress; "
+        block(f"'{exe}' opens a network connection — the sandbox has no general egress; "
               f"the runner publishes on the worker's behalf")
+    if exe in PKG_EXE:
+        # build/test verbs pass; anything that fetches does not
+        for a in args:
+            if a.startswith("-"):
+                continue
+            if a in PKG_FETCH_SUB:
+                block(f"'{exe} {a}' fetches from the network — the sandbox has no general egress; "
+                      f"vendor the dependency or declare it in the item")
+            break
     for t in toks:
         if SECRET_RE.search(t):
             block(f"token '{t}' references credentials")
