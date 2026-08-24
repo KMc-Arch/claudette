@@ -46,6 +46,16 @@ SANDBOX_DENY = [
     "Bash(git switch main:*)", "Bash(gh pr merge:*)", "Bash(gh pr close:*)", "Bash(gh pr ready:*)",
     "Bash(gh pr create:*)", "Bash(gh pr edit:*)", "Bash(gh pr review:*)", "Bash(gh repo:*)",
     "Bash(gh auth:*)", "Bash(gh alias:*)", "Bash(gh api:*)",
+    # network egress — belt under hb-guard's NET_EXE refusal. Prefix matching only catches the
+    # plain spellings (a wrapper or a pipe walks through), which is exactly why the hook, not
+    # this list, is the real control.
+    "Bash(curl:*)", "Bash(wget:*)", "Bash(nc:*)", "Bash(ncat:*)", "Bash(netcat:*)",
+    "Bash(socat:*)", "Bash(ssh:*)", "Bash(scp:*)", "Bash(sftp:*)", "Bash(rsync:*)",
+    "Bash(telnet:*)", "Bash(pip install:*)", "Bash(pip3 install:*)", "Bash(npm install:*)",
+    "Bash(npx:*)", "Bash(yarn add:*)", "Bash(gem install:*)",
+    # credential files the Bash-only hook cannot see when the Read tool is used instead
+    "Read(//home/**/.claude/**)", "Read(//home/**/.config/gh/**)", "Read(//home/**/.ssh/**)",
+    "Read(//home/**/.netrc)", "Read(//home/**/.git-credentials)",
 ]
 
 
@@ -381,7 +391,11 @@ def spawn_worker(cfg: dict, prov: dict, prompt: str, fm: dict, on_session=None) 
     session_id = env_json.get("session_id")
     if not session_id and seen_transcript:
         session_id = Path(seen_transcript).stem
-    return {"ok": proc.returncode == 0 and not env_json.get("is_error") and not timed_out, "timed_out": timed_out,
+    # returncode is the strongest runner-side evidence there is; it was computed into "ok"
+    # and then never read by anything, so classify() took a crashed worker's own
+    # `terminus: converged` at face value. Carry it out so classify() can consult it.
+    return {"ok": proc.returncode == 0 and not env_json.get("is_error") and not timed_out,
+            "returncode": proc.returncode, "timed_out": timed_out,
             "session_id": session_id, "is_error": bool(env_json.get("is_error")) or timed_out,
             "result": env_json.get("result") if env_json.get("result") is not None else env_json.get("error"),
             "cost_usd": env_json.get("cost_usd"), "duration_ms": env_json.get("duration_ms") or int((time.time() - t0) * 1000),
@@ -463,6 +477,15 @@ def classify(env: dict, res_fm: dict) -> tuple[str, str]:
     blob = f"{env.get('result') or ''}\n{env.get('stderr') or ''}\n{env.get('raw') or ''}"
     if env.get("is_error") and QUOTA_HINT.search(blob):
         return "quota", "n/a"
+    # A worker that did not exit clean does not get to declare its own success. Without this,
+    # a worker that wrote `terminus: converged` early and then crashed — or an ordinary errored
+    # session (cboot returns 1 when the envelope says is_error) — was published as converged,
+    # the item was deleted from the queue with attempts un-bumped, and the sandbox was destroyed,
+    # leaving no diag, no corpse and a night digest that read "converged". `unexpected` takes the
+    # spec §10.2 corpse path instead: diag written, sandbox kept, nothing pushed, item retried.
+    # Ordered after timed_out so a capped run still classifies as `cap` (it also exits non-zero).
+    if env.get("returncode") not in (0, None) or env.get("is_error"):
+        return "unexpected", qa
     if t in hb.TERMINI_EXPECTED:
         return t, qa
     return "unexpected", qa
@@ -582,7 +605,15 @@ def scrub_text_file(path: Path) -> tuple[bool, str]:
 
 
 def scope_breach(files: list, scope: list) -> list:
-    """Files touched outside the item's scope allowlist (prefix match). Reported, not enforced (v1)."""
+    """Files touched outside the item's scope allowlist (prefix match).
+
+    ENFORCED: a non-empty breach withholds publication (no push, no PR) — see the gate in
+    run(). The item still reaches an expected terminus, so it is closed and the worktree
+    removed; the branch is kept locally and named in ~inbox/<ID>/outcome.md alongside the
+    breach list, and re-approving the item resumes that branch. There is no auto-retry:
+    a worker that breached once will likely breach again, so the posture is
+    loud-and-visible rather than automatic.
+    """
     if not scope:
         return []
     pats = [str(s).strip().rstrip("/") for s in scope if str(s).strip()]
@@ -682,7 +713,13 @@ def run(claim: dict, cfg: dict) -> dict | None:
     if res_fm.get("item_id") not in (None, "", item_id) and str(res_fm.get("item_id")) != item_id:
         hb.log(f"WARN outcome item_id {res_fm.get('item_id')!r} != {item_id}")
     head = _git(project, "rev-parse", "--verify", f"refs/heads/{prov['branch']}").stdout.strip() or None
-    files = _git(project, "diff", "--name-only", f"{prov['base_sha']}..{prov['branch']}").stdout.split() if head else []
+    # -z, not .split(): git does NOT quote a plain space, so whitespace-splitting shatters
+    # any path containing one — `docs/design notes.md` became ['docs/design', 'notes.md'],
+    # which withheld publication for an in-scope file AND wrote two non-existent names into
+    # the durable outcome record. Live against the `agentic` root (192 tracked paths with
+    # spaces). Matches the -z idiom already used for ls-files in provision().
+    files = [x for x in _git(project, "diff", "-z", "--name-only",
+                             f"{prov['base_sha']}..{prov['branch']}").stdout.split("\0") if x] if head else []
     has_commits = bool(head) and head != prov["base_sha"]
 
     pub = {"pushed": False, "pr": None, "note": "not published"}

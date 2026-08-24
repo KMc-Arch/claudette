@@ -201,6 +201,12 @@ def read_flag() -> dict | None:
         text = GO.read_text(encoding="utf-8", errors="replace")   # a corrupt (non-UTF-8) GO must not crash the tick
     except FileNotFoundError:
         return None
+    except OSError as e:
+        # every sibling reader (read_night/read_quota/read_loop/keepalive/status) catches OSError;
+        # read_flag was the odd one out, so a GO that was a directory or unreadable wedged EVERY
+        # command — including `hb kill`, the kill switch itself.
+        log(f"ERROR GO unreadable ({e!r}); treating as corrupt")
+        return {"status": "corrupt", "_error": repr(e)}
     try:
         d = yaml.safe_load(text) or {}
     except yaml.YAMLError:
@@ -305,6 +311,10 @@ def remove_flag(reason: str) -> None:
         log(f"GO removed ({reason})")
     except FileNotFoundError:
         pass
+    except OSError as e:
+        # without this, window_close's corrupt-flag branch crashes here instead of recovering,
+        # and the kill switch itself dies on a GO that is not a regular file
+        log(f"ERROR could not remove GO ({reason}): {e!r}")
 
 
 # ── night ledger ─────────────────────────────────────────────────────
@@ -432,7 +442,12 @@ def parse_item(path: Path) -> tuple[dict, str, list[str]]:
     errs = []
     try:
         text = path.read_text(encoding="utf-8-sig")
-    except OSError as e:
+    except (OSError, UnicodeDecodeError) as e:
+        # UnicodeDecodeError is a ValueError, not an OSError. One latin-1 byte in any queued
+        # item used to crash list_candidates/status outright, and — with a window armed —
+        # crash the tick, which records a `crash` run that CONSUMES count_cap and leaves GO
+        # inflight. The bad file is never removed, so every subsequent night repeated it:
+        # a permanent silent wedge from one pasted curly quote.
         return {}, "", [f"unreadable: {e}"]
     m = FM_RE.match(text)
     if not m:
@@ -479,17 +494,28 @@ def render_item(fm: dict, body: str) -> str:
 
 
 def project_root_for(item_root: Path, fm: dict) -> Path:
+    """Resolve an item's `project` to an absolute path INSIDE the apex.
+
+    Every branch funnels through the one containment check — a `^/`-prefixed form is not
+    a trusted shortcut. Two ways the old shape leaked, both now closed:
+      - `^/^//abs/path`: joining an absolute path onto a base DISCARDS the base, so the
+        prefix branches returned a path outside the apex. `.lstrip("/")` makes the
+        embedded absolute a no-op instead.
+      - a bare absolute path was compared to APEX *unresolved*, so a symlink inside the
+        apex pointing out defeated `relative_to`. Resolve first, then compare.
+    """
     p = str(fm.get("project", ".")).strip()
     if p in (".", ""):
         return item_root
     if p.startswith("^/^/"):
-        return (APEX / p[4:]).resolve()
-    if p.startswith("^/"):
-        return (item_root / p[2:]).resolve()
-    q = Path(p)
-    root = q if q.is_absolute() else (item_root / q).resolve()
+        root = (APEX / p[4:].lstrip("/")).resolve()
+    elif p.startswith("^/"):
+        root = (item_root / p[2:].lstrip("/")).resolve()
+    else:
+        q = Path(p)
+        root = q.resolve() if q.is_absolute() else (item_root / q).resolve()
     try:
-        root.relative_to(APEX)
+        root.relative_to(APEX.resolve())
     except ValueError:
         raise ValueError(f"project {p!r} resolves outside the apex: {root}")
     return root
@@ -529,8 +555,8 @@ def list_candidates() -> tuple[list[dict], list[dict]]:
         if not box.is_dir():
             continue
         for p in sorted(box.glob("*.md")):
-            if p.name == "start.md":
-                continue
+            if p.name.lower() == "start.md" or not p.is_file():
+                continue          # a DIRECTORY named <ID>.md crashed the sweep's write_atomic
             fm, body, errs = parse_item(p)
             if not errs:
                 errs += project_errors(root, fm)
@@ -620,7 +646,19 @@ def orphan_sweep(cfg: dict, live_item_id: str | None = None) -> list[str]:
         if not infl.is_dir():
             continue
         for p in sorted(infl.glob("*.md")):
+            if not p.is_file():
+                events.append(f"orphan {p.name} @{r['name']}: not a regular file; skipped")
+                continue
             fm, body, errs = parse_item(p)
+            if not fm:
+                # Do NOT re-render what we could not parse: render_item({}, body) replaced a full
+                # frontmatter with a bare `attempts: 1`, destroying unrecoverable (gitignored)
+                # metadata. Unclaim it byte-for-byte and let the runner's reject path report it.
+                dst = p.parent.parent / p.name
+                os.rename(p, dst)
+                _pidfile(p).unlink(missing_ok=True)
+                events.append(f"orphan {p.stem} @{r['name']}: unparseable, returned untouched ({'; '.join(errs)})")
+                continue
             item_id = str(fm.get("id") or p.stem)
             if (live_item_id and item_id == str(live_item_id)) or item_live(p):
                 continue
@@ -751,8 +789,20 @@ def window_open(cfg: dict, force: bool = False) -> None:
     prune_worktrees()
     closes = compute_close(cfg)
     issue_flag(closes)
-    write_night({"night": night_key(closes), "opened_at": iso(now_utc()), "closes_at": iso(closes),
-                 "count_cap": cfg.get("count_cap"), "runs": [], "notes": [f"open: {len(events)} orphan events"] + events})
+    # A replayed/duplicate open inside an already-open night must NOT reset the ledger: doing
+    # so wiped runs[] (losing every terminus and PR link from the morning summary) and reset
+    # the count_cap gate, licensing another cap's worth of unattended runs. `window_close` and
+    # `run_once` both already carry the equivalent guard; this one was the asymmetry.
+    n = read_night()
+    if n.get("night") == night_key(closes) and not n.get("closed"):
+        n["closes_at"] = iso(closes)
+        n.setdefault("notes", []).extend(
+            ["re-open of an already-open night (replayed trigger); ledger preserved"] + events)
+        write_night(n)
+    else:
+        write_night({"night": night_key(closes), "opened_at": iso(now_utc()), "closes_at": iso(closes),
+                     "count_cap": cfg.get("count_cap"), "runs": [],
+                     "notes": [f"open: {len(events)} orphan events"] + events})
 
 
 def window_close(cfg: dict) -> None:

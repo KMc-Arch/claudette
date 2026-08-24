@@ -3,7 +3,11 @@
 
 Runs ONLY inside a worker sandbox (installed via the sandbox's .claude/settings.local.json by runner.py).
 Defense in depth under the structural controls (the worker has no git/gh credentials and the runner
-does push + PR); this guard is ALLOWLIST-oriented so unknown shapes fail closed:
+does push + PR). Scope, stated honestly: this is a **git/gh policy engine plus path containment and a
+network-egress refusal** — it is allowlist-shaped WITHIN git and gh, but any other executable that
+touches no live-tree path and opens no socket is allowed. It is not a general sandbox. (The earlier
+header claimed "ALLOWLIST-oriented so unknown shapes fail closed", which was not true of the terminal
+fallback and is what let `curl`/`nc`/`ssh` through.)
 
   * Bash path containment: any token that resolves under (or mentions, anywhere, case-insensitively) the live apex or an
     alias mount but outside the sandbox → block; globs fail closed toward the apex; `$VAR/...`-rooted paths are refused
@@ -20,8 +24,23 @@ does push + PR); this guard is ALLOWLIST-oriented so unknown shapes fail closed:
   * secrets: tokens naming ~/.config/gh, hosts.yml, ~/.claude/.credentials*, GH_TOKEN/GITHUB_TOKEN, gh auth,
     or env assignments of HB_HOME/CLAUDE_PROJECT_DIR/GH_*/GIT_CONFIG_*/GIT_DIR/GIT_WORK_TREE → block.
 
-Residual (documented, not claimed): a script file executed via python/bash that itself shells out.
-Exit 0 = allow, exit 2 = block (message on stderr).
+  * network egress: curl/wget/nc/socat/ssh/scp/rsync/telnet/ftp and the package managers (whose install
+    scripts are remote code execution) → block; `/dev/tcp`,`/dev/udp` are caught on the raw string
+    because bash opens them as redirect targets and they never tokenize as an executable.
+
+Residuals (documented, NOT claimed as covered):
+  * a script *file* executed via python/bash that itself shells out.
+  * **the Read/Glob/Grep tools are not gated by this guard at all** — the hook's matcher is Bash-only,
+    so the worker can read any path on the host, including `$HOME` credential files, and nothing here
+    sees it. `HOME` is deliberately NOT redirected: the worker is a `claude -p` process and needs its
+    own OAuth token to run at all. "Credential-less worker" therefore means *no git/gh credentials*,
+    never "no secrets in reach". Closing this needs a tool-boundary change (matcher + deny rules) or
+    BL-44's separate OS user; it is out of scope for this guard.
+  * the sandbox inherits the apex's broad `allow` list (incl. a bare `Bash`) via child_propagate, so
+    permitted commands run with no prompt and no classifier. That is what makes the egress refusal
+    above load-bearing rather than belt-and-braces.
+Exit 0 = allow, exit 2 = block (message on stderr). The WRAPPER (hb-guard.sh) fails closed: any
+outcome other than a clean exit 0 blocks.
 """
 import glob as globmod
 import json
@@ -61,6 +80,19 @@ GH_ALLOWED_PR_SUB = {"view", "list", "diff", "status", "checks"}
 WRAPPERS_DROP1 = {"env", "command", "builtin", "exec", "nohup", "setsid", "nice", "time", "stdbuf", "ionice", "chronic", "unbuffer", "sudo", "doas", "caffeinate"}
 SHELLS = {"bash", "sh", "zsh", "dash", "ksh", "fish"}
 INTERPRETERS = {"python", "python3", "python2", "perl", "node", "ruby", "php", "lua", "awk", "gawk"}
+# Network egress. The guard dispatches on git/gh/shells/interpreters/wrappers and let every
+# other binary fall through to "allow", so `curl`, `nc`, `ssh`, `scp`, `rsync` and friends all
+# passed (verified: rc=0 for each). That made the WebFetch/WebSearch denial cosmetic — the
+# Bash channel routed around every structural control the design leans on (credential-less
+# git, runner-side push, pre-push scrub). No legitimate backlog item needs to open a socket:
+# the runner does all publishing itself. Package managers are included because an install
+# script is arbitrary remote code execution.
+NET_EXE = {"curl", "wget", "nc", "ncat", "netcat", "socat", "ssh", "scp", "sftp", "rsync",
+           "telnet", "ftp", "lftp", "aria2c", "http", "https", "httpie", "wget2",
+           "pip", "pip3", "pipx", "npm", "npx", "yarn", "pnpm", "bun", "gem", "cargo", "go"}
+# /dev/tcp//dev/udp never tokenize as an executable — bash opens them as redirect targets,
+# so they must be caught on the raw string.
+NET_RAW_RE = re.compile(r"/dev/(tcp|udp)/")
 SECRET_RE = re.compile(r"(\.config/gh\b|hosts\.yml|\.claude/\.credentials|\bGH_TOKEN\b|\bGITHUB_TOKEN\b|\bGH_ENTERPRISE_TOKEN\b|\.git-credentials|\.netrc\b|id_rsa|id_ed25519)")
 PROTECTED_VARS = r"(GIT_EDITOR|EDITOR|VISUAL|PAGER|GIT_PAGER|GIT_SEQUENCE_EDITOR|GIT_EXTERNAL_DIFF|GIT_PROXY_COMMAND|GIT_SSH_VARIANT|BROWSER|LESSOPEN|LESSCLOSE|GIT_DIFF_OPTS|GIT_TEMPLATE_DIR|GIT_ATTR_NOSYSTEM|GIT_ALLOW_PROTOCOL|GIT_PROTOCOL_FROM_USER|GIT_CURL_VERBOSE|GIT_TRACE[A-Z0-9_]*|HB_HOME|HB_SANDBOX|HB_APEX_ALIASES|CLAUDE_PROJECT_DIR|CLAUDE_CONFIG_DIR|GH_CONFIG_DIR|GH_TOKEN|GITHUB_TOKEN|GH_ENTERPRISE_TOKEN|GH_HOST|GIT_CONFIG_[A-Z0-9_]+|GIT_DIR|GIT_WORK_TREE|GIT_COMMON_DIR|GIT_ASKPASS|SSH_ASKPASS|GIT_SSH|GIT_SSH_COMMAND|GIT_TERMINAL_PROMPT|GIT_EXEC_PATH|GIT_CEILING_DIRECTORIES|GIT_ALTERNATE_OBJECT_DIRECTORIES|GIT_OBJECT_DIRECTORY|PATH|HOME|XDG_CONFIG_HOME|GIT_CONFIG_GLOBAL|GIT_CONFIG_SYSTEM|GIT_CONFIG_NOSYSTEM|GIT_NAMESPACE|LD_PRELOAD|LD_LIBRARY_PATH|PYTHONPATH|PYTHONSTARTUP|BASH_ENV|ENV|PROMPT_COMMAND)"
 ENV_ASSIGN_RE = re.compile(r"^" + PROTECTED_VARS + r"=")
@@ -385,6 +417,9 @@ def inspect_tokens(toks: list, cwd: Path, sandbox, depth: int = 0):
         return check_git(args, cwd, sandbox)
     if exe == "gh":
         return check_gh(args)
+    if exe in NET_EXE:
+        block(f"'{exe}' opens a network connection — the sandbox has no egress; "
+              f"the runner publishes on the worker's behalf")
     for t in toks:
         if SECRET_RE.search(t):
             block(f"token '{t}' references credentials")
@@ -442,6 +477,8 @@ def inspect_command(cmd: str, cwd: Path, sandbox, depth: int = 0):
         block("Windows drive path in command — no interop from the sandbox")
     if "gh auth" in cmd or "gh alias" in cmd:
         block("gh auth/alias are not allowed in the sandbox")
+    if NET_RAW_RE.search(cmd):
+        block("/dev/tcp and /dev/udp are network sockets — the sandbox has no egress")
     for toks in tokenize_segments(cmd):
         plain = []
         for t in toks:

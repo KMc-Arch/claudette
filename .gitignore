@@ -66,3 +66,12 @@ desktop.ini
 !/~outbox/
 !/~outbox/start.md
 !/.hb-heartbeat/templates/~*/
+# `**/~*/` above is unanchored and terminal, so it overrides the !/Testing/** and
+# !/.templates/** whitelist blocks. Their mailbox charters survived only because git
+# grandfathers already-tracked paths — the moment one is renamed, re-added, or a second
+# file is added, `git add` would silently refuse it, and /new-project would scaffold
+# every future child from an incomplete template. Re-include them the same way the
+# heartbeat's own template mailboxes are re-included.
+!/.templates/child/~*/
+!/Testing/**/~*/
+!/Testing/~*/

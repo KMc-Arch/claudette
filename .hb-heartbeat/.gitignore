@@ -3,3 +3,7 @@ state/*
 !state/start.md
 sandbox/
 designs/.$*.bkp
+# scratch: the apex re-includes !/.hb-heartbeat/** wholesale, so without this tmp/ is
+# neither tracked nor ignored and sits in `git status` forever, inflating the
+# statusline's uncommitted counter and adding noise to every `git add -A` review.
+tmp/
