@@ -1054,6 +1054,49 @@ class TestGuardWrapperFailsClosed(unittest.TestCase):
         self.assertEqual(self._run(self.tmp, "ls -la", path_env="/nonexistent"), 2)
 
 
+class TestGuardBypasses(unittest.TestCase):
+    """Bypasses demonstrated end-to-end against the real hook by mileqa 2026-08-23.
+
+    Each of these previously returned rc=0 (allow). They run with the guard process's own
+    cwd set to the sandbox, because two of them resolve through `/proc/self/cwd`.
+    """
+    SB = Path("/mnt/claudette/.hb-heartbeat/sandbox/BL-07")
+
+    def guard(self, cmd):
+        self.SB.mkdir(parents=True, exist_ok=True)
+        env = dict(os.environ, HB_SANDBOX=str(self.SB), CLAUDE_PROJECT_DIR=str(self.SB),
+                   HB_APEX_ALIASES="/mnt/d/claudette")
+        return subprocess.run(["/bin/bash", str(SRC / "hb-guard.sh")],
+                              input=json.dumps({"cwd": str(self.SB), "tool_input": {"command": cmd}}),
+                              capture_output=True, text=True, env=env, cwd=str(self.SB)).returncode
+
+    def test_blocks_demonstrated_bypasses(self):
+        for label, cmd in [
+            # shlex's default commenters='#' discarded everything after an unquoted '#',
+            # to the end of the whole string (newlines had been rewritten to ' ; ')
+            ("hash inline", "echo a#b; git push origin HEAD"),
+            ("hash newline", "true #x\nrm -rf /mnt/claudette/.state"),
+            ("hash gh merge", "echo hi #\ngh pr merge 1 --admin"),
+            # normpath ran before realpath, so '..' was collapsed lexically and the
+            # /proc/self/cwd symlink was never followed
+            ("procfs read", "cat /proc/self/cwd/../../CLAUDE.md"),
+            ("procfs rm", "rm /proc/self/cwd/../../hb.py"),
+            # "globs never traverse '..'" was false: the wildcard matches a real dir and
+            # the '..' after it climbs out
+            ("glob climb", "cat ./*/../../../CLAUDE.md"),
+            # '|&' was not in the separator list, so the right-hand command became args
+            ("pipe-amp", "ls |& git push origin HEAD"),
+            # exhausting the nesting budget returned "allow"
+            ("eval chain", "eval eval eval eval eval eval eval eval 'git push origin HEAD'"),
+        ]:
+            self.assertEqual(self.guard(cmd), 2, f"should block: {label}: {cmd!r}")
+
+    def test_ordinary_work_unaffected(self):
+        for cmd in ['git commit -m "fix #42"', "ls *.log", "grep -rn foo . | head -20",
+                    "bash -c 'ls -la'"]:
+            self.assertEqual(self.guard(cmd), 0, f"should allow: {cmd!r}")
+
+
 class TestContainmentAndEvidence(Base):
     """Regressions for two boundary defects found by mileqa 2026-08-23."""
 

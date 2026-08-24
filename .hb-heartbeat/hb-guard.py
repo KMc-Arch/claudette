@@ -109,6 +109,15 @@ def tokenize_segments(cmd: str):
     try:
         lex = shlex.shlex(cmd, posix=True, punctuation_chars=True)
         lex.whitespace_split = True
+        # shlex defaults to commenters='#', which DISCARDS everything after an unquoted '#'
+        # — to the end of the entire string, since newlines were just rewritten to ' ; '.
+        # bash does no such thing: '#' only starts a comment at the start of a word, and only
+        # to end of line. The mismatch let anything hide behind a '#':
+        #     echo a#b; git push origin HEAD        (bash runs the push; the guard saw ['echo'])
+        #     true #x\nrm -rf /mnt/claudette/.state  (guard saw ['true'])
+        # Disabling commenters makes '#' an ordinary word character, so the guard now sees MORE
+        # than bash executes — the safe direction for a checker.
+        lex.commenters = ""
         toks = list(lex)
     except ValueError:
         toks = None
@@ -125,7 +134,9 @@ def tokenize_segments(cmd: str):
     i = 0
     while i < len(toks):
         t = toks[i]
-        if t in (";", "|", "||", "&&", "&", "\n", "(", ")", ";;"):
+        # `|&` (bash's pipe-both-streams) was missing, so `ls |& git push origin HEAD` kept
+        # `ls` as the segment's executable and the push became mere arguments.
+        if t in (";", "|", "||", "&&", "&", "|&", "&|", "\n", "(", ")", ";;"):
             if cur:
                 segs.append(cur); cur = []
             i += 1; continue
@@ -214,11 +225,23 @@ def path_check(tok: str, cwd: Path, sandbox):
             continue
         try:
             p = Path(t) if os.path.isabs(t) else (cwd / t)
-            rp = Path(os.path.normpath(str(p)))
+            # Check BOTH the lexical and the kernel-accurate resolution, and block on either.
+            # normpath alone collapses '..' textually, so it never follows a symlink — and
+            # procfs always provides one: `/proc/self/cwd/../../CLAUDE.md` normpaths to
+            # '/CLAUDE.md' (which is not under the apex, so it passed) while the kernel
+            # resolves it to the live apex. Verified by actually reading the live CLAUDE.md,
+            # and `rm`/`cp` through the same path were allowed too. realpath resolves the
+            # existing prefix even when the leaf does not exist.
+            cands = {Path(os.path.normpath(str(p)))}
+            try:
+                cands.add(Path(os.path.realpath(str(p))))
+            except (ValueError, OSError):
+                pass
         except (ValueError, OSError):
             continue
-        if _in_apex_not_sandbox(rp, sandbox):
-            block(f"'{tok}' resolves to the LIVE tree ({rp}) — the sandbox worker may only touch its own worktree")
+        for rp in cands:
+            if _in_apex_not_sandbox(rp, sandbox):
+                block(f"'{tok}' resolves to the LIVE tree ({rp}) — the sandbox worker may only touch its own worktree")
         try:
             real = Path(os.path.realpath(str(rp)))
             if real != rp and _in_apex_not_sandbox(real, sandbox):
@@ -233,10 +256,23 @@ def _glob_check(t: str, cwd: Path, sandbox, tok: str):
     base = Path(literal) if os.path.isabs(literal) else (cwd / literal)
     basen = Path(os.path.normpath(str(base)))
     if sandbox is not None and _under(basen, sandbox):
-        # a glob rooted inside the sandbox cannot climb out (globs never traverse '..'); only the secret check applies
+        # "globs never traverse '..'" was FALSE: the wildcard segment matches a real directory
+        # and the '..' that follows climbs out of it. `cat ./*/../../../CLAUDE.md` has the
+        # literal prefix './' — under the sandbox — and expanded to the live apex file, so this
+        # early return skipped containment entirely (verified: read, cp and rm all allowed).
+        # Containment-check every expansion instead of trusting the prefix.
         for m in globmod.glob(str(base) + t[first:]):
             if SECRET_RE.search(m):
                 block(f"glob '{tok}' expands to a credential file ({m})")
+            mp = Path(os.path.normpath(m))
+            if _in_apex_not_sandbox(mp, sandbox):
+                block(f"glob '{tok}' expands outside the sandbox into the LIVE tree ({mp})")
+            try:
+                mr = Path(os.path.realpath(m))
+                if mr != mp and _in_apex_not_sandbox(mr, sandbox):
+                    block(f"glob '{tok}' expands (via symlink) into the LIVE tree ({mr})")
+            except OSError:
+                pass
         return
     # could this pattern reach the apex? (its literal prefix is a prefix of an apex root, or lies inside one)
     reach = any(str(root).startswith(str(basen).rstrip("/")) or _under(basen, root) for root in APEX_ROOTS)
@@ -338,8 +374,12 @@ def strip_env_assign(toks: list):
 
 
 def inspect_tokens(toks: list, cwd: Path, sandbox, depth: int = 0):
-    if depth > 8 or not toks:
+    if not toks:
         return
+    if depth > 8:
+        # exhausting the nesting budget used to return "allow" — so eval-chaining past the
+        # limit walked straight through (`eval eval eval … 'git push origin HEAD'`).
+        block("command nesting is too deep for the guard to analyse (fail closed)")
     # shell keywords are transparent: `if …; then CMD`, `{ CMD; }`, `! CMD`, `for …; do CMD`
     while toks and toks[0] in SHELL_KEYWORDS:
         toks = toks[1:]
@@ -462,7 +502,7 @@ def strip_heredocs(cmd: str) -> str:
 
 def inspect_command(cmd: str, cwd: Path, sandbox, depth: int = 0):
     if depth > 6:
-        return
+        block("command nesting is too deep for the guard to analyse (fail closed)")
     cmd = strip_heredocs(cmd)
     # command substitutions, backticks, process substitutions: inspect inner text as its own command
     for m in re.finditer(r"\$\((.*?)\)|`([^`]*)`|[<>]\((.*?)\)", cmd, re.S):
