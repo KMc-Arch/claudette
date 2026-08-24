@@ -77,10 +77,10 @@ python3 .hb-heartbeat/hb.py loop status | stop                    # inspect / st
   Verified 2026-08-16.
 - **The runner publishes**, not the worker: after an expected terminus it pushes `refs/heads/hb/<ITEM>` only (the live
   repo's scrub pre-push hook is the gate) and runs `gh pr create`. Nobody merges.
-- Hard-rooted sandbox worktree (`cboot.py --project SANDBOX --exec-file`), fresh per item, discarded after harvest; only `.state/work` is copied in; `WebFetch`/`WebSearch` denied by default (`worker_web`).
+- Sandbox worktree (`cboot.py --project SANDBOX --exec-file`), fresh per item, discarded after harvest; `.state/work` and `.state/prefs.json` are copied in; `WebFetch`/`WebSearch` denied by default (`worker_web`).
 - Egress scrub before anything leaves: commit messages + touched paths + PR title are scrubbed before the push (push withheld on a hit); the PR body is scrubbed before `gh pr create` (body withheld on a hit); `scrub:allow` pragmas in worker text count as a hit; long lines are folded so nothing hides past scrub's line cap. `scope` breaches withhold the push.
 
-**Guards (defense in depth — allowlist-oriented, unknown shapes fail closed):** apex deny + `remote-guard.sh`
+**Guards (defense in depth — cost-raising, NOT a containment boundary; see "Honest residuals"):** apex deny + `remote-guard.sh`
 (inherited); sandbox `settings.local.json` deny overlay + `hb-guard.sh` (path containment to the sandbox for any Bash
 token that resolves into the live tree; git subcommand allowlist with no global options; gh read-only `pr view|list|
 diff|status|checks`; wrapper peeling for env/command/eval/xargs/`bash -c`/`$(…)`/`<(…)`/shell keywords; glob expansion (fail closed toward the apex); alias mounts (`/mnt/d/claudette`) + Windows paths/.exe; `unset/export/env -u` of protected vars; git exec options (`rebase -x`, `bisect run`, `-c core.pager`…); credential-file tokens; non-ASCII executables). Time cap (`CBOOT_EXEC_TIMEOUT` + process-group kill), count cap, GO flag.
@@ -88,6 +88,23 @@ diff|status|checks`; wrapper peeling for env/command/eval/xargs/`bash -c`/`$(…
 **Honest residuals:** the worker runs as OS user KMc, so anything KMc can read on disk (e.g. `~/.config/gh/hosts.yml`)
 is readable in principle — the guard blocks the obvious spellings, a script *file* that shells out is not inspected, and the
 credential strip is environment-only (reversible by an `unset` the guard doesn't see, e.g. from inside such a script).
+
+> **The guard is not a security boundary, and cannot be patched into one** (mileqa 2026-08-23,
+> BL-53). Deciding what a bash string will run means reimplementing bash's expansion rules, and
+> every divergence is a bypass — `$'git' push`, `{git,push} origin`, `nice -n 10 git push`,
+> `find . -exec … \;`, `awk 'BEGIN{system(…)}'` all reached rc=0 against the *hardened* guard.
+> Worse, `python3 -c "import socket…"` opens a socket the egress refusal is supposed to prevent:
+> a worker that can write a file and run an interpreter has arbitrary code execution, full stop.
+> Two further gaps of the same family: the hook's matcher is **Bash-only**, so `Read`/`Glob`/`Grep`
+> are gated by nothing and can walk the whole live tree and `$HOME`; and the sandbox inherits the
+> apex's broad `allow` list (including a bare `Bash`) via `child_propagate`, so permitted commands
+> run with no prompt and no classifier. **"Credential-less worker" means no *git/gh* credentials.**
+> It cannot mean "no secrets in reach": the worker is a `claude -p` process and needs its own
+> OAuth token to run at all, so `HOME` cannot be redirected. Treat the guard as raising the cost
+> of misbehaviour. The controls that actually hold are the credential-less git/gh posture,
+> runner-side publish, the fail-closed pre-push scrub, and human PR review. Note `gh pr view|list|diff`
+> is allowed, so PR text on a repo that accepts external PRs is a live prompt-injection channel —
+> do not run unattended against such a repo until there is real isolation.
 Real separation = a dedicated OS user or a dedicated GitHub identity for the worker (user decision, not built).
 GitHub cannot tell worker from user on one account, so "no merge" is guard-level on the gh side and structural only via
 the credential strip.

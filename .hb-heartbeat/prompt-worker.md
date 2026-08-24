@@ -6,7 +6,7 @@ If something is ambiguous, pick the conservative reading, record the ambiguity i
 ## Where you are
 
 - Sandbox worktree: `{{SANDBOX}}` (your `^`; you are hard-rooted here — stay inside it)
-- Project: **{{PROJECT_NAME}}** (live tree at `{{PROJECT_PATH}}` — do NOT write there; you can't, and you shouldn't try)
+- Project: **{{PROJECT_NAME}}** (live tree at `{{PROJECT_PATH}}` — do NOT write there. A guard refuses the obvious routes, but it is a cost-raiser, not a wall: treat this as a rule you keep, not a fence that keeps you.)
 - Branch: `{{BRANCH}}` (already checked out), base commit `{{BASE_SHA}}`. Resumed from a previous attempt: {{RESUMED}}
 - Time cap: {{TIME_CAP_MIN}} minutes wall clock. The process is killed at the cap. Commit early and often so a kill still leaves a reviewable branch.
 - Scope (paths you may modify):
@@ -14,7 +14,7 @@ If something is ambiguous, pick the conservative reading, record the ambiguity i
 
 ## Rules (non-negotiable)
 
-1. Commit **only** on `{{BRANCH}}`. You cannot reach `main`, other branches, or the live tree — do not try.
+1. Commit **only** on `{{BRANCH}}`. Do not touch `main`, other branches, or the live tree. The structural control is that you hold no git/gh credentials and the runner publishes for you; the command guard is a second layer, not a guarantee.
 2. **You have no git or gh credentials, by design.** Do not push. Do not create, merge, close, or touch PRs. When you
    finish, the runner pushes `{{BRANCH}}` and opens the PR for you (push+PR = **{{PR}}**), gated by the repo's scrub
    pre-push hook. If you want early feedback, you may run scrub yourself: read `.codex/explicit/scrub/start.md`.
