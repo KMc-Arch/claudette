@@ -102,6 +102,22 @@ check_json "normal in-^ path via JSON (containment) -> allow" 0 "$T/apex/child" 
 check_json "escaped-quote .state traversal (gravity) -> block" 2 "$T/apex/child" "$GRAV" "$EXPLOIT_G"
 check_json "malformed JSON input                  -> block" 2 "$T/apex/child" "$CONT" '{"tool_input":{"file_path":'
 
+echo "# SECURITY: NotebookEdit carries notebook_path, NOT file_path — and the"
+echo "#   Write|Edit matcher fires on it by substring. A decoder reading only"
+echo "#   file_path yields \"\" -> the -z early-exit -> UNCONDITIONAL ALLOW."
+NB_OUT='{"tool_name":"NotebookEdit","tool_input":{"notebook_path":"'"$T"'/apex/nb.ipynb"}}'
+NB_IN='{"tool_name":"NotebookEdit","tool_input":{"notebook_path":"'"$T"'/apex/child/nb.ipynb"}}'
+NB_STATE='{"tool_name":"NotebookEdit","tool_input":{"notebook_path":"'"$T"'/apex/.state/nb.ipynb"}}'
+NB_TRAV='{"tool_name":"NotebookEdit","tool_input":{"notebook_path":"'"$T"'/apex/child/q\"/../../../../../../etc/evil.ipynb"}}'
+NB_TOP='{"tool_name":"NotebookEdit","notebook_path":"'"$T"'/apex/nb.ipynb"}'
+NB_NONE='{"tool_name":"NotebookEdit","tool_input":{"new_source":"x"}}'
+check_json "notebook ABOVE ^            (containment) -> block" 2 "$T/apex/child" "$CONT" "$NB_OUT"
+check_json "notebook within ^           (containment) -> allow" 0 "$T/apex/child" "$CONT" "$NB_IN"
+check_json "notebook parent .state      (gravity)     -> block" 2 "$T/apex/child" "$GRAV" "$NB_STATE"
+check_json "notebook escaped-quote trav (containment) -> block" 2 "$T/apex/child" "$CONT" "$NB_TRAV"
+check_json "notebook_path at top level  (containment) -> block" 2 "$T/apex/child" "$CONT" "$NB_TOP"
+check_json "no path key at all          (containment) -> allow" 0 "$T/apex/child" "$CONT" "$NB_NONE"
+
 echo "# cross-guard agreement: both guards ALLOW the true-^ write from a non-root subdir"
 check "gravity     allows ^/.state from subdir" 0 "$T/apex/child/sub" "$GRAV" "$T/apex/child/.state/x"
 check "containment allows ^ file  from subdir" 0 "$T/apex/child/sub" "$CONT" "$T/apex/child/deep/x"
