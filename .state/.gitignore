@@ -11,3 +11,12 @@
 # Keep manifests and this gitignore
 !start.md
 !.gitignore
+
+# ── tests/ is run output, not structure ──
+# `!start.md` above is UNANCHORED: it re-includes start.md at ANY depth. A mileqa
+# run sandboxes a whole copy of the codex tree under tests/mileqa/<run>/sb/, and
+# that copy carries ~30 start.md files of its own — every one of them was being
+# un-ignored, so `git add .state` would have committed a duplicate codex.
+# Exclude the output directories; keep the two real manifests.
+tests/*/
+!tests/audits/
