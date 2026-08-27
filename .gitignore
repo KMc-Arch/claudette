@@ -2,6 +2,21 @@
 # Inverted model: ignore everything, whitelist framework.
 # Child projects (their own git repos) are invisible by default.
 
+# ── ⚠ NOT A MODEL FOR CHILD PROJECTS ──
+# The inverted shape below — ignore everything, then whitelist the framework —
+# is specific to what claudette IS. Claudette is a framework whose working tree
+# contains other projects, most of them their own git repos; the default has to
+# be "invisible" so a child's contents never leak into this repo, and the
+# whitelist enumerates the framework itself.
+#
+# A child project is the opposite kind of thing: insular, owning its whole tree,
+# with nothing nested inside it that belongs to someone else. It uses an
+# ordinary deny-list — see .templates/child/.gitignore, which is the model.
+#
+# Copying this file's structure into a child would ignore that child's own
+# source by default and track only whatever someone remembered to whitelist.
+# Do not treat "how claudette does it" as house style.
+
 # Ignore everything
 *
 

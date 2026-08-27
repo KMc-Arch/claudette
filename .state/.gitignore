@@ -2,6 +2,16 @@
 # Track structure (start.md manifests), ignore accumulation.
 # State is instance-specific — only the skeleton travels with the framework.
 
+# ── ⚠ NOT A MODEL FOR CHILD PROJECTS ──
+# Same inverted shape as the repo root, and for the same reason: this directory
+# is framework structure holding instance-specific accumulation, so the default
+# is "ignore" and only the manifests are named back in. That is a property of
+# what claudette is — a framework — not a house style.
+#
+# A child project is insular and uses an ordinary deny-list; see
+# .templates/child/.gitignore. A child's own .state/ does not need this file's
+# shape, and copying it would ignore that child's content by default.
+
 # Ignore everything
 *
 
