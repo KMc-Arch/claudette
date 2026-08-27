@@ -34,6 +34,9 @@ mkdir -p "$ROOT/sub" "$ROOT/.state" "$T/sib/.state"
 # what they say.
 printf -- '---\nroot: true\n---\n' > "$ROOT/CLAUDE.md"
 
+# Resolve the interpreter the way the guards do (python3 || python), so a
+# host with only `python` exercises the guard rather than piping empty stdin.
+PY=$(command -v python3 || command -v python)
 PASS=0; FAIL=0
 check() {  # <desc> <expect> <guard> <json>
     local out rc
@@ -85,7 +88,7 @@ echo "# normalization must not depend on an exec that can fail"
 # Built by shell concatenation only. Routing this through an exec (python -c,
 # printf with argv) hits MAX_ARG_STRLEN itself and hands the guard an EMPTY
 # payload, which blocks as undecodable JSON — a pass for the wrong reason.
-BIG=$(python3 -c 'print("a"*200000)')
+BIG=$("$PY" -c 'print("a"*200000)')
 check "oversized path with ../ escape -> block" 2 "$CONT" \
       '{"tool_input":{"file_path":"'"$ROOT"'/'"$BIG"'/../../../../etc/evil"}}'
 check "oversized path to parent .state -> block" 2 "$GRAV" \
@@ -114,6 +117,16 @@ for g in "$CONT" "$GRAV"; do
         printf 'PASS  %-46s rc=2\n' "no python on PATH ($nm)"; PASS=$((PASS+1))
     else printf 'FAIL  %-46s rc=%s out=%s\n' "no python on PATH ($nm)" "$rc" "$out"; FAIL=$((FAIL+1)); fi
 done
+
+echo
+echo "# an innocent json.py in the cwd must not shadow the stdlib and open the fence (R2 [0])"
+SH=$(mktemp -d); printf 'raise SystemExit\n' > "$SH/json.py"
+out=$( cd "$SH" && printf '%s' '{"tool_input":{"file_path":"/etc/passwd"}}' \
+        | CLAUDE_PROJECT_DIR="$ROOT" /bin/bash "$CONT" 2>&1 ); rc=$?
+if [ "$rc" -eq 2 ] && printf '%s' "$out" | grep -q '^BLOCKED:'; then
+    printf 'PASS  %-46s rc=2\n' "json.py shadow does not open the fence"; PASS=$((PASS+1))
+else printf 'FAIL  %-46s rc=%s\n' "json.py shadow" "$rc"; FAIL=$((FAIL+1)); fi
+rm -rf "$SH"
 
 echo
 echo "# Windows drive paths against a POSIX root (test-burn B19/B20/B23)"

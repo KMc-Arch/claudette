@@ -21,8 +21,11 @@
 # `YYYYMMDD-HHMM/codex-snapshot/` inside it. Anchoring the manifests is the
 # rule that cannot be re-opened by adding a directory.
 #
-# Adding a manifest deeper than one level needs its own anchored line here.
+# Adding a manifest deeper than TWO levels needs its own anchored line here.
 !/.gitignore
 !/start.md
 !/*/start.md
-!/tests/audits/start.md
+# tests/ has manifests one level deeper (tests/audits/, tests/mileqa/ are both
+# tracked on main); `!/tests/*/start.md` re-includes them at exactly that depth
+# without re-opening the sandbox trees, which live deeper (tests/mileqa/<run>/…).
+!/tests/*/start.md

@@ -65,9 +65,13 @@ dir=$(basename "$cwd" 2>/dev/null || echo "?")
 # re-anchoring 📁 on it would render "demo" for zMisc/demo and hide the
 # traversal. Colour carries the same fact without that cost.
 #
-# This detector is deliberately looser than the guards' (see
-# 01a-resolution/frontmatter.md "What counts as a declaration"): it is a display
-# hint, not a fence, so a disagreement mis-tints an emoji and nothing more.
+# This detector is deliberately STRICTER (narrower) than the guards' and the
+# frontmatter.md grammar — bare lowercase `root: true` only, no BOM, quotes,
+# `True`/`yes`, or trailing comment. That is the opposite of what a FENCE may do
+# (a fence must be at least as permissive as the grammar, or it walks past a real
+# root to a looser ceiling). It is allowed here because this is a display HINT,
+# not a fence: under-recognising a root only mis-tints an emoji. frontmatter.md's
+# permissive-not-strict rule is explicitly scoped to enforcement contexts.
 _is_root() {
     [[ -f "$1" ]] || return 1
     # Frontmatter only: first --- fence to the next. A body mention doesn't count.
@@ -118,8 +122,14 @@ if [[ -n "$cwd" ]]; then
     nearest=$(_nearest_root "$cwd")
 
     if [[ "$cwd" == "$launch_dir" ]]; then
-        launch_label="🏠${launch_name}"
         dir="$launch_name"
+        if [[ -n "$nearest" && "$nearest" != "$launch_dir" ]]; then
+            # Launched BELOW a root: the guards' ceiling sits above 🏠, and no
+            # field names it — so tint 🏠 to flag that ^ is not the launch dir.
+            launch_label="${C_CAUTION}🏠${launch_name}${C_GRAY}"
+        else
+            launch_label="🏠${launch_name}"
+        fi
     elif [[ "$cwd" == "$launch_dir"/* ]]; then
         dir=$(_elide "${cwd#"$launch_dir"/}")
         if [[ -n "$nearest" && "$nearest" != "$launch_dir" ]]; then

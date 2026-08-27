@@ -4,7 +4,7 @@
 #
 # State gravity rule: .state/ writes default to the nearest root: true context.
 # This hook blocks writes to .state/ paths that are ABOVE the project root
-# (i.e., a parent .state/). Writes to .state/ paths WITHIN ^ (including child
+# (i.e. a parent .state/). Writes to .state/ paths WITHIN ^ (including child
 # project .state/ paths) are allowed.
 #
 # MATCHER REALITY: registered on "Write|Edit" only (cboot.py). That regex does
@@ -14,9 +14,7 @@
 # until then notebooks are an UNGUARDED write channel. Do not claim otherwise.
 #
 # The decision body below is byte-identical to containment-guard.sh and is
-# asserted so by tests/test_guards_identical.sh. Only GUARD_MODE differs. That
-# replaces the previous prose claim that the two "cannot drift apart", which
-# nothing enforced — single-guard edits passed both suites.
+# asserted so by tests/test_guards_identical.sh. Only GUARD_MODE differs.
 GUARD_MODE=gravity
 
 # >>> guard-core (byte-identical in gravity-guard.sh — proven by tests/test_guards_identical.sh)
@@ -26,7 +24,7 @@ if [ -z "$GUARD_PY" ]; then
     exit 2
 fi
 
-"$GUARD_PY" -c 'import json, os, posixpath, re, sys
+"$GUARD_PY" -I -c 'import json, os, posixpath, re, sys
 
 MODE = sys.argv[1]
 Q = chr(34) + chr(39)          # the two quote characters, unquotable inline
@@ -87,6 +85,9 @@ def is_win(p):
 
 
 win_root = is_win(cpd)
+if win_root and os.path is posixpath:
+    die("BLOCKED: a Windows-drive CLAUDE_PROJECT_DIR under a POSIX interpreter "
+        "is not supported — cannot resolve ^ (fail closed).")
 
 
 def canon(p):
@@ -104,9 +105,14 @@ cpd = canon(cpd)
 if not (target.startswith("/") or is_win(target)):
     target = cpd.rstrip("/") + "/" + target      # relative: anchor to the launch dir
 elif is_win(target) != win_root:
-    # A Windows drive path and a POSIX root are not comparable. Refusing is the
-    # only honest answer; the old code silently resolved it against the process
-    # cwd, so the verdict depended on where the hook happened to be invoked.
+    # A Windows drive path and a POSIX root are not comparable. Gravity only
+    # polices .state writes, so a non-.state target here is simply not its
+    # concern — exit 0 rather than blocking an ordinary write with a rule that
+    # was never meant to see it. Otherwise refusing is the only honest answer;
+    # the old code silently resolved against the process cwd, so the verdict
+    # depended on where the hook happened to be invoked.
+    if MODE == "gravity" and ".state" not in target.lower():
+        sys.exit(0)
     die("BLOCKED: cannot compare a Windows drive path against a POSIX project root (fail closed).",
         "  Target: " + target,
         "  Root:   " + cpd)
@@ -176,7 +182,7 @@ def root_state(d):
     text = raw.decode("utf-8", "replace").lstrip(chr(65279))
     if not text.startswith("---"):
         return False
-    m = re.search(r"(?m)^(?:---|\.\.\.)[ \t]*\r?$", text[3:])
+    m = re.search(r"(?m)^---[ \t]*\r?$", text[3:])
     if not m:
         return None                    # unterminated (or past the scan cap)
     for line in text[3:3 + m.start()].splitlines():
@@ -190,7 +196,11 @@ def root_state(d):
     return False
 
 
-root = lexical(cpd if cpd.startswith("/") or win_root else os.path.abspath(cpd))
+if win_root:
+    root = lexical(cpd)                       # a Windows interpreter path; realpath n/a
+else:
+    base = cpd if cpd.startswith("/") else os.path.abspath(cpd)
+    root = physical(base) or lexical(base)    # resolve launch-dir symlinks first
 walk = root
 while True:
     state = root_state(walk)
@@ -212,7 +222,7 @@ if not outside:
 
 if MODE == "gravity":
     def touches_state(p):
-        return p is not None and ".state" in p.split("/")
+        return p is not None and ".state" in [c.lower() for c in p.split("/")]
     if not (touches_state(tgt_lex) or touches_state(physical(target))):
         sys.exit(0)                    # not a .state write: gravity has no opinion
     if outside:

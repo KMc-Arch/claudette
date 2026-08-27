@@ -19,7 +19,9 @@ them at mutated copies.
 - `test_guards_walkup.sh` — how the guards resolve the containment ceiling `^`
   (BL-35): the nearest `root: true` ancestor of the launch dir, with every
   undecidable marker fencing **at** that directory rather than being walked past
-  to a looser ceiling. **Every scenario runs through both guards.**
+  to a looser ceiling. **Every walk-up/marker scenario runs through both guards**;
+  the few guard-specific scenarios (hostile CPD, fallback, symlinks) are covered
+  for drift by the byte-identity check instead.
   Run: `bash test_guards_walkup.sh` — exit 0 = all pass.
 
 - `test_guards_identical.sh` — asserts the shared decision core (between the

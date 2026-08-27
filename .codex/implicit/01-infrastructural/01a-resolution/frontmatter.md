@@ -25,7 +25,9 @@ Frontmatter declares what the document **is**; the body declares what to **do**.
 
 The value may be bare or quoted, in any case, and may carry a trailing `# comment`: `true`, `True`, `TRUE`, `"true"`, `yes`, `on` all declare a root. `false` does not. Line endings may be LF or CRLF.
 
-Resolvers may be **more** permissive than this grammar but never less. Under-recognising a declaration walks the resolver *past* a real root to a looser ceiling, which for an enforcement context is a containment failure; over-recognising only fences tighter. For the same reason, a CLAUDE.md that exists but cannot be decided — unreadable, non-regular, a dangling or looping symlink, an unterminated block — makes an enforcement context fence **at** that directory rather than walk past it.
+**Enforcement** resolvers (the containment and gravity guards) may be **more** permissive than this grammar but never less. Under-recognising a declaration walks the resolver *past* a real root to a looser ceiling, which for an enforcement context is a containment failure; over-recognising only fences tighter. For the same reason, a CLAUDE.md that exists but cannot be decided — unreadable, non-regular, a dangling or looping symlink, an unterminated block — makes an enforcement context fence **at** that directory rather than walk past it.
+
+**Display-only** resolvers (e.g. the statusline's `🏠` tint) are exempt from the "never less" rule: under-recognising a root only mis-colours a hint, never loosens a boundary. They may implement a narrower subset, and say so where they do.
 
 ### Scoped Rebinding
 

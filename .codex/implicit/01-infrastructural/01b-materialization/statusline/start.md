@@ -36,16 +36,16 @@ This module is a shell script — an acknowledged exception to the Python-only r
 
 ## Location Display
 
-Location is two fields. `🏠` names `^` — always present, since it is the one thing on the bar that does not move. `📁` is the path from `^` down to `cwd`, in real folder names.
+Location is two fields. `🏠` names the session's **launch directory** — which is `^` only when the session was launched at a root (the common case); it is always present, since it is the one thing on the bar that does not move. `📁` is the path from the launch directory down to `cwd`, in real folder names. (See *What the bar anchors to* below for why this is the launch dir and not the guards' walked-up `^`.)
 
 ```
-🏠claudette | 📁claudette              at ^
-🏠claudette | 📁.state/work            inside ^
-🏠claudette | 📁zMisc/demo             inside ^, past a root: true boundary   (yellow 🏠)
-🏠roughneck | 📁claudette              cwd has left ^ altogether              (orange 🏠)
+🏠claudette | 📁claudette              at the launch dir
+🏠claudette | 📁.state/work            inside it
+🏠claudette | 📁zMisc/demo             inside it, past a root: true boundary   (yellow 🏠)
+🏠claudette | 📁roughneck              cwd has left the launch dir altogether  (orange 🏠)
 ```
 
-Both fields are always present. At `^` they name the same folder; that repetition is the signal that `cwd` has not moved.
+Both fields are always present. At the launch dir they name the same folder; that repetition is the signal that `cwd` has not moved.
 
 ### What the bar anchors to
 

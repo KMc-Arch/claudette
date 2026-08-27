@@ -4,11 +4,12 @@
 # that every undecidable marker fences AT that directory rather than being
 # walked past to a LOOSER ceiling.
 #
-# EVERY scenario runs through BOTH guards. The previous version hand-picked one
-# guard per hardening case, so a resolve_root change made in only one of them
-# passed the whole suite; that is exactly the drift the docs claimed was
-# impossible. Byte-identity of the shared core is asserted separately by
-# test_guards_identical.sh.
+# Every walk-up / marker scenario runs through BOTH guards (via both()), so a
+# resolve_root change in only one of them cannot pass unobserved — the drift the
+# docs once wrongly called impossible. A few scenarios are single-guard by nature
+# (hostile CLAUDE_PROJECT_DIR, the no-root fallback, and the symlink pair, which
+# test containment- and gravity-specific paths); for those, byte-identity of the
+# shared core (test_guards_identical.sh) is what rules out one-guard drift.
 #
 # A "block" assertion requires rc=2 AND a BLOCKED: line on stderr. rc=2 alone is
 # also bash's own error exit, so rc-only assertions stay green against a guard
@@ -59,7 +60,8 @@ both() {  # <name> <expected-rc> <cpd> <above-dir>
     check "$name [gravity]"     "$want" "$cpd" "$GRAV" "$(jp file_path "$above/.state/x.md")"
 }
 
-jp() { python3 -c 'import json,sys; print(json.dumps({"tool_input":{sys.argv[1]: sys.argv[2]}}))' "$1" "$2"; }
+PY=$(command -v python3 || command -v python)
+jp() { "$PY" -c 'import json,sys; print(json.dumps({"tool_input":{sys.argv[1]: sys.argv[2]}}))' "$1" "$2"; }
 
 echo "# the ordinary case"
 check "in-^ write allowed             [containment]" 0 "$T/apex/proj" "$CONT" "$(jp file_path "$T/apex/proj/ok.md")"
@@ -135,6 +137,49 @@ ln -sfn "$T/sym/.state" "$T/sym/proj/parentstate"
 ln -sfn "$T/sym"        "$T/sym/proj/up"
 check "symlink into the parent .state -> block" 2 "$T/sym/proj" "$GRAV" "$(jp file_path "$T/sym/proj/parentstate/x.md")"
 check "symlink out of ^                -> block" 2 "$T/sym/proj" "$CONT" "$(jp file_path "$T/sym/proj/up/notes.md")"
+
+echo
+echo "# a symlinked LAUNCH DIR must resolve ^ to the real ancestry, not the link's name"
+# (R2 [2]) The walk seeds from the symlink-resolved launch dir, matching
+# boot-inject.py's start_dir.resolve(); a name-only walk would climb the wrong tree.
+mkdir -p "$T/real/proj/sub" "$T/real/.state"
+printf -- '---\napex-root: true\n---\n' > "$T/real/CLAUDE.md"
+printf -- '---\nroot: true\n---\n'      > "$T/real/proj/CLAUDE.md"
+ln -sfn "$T/real/proj" "$T/launchlink"          # a symlink that IS the launch dir
+both  "launch dir is a symlink"                 2 "$T/launchlink" "$T/real"
+check "in-^ via symlinked launch -> allow"      0 "$T/launchlink" "$CONT" "$(jp file_path "$T/real/proj/ok.md")"
+
+echo
+echo "# a '...' line inside the leading block is NOT a terminator (R2 [4])"
+# Accepting it would end the block early, miss a real root:true after it, and walk
+# past to a looser ceiling — the exact under-recognition the grammar forbids.
+mk_tree dots
+printf -- '---\n...\nroot: true\n---\n' > "$T/dots/proj/CLAUDE.md"
+both "root:true after a ... line still fences"  2 "$T/dots/proj/sub" "$T/dots"
+
+echo
+echo "# a prefix-sibling of the root is OUTSIDE ^ (R2 [6])"
+# ^=.../proj must not admit .../proj-evil; inside() appends a separator so the
+# name prefix cannot leak. A fixture that exercises it, so the separator is covered.
+mkdir -p "$T/apex/proj-evil/.state"
+check "prefix-sibling dir (containment) -> block" 2 "$T/apex/proj" "$CONT" "$(jp file_path "$T/apex/proj-evil/x.md")"
+check "prefix-sibling .state (gravity)  -> block" 2 "$T/apex/proj" "$GRAV" "$(jp file_path "$T/apex/proj-evil/.state/x.md")"
+
+echo
+echo "# a Windows-drive CLAUDE_PROJECT_DIR under a POSIX interpreter is refused (R2 [10][12])"
+# posixpath cannot walk a drive path (c:/x -> c: -> "" -> stats the process cwd);
+# refuse it outright rather than collapse to a cwd-dependent verdict.
+check "Windows-drive CPD under POSIX -> block"  2 'C:\proj' "$CONT" "$(jp file_path "c:/proj/sub/a.txt")"
+check "gravity ignores non-.state Win target"   0 "$T/apex/proj" "$GRAV" "$(jp file_path "C:/some/file.txt")"
+
+echo
+echo "# gravity sees a .state revealed only by symlink resolution, and one nested deep (R2 [40][42])"
+mkdir -p "$T/deep/proj/sub" "$T/deep/.state/memory"
+printf -- '---\napex-root: true\n---\n' > "$T/deep/CLAUDE.md"
+printf -- '---\nroot: true\n---\n'      > "$T/deep/proj/CLAUDE.md"
+check "parent .state nested deep -> block"      2 "$T/deep/proj" "$GRAV" "$(jp file_path "$T/deep/.state/memory/x.md")"
+mkdir -p "$T/deep/.State"
+check "parent .State (case-insensitive) -> block" 2 "$T/deep/proj" "$GRAV" "$(jp file_path "$T/deep/.State/x.md")"
 
 echo
 echo "-------------------------------------------"
