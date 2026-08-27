@@ -24,7 +24,7 @@
 #
 GUARD_MODE=containment
 
-# >>> guard-core (byte-identical in gravity-guard.sh — proven by tests/test_guards_identical.sh)
+# >>> guard-core (byte-identical across BOTH guards — proven by tests/test_guards_identical.sh)
 GUARD_PY=$(command -v python3 || command -v python)
 if [ -z "$GUARD_PY" ]; then
     echo "BLOCKED: no python interpreter available for the guard (fail closed)." >&2
@@ -118,7 +118,7 @@ elif is_win(target) != win_root:
     # was never meant to see it. Otherwise refusing is the only honest answer;
     # the old code silently resolved against the process cwd, so the verdict
     # depended on where the hook happened to be invoked.
-    if MODE == "gravity" and ".state" not in target.lower():
+    if MODE == "gravity" and ".state" not in [c.lower() for c in target.replace(chr(92), "/").split("/")]:
         sys.exit(0)
     die("BLOCKED: cannot compare a Windows drive path against a POSIX project root (fail closed).",
         "  Target: " + target,
@@ -135,11 +135,14 @@ def lexical(p):
 
 
 def physical(p):
-    # Symlink-resolved view, so a symlinked component cannot carry a write out
-    # of ^ behind a clean-looking lexical path. Pure python: no exec, no E2BIG.
+    # Symlink-resolved view: resolves symlinks AND ".." in pure python (no exec,
+    # no argument-length limit), so it also collapses the oversized-traversal and
+    # escaped-quote cases. Returns None on any failure (OSError, or ValueError
+    # from a NUL byte) so the caller falls back to the lexical view and fails
+    # closed rather than crashing.
     try:
         return os.path.realpath(p)
-    except OSError:
+    except (OSError, ValueError):
         return None
 
 
@@ -220,17 +223,24 @@ while True:
     walk = parent
 
 # ---- verdict ----------------------------------------------------------------
-tgt_lex = lexical(target)
-outside = not inside(tgt_lex, root)
-if not outside:
-    tgt_phys, root_phys = physical(target), physical(root)
-    if tgt_phys and root_phys:
-        outside = not inside(tgt_phys, root_phys)
+# Resolve BOTH sides the same way and let the SYMLINK-RESOLVED view decide, as
+# main did (`realpath -m` on target and root alike). Asymmetry is what regressed:
+# resolving root but not the target over-blocks an in-^ write reached through a
+# symlinked launch dir, while lexical-only would miss a symlink that carries a
+# write OUT of ^. realpath resolves both symlinks and "..", so it subsumes the
+# lexical view; lexical is kept only as the fallback when realpath is unavailable
+# for either side (then it fences on names, which is the safe direction).
+tgt_lex, root_lex = lexical(target), lexical(root)
+tgt_phys, root_phys = physical(target), physical(root)
+if tgt_phys is not None and root_phys is not None:
+    outside = not inside(tgt_phys, root_phys)
+else:
+    outside = not inside(tgt_lex, root_lex)
 
 if MODE == "gravity":
     def touches_state(p):
         return p is not None and ".state" in [c.lower() for c in p.split("/")]
-    if not (touches_state(tgt_lex) or touches_state(physical(target))):
+    if not (touches_state(tgt_lex) or touches_state(tgt_phys)):
         sys.exit(0)                    # not a .state write: gravity has no opinion
     if outside:
         die("BLOCKED: State gravity violation - writing to .state/ outside project root.",

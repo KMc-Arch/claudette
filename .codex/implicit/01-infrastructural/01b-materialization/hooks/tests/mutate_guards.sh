@@ -105,21 +105,24 @@ if run_suites "$SRC"; then echo "GREEN control (correct)"
 else echo "control is RED — fix the suites before trusting any mutant"; exit 1; fi
 echo
 
-# lexical() and physical() overlap: both collapse "..", so for a plain traversal
-# either one alone still blocks. They are redundant controls; M1 and M1b prove
-# each half is covered on its own.
-mutate "M1  lexical norm off" \
+# The verdict is symmetric + physical-authoritative: it compares realpath(target)
+# to realpath(root), falling back to the lexical view only when realpath is
+# unavailable for either side. M1 proves the authoritative physical comparison is
+# load-bearing; M1b proves the lexical fallback still blocks when physical is gone.
+mutate "M1  physical comparison disabled (lexical-only asymmetry)" \
+       "if tgt_phys is not None and root_phys is not None:" "if False:"
+mutate "M1b no normalization anywhere (physical off + lexical off)" \
+       "        return os.path.realpath(p)" "        return None" \
        "    return posixpath.normpath(p)" "    return p"
-mutate "M1b lexical AND physical both off" \
-       "    return posixpath.normpath(p)" "    return p" \
-       "    if tgt_phys and root_phys:"   "    if False:"
 mutate "M2  no BOM strip"                     ".lstrip(chr(65279))" ""
 mutate "M3  only bare lowercase true"         'TRUE_WORDS = ("true", "yes", "on")' 'TRUE_WORDS = ("true",)'
 mutate "M4  lexists -> exists (follows link)" "os.path.lexists(cm)" "os.path.exists(cm)"
 mutate "M5  unterminated block read as non-root" \
        "        return None                    # unterminated" \
        "        return False                   # unterminated"
-mutate "M6  symlink-resolved second view off" "    if tgt_phys and root_phys:" "    if False:"
+mutate "M6  gravity .state check on lexical only (miss symlinked .state)" \
+       "    if not (touches_state(tgt_lex) or touches_state(tgt_phys)):" \
+       "    if not touches_state(tgt_lex):"
 mutate "M7  non-string path allowed"          "    if badtype:" "    if False:"
 mutate "M8  missing python allows"            "    exit 2
 fi" "    exit 0
@@ -133,9 +136,9 @@ mutate "M11 empty CLAUDE_PROJECT_DIR allowed" "if not cpd.strip():" "if False:"
 mutate "M12 escape-stripping extraction (pre-decode)" \
        "    doc = json.load(sys.stdin)" \
        "    doc = json.loads(re.sub(chr(92) + chr(46), chr(0), sys.stdin.read()).replace(chr(0), chr(0)))"
-mutate "M13 gravity checks the RAW path only" \
-       "    if not (touches_state(tgt_lex) or touches_state(physical(target))):" \
-       "    if not touches_state(target):"
+mutate "M13 mismatch-branch .state substring (R3 [4])" \
+       '    if MODE == "gravity" and ".state" not in [c.lower() for c in target.replace(chr(92), "/").split("/")]:' \
+       '    if MODE == "gravity" and ".state" not in target.lower():'
 # --- fixes landed this round get their own mutants ---
 mutate "M16 no interpreter isolation (-I)"    '"$GUARD_PY" -I -c ' '"$GUARD_PY" -c '
 mutate "M17 accept ... as a terminator again" \

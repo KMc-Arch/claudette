@@ -103,6 +103,13 @@ mk_tree unt;  printf -- '---\nsome: value\nnever terminated\n' > "$T/unt/proj/CL
 both "frontmatter with no terminator"   2 "$T/unt/proj/sub" "$T/unt"
 mk_tree nr;   mkfifo "$T/nr/proj/CLAUDE.md" 2>/dev/null || : > "$T/nr/proj/CLAUDE.md"
 both "non-regular CLAUDE.md"            2 "$T/nr/proj/sub" "$T/nr"
+# (R3 [3]) an existing-but-UNREADABLE root marker must fence here, not be walked
+# past. Skip only if running as root, where the permission bit is ignored.
+if [ "$(id -u)" -ne 0 ]; then
+    mk_tree unrd; printf -- '---\nroot: true\n---\n' > "$T/unrd/proj/CLAUDE.md"; chmod 000 "$T/unrd/proj/CLAUDE.md"
+    both "unreadable CLAUDE.md fences here" 2 "$T/unrd/proj/sub" "$T/unrd"
+    chmod 644 "$T/unrd/proj/CLAUDE.md"
+fi
 
 echo
 echo "# a body root: true after a CLOSED block is not a declaration"
@@ -118,6 +125,12 @@ echo "# no root anywhere above: fall back to the launch dir (fences tighter)"
 mkdir -p "$T/noroot/launch/sub"
 check "fallback: write under the launch dir -> allow" 0 "$T/noroot/launch" "$CONT" "$(jp file_path "$T/noroot/launch/x.md")"
 check "fallback: write above the launch dir -> block" 2 "$T/noroot/launch" "$CONT" "$(jp file_path "$T/noroot/x.md")"
+
+echo
+echo "# a RELATIVE file_path is anchored to the launch dir (R3 [9])"
+check "relative path inside ^  -> allow" 0 "$T/apex/proj" "$CONT" '{"tool_input":{"file_path":"sub/rel.md"}}'
+check "relative path escaping ^ -> block" 2 "$T/apex/proj" "$CONT" '{"tool_input":{"file_path":"../rel-escape.md"}}'
+check "relative .state escaping ^ -> block" 2 "$T/apex/proj" "$GRAV" '{"tool_input":{"file_path":"../.state/x"}}'
 
 echo
 echo "# the ceiling must survive a hostile CLAUDE_PROJECT_DIR"
@@ -146,8 +159,29 @@ mkdir -p "$T/real/proj/sub" "$T/real/.state"
 printf -- '---\napex-root: true\n---\n' > "$T/real/CLAUDE.md"
 printf -- '---\nroot: true\n---\n'      > "$T/real/proj/CLAUDE.md"
 ln -sfn "$T/real/proj" "$T/launchlink"          # a symlink that IS the launch dir
-both  "launch dir is a symlink"                 2 "$T/launchlink" "$T/real"
-check "in-^ via symlinked launch -> allow"      0 "$T/launchlink" "$CONT" "$(jp file_path "$T/real/proj/ok.md")"
+both  "launch dir is a symlink (block above ^)" 2 "$T/launchlink" "$T/real"
+# (R3 [0]) The comparison is symmetric + physical-authoritative, so a LEGITIMATE
+# in-^ write reached through the symlinked launch dir is ALLOWED — resolving root
+# but not the target (the R2 asymmetry) wrongly blocked every in-^ write here.
+check "in-^ file via symlinked launch  -> allow" 0 "$T/launchlink" "$CONT" "$(jp file_path "$T/launchlink/sub/ok.md")"
+check "in-^ .state via symlinked launch -> allow" 0 "$T/launchlink" "$GRAV" "$(jp file_path "$T/launchlink/.state/n")"
+# a symlinked ANCESTOR of the launch dir, same expectation
+mkdir -p "$T/realhome/myproj/sub"; printf -- '---\nroot: true\n---\n' > "$T/realhome/myproj/CLAUDE.md"
+ln -sfn "$T/realhome" "$T/homelink"
+check "in-^ via symlinked ancestor      -> allow" 0 "$T/homelink/myproj" "$CONT" "$(jp file_path "$T/homelink/myproj/sub/x")"
+# but a symlink INSIDE ^ pointing OUT must still block (physical view catches it)
+ln -sfn /etc "$T/real/proj/evillink"
+check "inside-^ symlink pointing OUT     -> block" 2 "$T/real/proj" "$CONT" "$(jp file_path "$T/real/proj/evillink/passwd")"
+# ^ is resolved in the REAL directory tree: a launch dir reached via a symlink to
+# a NON-root dir must not inherit a root that exists only in the symlink's NAME
+# ancestry. The launch dir's real path (plainreal) has no root above it, so ^ is
+# the launch dir and the write is inside it — a NAME-ancestry walk would wrongly
+# fence at $T/deep and block. (This is what makes the physical walk SEED, not just
+# the physical verdict, load-bearing.)
+mkdir -p "$T/deep/nested" "$T/plainreal/sub"
+printf -- '---\nroot: true\n---\n' > "$T/deep/CLAUDE.md"
+ln -sfn "$T/plainreal" "$T/deep/nested/plink"
+check "^ from the real tree, not the name tree -> allow" 0 "$T/deep/nested/plink" "$CONT" "$(jp file_path "$T/deep/nested/plink/sub/x")"
 
 echo
 echo "# a '...' line inside the leading block is NOT a terminator (R2 [4])"
@@ -171,6 +205,9 @@ echo "# a Windows-drive CLAUDE_PROJECT_DIR under a POSIX interpreter is refused 
 # refuse it outright rather than collapse to a cwd-dependent verdict.
 check "Windows-drive CPD under POSIX -> block"  2 'C:\proj' "$CONT" "$(jp file_path "c:/proj/sub/a.txt")"
 check "gravity ignores non-.state Win target"   0 "$T/apex/proj" "$GRAV" "$(jp file_path "C:/some/file.txt")"
+# (R3 [4]) ".state" as a mere SUBSTRING (notes.stateful.txt) is NOT a .state
+# component — gravity must not block it in the Win/POSIX-mismatch branch either.
+check "gravity: '.state' substring only -> allow" 0 "$T/apex/proj" "$GRAV" '{"tool_input":{"file_path":"C:\\u\\notes.stateful.txt"}}'
 
 echo
 echo "# gravity sees a .state revealed only by symlink resolution, and one nested deep (R2 [40][42])"

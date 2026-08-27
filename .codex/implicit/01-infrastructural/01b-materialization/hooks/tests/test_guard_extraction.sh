@@ -95,16 +95,20 @@ check "oversized path to parent .state -> block" 2 "$GRAV" \
       '{"tool_input":{"file_path":"'"$ROOT"'/'"$BIG"'/../../sib/.state/evil"}}'
 
 echo
-echo "# a broken or absent realpath must not open the fence"
+echo "# the guard has NO external realpath dependency (R3 [2]: normalization is"
+echo "# in-process os.path.realpath, not the shell 'realpath' binary — a broken one"
+echo "# on PATH is irrelevant, which is the whole point of dropping the shell-out)."
 mkdir -p "$T/stub"; printf '#!/bin/sh\nexit 1\n' > "$T/stub/realpath"; chmod +x "$T/stub/realpath"
 for g in "$CONT" "$GRAV"; do
     case "$g" in *containment*) tgt="$ROOT/../../etc/evil"; nm=containment ;;
                  *)             tgt="$ROOT/../sib/.state/evil"; nm=gravity ;; esac
+    # A broken 'realpath' AND 'grep' AND 'awk' on PATH — none is on the decision
+    # path any more; only python is. The traversal must still block.
     out=$(printf '%s' '{"tool_input":{"file_path":"'"$tgt"'"}}' \
-          | env PATH="$T/stub:$PATH" CLAUDE_PROJECT_DIR="$ROOT" /bin/bash "$g" 2>&1); rc=$?
+          | env PATH="$T/stub:$(dirname "$PY"):/usr/bin:/bin" CLAUDE_PROJECT_DIR="$ROOT" /bin/bash "$g" 2>&1); rc=$?
     if [ "$rc" -eq 2 ] && printf '%s' "$out" | grep -q '^BLOCKED:'; then
-        printf 'PASS  %-46s rc=2\n' "broken realpath on PATH ($nm)"; PASS=$((PASS+1))
-    else printf 'FAIL  %-46s rc=%s\n' "broken realpath on PATH ($nm)" "$rc"; FAIL=$((FAIL+1)); fi
+        printf 'PASS  %-46s rc=2\n' "broken realpath binary is irrelevant ($nm)"; PASS=$((PASS+1))
+    else printf 'FAIL  %-46s rc=%s\n' "broken realpath binary ($nm)" "$rc"; FAIL=$((FAIL+1)); fi
 done
 
 echo
