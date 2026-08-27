@@ -1,144 +1,143 @@
 #!/usr/bin/env bash
-# Shared-tree test: gravity-guard.sh + containment-guard.sh ^-resolution walk-up.
-# Proves both guards resolve the containment ceiling to the nearest root:true
-# ancestor of $CLAUDE_PROJECT_DIR (matching 01a-resolution/frontmatter.md), so a
-# session launched from a non-root subdir can still write to its true ^/.state
-# (BL-35), while writes above ^ stay blocked — and that detection FAILS CLOSED on
-# unreadable / malformed / absent root markers rather than loosening the ceiling.
-# Exit 0 = all pass.
+# Proves how gravity-guard.sh and containment-guard.sh resolve the containment
+# ceiling ^ — the nearest root: true ancestor of the launch dir (BL-35) — and
+# that every undecidable marker fences AT that directory rather than being
+# walked past to a LOOSER ceiling.
+#
+# EVERY scenario runs through BOTH guards. The previous version hand-picked one
+# guard per hardening case, so a resolve_root change made in only one of them
+# passed the whole suite; that is exactly the drift the docs claimed was
+# impossible. Byte-identity of the shared core is asserted separately by
+# test_guards_identical.sh.
+#
+# A "block" assertion requires rc=2 AND a BLOCKED: line on stderr. rc=2 alone is
+# also bash's own error exit, so rc-only assertions stay green against a guard
+# that never executes a line.
+#
+# Run: bash test_guards_walkup.sh   (exit 0 = all pass)
+# GUARD_DIR=<dir> overrides which copies are tested (used by mutate_guards.sh).
 set -u
 
-HOOKS_DIR="$(cd "$(dirname "$0")/.." && pwd)"
-GRAV="$HOOKS_DIR/gravity-guard.sh"
-CONT="$HOOKS_DIR/containment-guard.sh"
+G=${GUARD_DIR:-$(cd "$(dirname "$0")/.." && pwd)}
+CONT="$G/containment-guard.sh"
+GRAV="$G/gravity-guard.sh"
 
 T=$(mktemp -d)
-trap 'chmod -R u+rwX "$T" 2>/dev/null; rm -rf "$T"' EXIT
+trap 'rm -rf "$T"' EXIT
+PASS=0; FAIL=0
 
-# --- base tree: apex-root over a root child over a non-root sub -----------------
-mkdir -p "$T/apex/child/sub" "$T/apex/child/grand" "$T/apex/plain" "$T/apex/other" "$T/noroot/deep"
+# Self-fencing fixtures: every tree gets its own apex marker, so TMPDIR sitting
+# under a root tree cannot pull ^ up out of the fixture. (The old suite skipped
+# in that case, losing the coverage instead.)
+mkdir -p "$T/apex/proj/sub" "$T/apex/.state" "$T/outside"
 printf -- '---\napex-root: true\n---\n' > "$T/apex/CLAUDE.md"
-printf -- '---\nroot: true\n---\n'       > "$T/apex/child/CLAUDE.md"
+printf -- '---\nroot: true\n---\n'      > "$T/apex/proj/CLAUDE.md"
 
-# --- comment-root: a valid YAML root line carrying a trailing "  # comment" (#3) -
-mkdir -p "$T/cmt/proj/sub"
-printf -- '---\napex-root: true\n---\n'              > "$T/cmt/CLAUDE.md"
-printf -- '---\nroot: true  # child project root\n---\n' > "$T/cmt/proj/CLAUDE.md"
-
-# --- non-regular marker: a CLAUDE.md that is a DIRECTORY at a NON-root proj.
-# [ -f ] is false regardless of runner privilege, so this isolates the fail-closed
-# else-branch (uid-independent, unlike a chmod-000 file which root can read).
-mkdir -p "$T/nr/proj/sub" "$T/nr/proj/CLAUDE.md"
-printf -- '---\napex-root: true\n---\n' > "$T/nr/CLAUDE.md"
-
-# --- false-positive guard: `root: true#comment` (NO space) is the YAML string
-# "true#comment", NOT boolean true, so proj must NOT be treated as a root (#4).
-mkdir -p "$T/fp/proj"
-printf -- '---\napex-root: true\n---\n'      > "$T/fp/CLAUDE.md"
-printf -- '---\nroot: true#comment\n---\n'   > "$T/fp/proj/CLAUDE.md"
-
-# --- body-fence: a NON-root doc whose body has a `---` rule then `root: true` (#5)
-mkdir -p "$T/bf/proj"
-printf -- '---\napex-root: true\n---\n'          > "$T/bf/CLAUDE.md"
-printf -- '# Proj\n\nNotes\n\n---\nroot: true\n---\n' > "$T/bf/proj/CLAUDE.md"
-
-FAILED=0
-check() {  # desc expect cpd guard fp   (timeout so a hang FAILs instead of wedging)
-    CLAUDE_PROJECT_DIR="$3" timeout 10 bash "$4" >/dev/null 2>&1 <<JSON
-{"tool_input":{"file_path":"$5"}}
-JSON
-    local rc=$?
-    if [ "$rc" -eq "$2" ]; then printf 'PASS  %s  (rc=%s)\n' "$1" "$rc"
-    else printf 'FAIL  %s  (expected %s, got %s)\n' "$1" "$2" "$rc"; FAILED=1; fi
-}
-check_json() {  # desc expect cpd guard raw_json_payload   (control the exact bytes)
-    printf '%s' "$5" | CLAUDE_PROJECT_DIR="$3" timeout 10 bash "$4" >/dev/null 2>&1
-    local rc=$?
-    if [ "$rc" -eq "$2" ]; then printf 'PASS  %s  (rc=%s)\n' "$1" "$rc"
-    else printf 'FAIL  %s  (expected %s, got %s)\n' "$1" "$2" "$rc"; FAILED=1; fi
-}
-
-echo "# gravity-guard (.state writes)"
-check "launch-at-root: write ^/.state            -> allow" 0 "$T/apex/child"     "$GRAV" "$T/apex/child/.state/x"
-check "BL-35 non-root subdir: write true ^/.state -> allow" 0 "$T/apex/child/sub" "$GRAV" "$T/apex/child/.state/x"
-check "non-root subdir: write ABOVE ^ /.state     -> block" 2 "$T/apex/child/sub" "$GRAV" "$T/apex/.state/x"
-check "apex-root: write apex/.state               -> allow" 0 "$T/apex"           "$GRAV" "$T/apex/.state/x"
-check "write BELOW ^/.state                       -> allow" 0 "$T/apex/child"     "$GRAV" "$T/apex/child/grand/.state/x"
-check "plain subdir, nearest-root=apex: apex/.state-> allow" 0 "$T/apex/plain"    "$GRAV" "$T/apex/.state/x"
-check "gravity ignores non-.state write           -> allow" 0 "$T/apex/child"     "$GRAV" "$T/apex/child/notes.md"
-
-echo "# containment-guard (all writes)"
-check "BL-35 non-root subdir: write true ^ file   -> allow" 0 "$T/apex/child/sub" "$CONT" "$T/apex/child/notes.md"
-check "non-root subdir: write ABOVE ^             -> block" 2 "$T/apex/child/sub" "$CONT" "$T/apex/notes.md"
-check "write fully outside the tree              -> block" 2 "$T/apex/child"     "$CONT" "$T/elsewhere.md"
-
-echo "# HARDENING: root marker with a trailing '  # comment' still detected (#3, fail-open fix)"
-check "comment-root: write true ^ file            -> allow" 0 "$T/cmt/proj/sub" "$CONT" "$T/cmt/proj/notes.md"
-check "comment-root: write ABOVE ^ (apex)         -> block" 2 "$T/cmt/proj/sub" "$CONT" "$T/cmt/x.md"
-check "comment-root: write parent .state          -> block" 2 "$T/cmt/proj/sub" "$GRAV" "$T/cmt/.state/x"
-
-echo "# HARDENING: non-regular CLAUDE.md fails CLOSED, fences here (uid-independent) (#3/#4-coda)"
-check "non-regular marker: write within fenced dir -> allow" 0 "$T/nr/proj/sub" "$CONT" "$T/nr/proj/ok.md"
-check "non-regular marker: write ABOVE fenced dir  -> block" 2 "$T/nr/proj/sub" "$CONT" "$T/nr/x.md"
-
-echo "# HARDENING: 'root: true#comment' (no space) is NOT a root -> walk past (#4-coda)"
-check "no-space-comment: proj not a root, write fp/.state -> allow" 0 "$T/fp/proj" "$GRAV" "$T/fp/.state/x"
-
-echo "# HARDENING: a body '---' rule is NOT frontmatter, so proj is not a false root (#5)"
-check "body-fence: proj not a root, write bf/.state-> allow" 0 "$T/bf/proj" "$GRAV" "$T/bf/.state/x"
-
-echo "# HARDENING: empty/unset CLAUDE_PROJECT_DIR must FAIL CLOSED (block, no hang) (#1/#1-coda)"
-check "empty CLAUDE_PROJECT_DIR (gravity)          -> block" 2 "" "$GRAV" "$T/apex/.state/x"
-check "empty CLAUDE_PROJECT_DIR (containment)      -> block" 2 "" "$CONT" "$T/apex/notes.md"
-
-echo "# SECURITY: escaped-quote in file_path must not truncate the path (containment fail-open)"
-EXPLOIT_C='{"tool_input":{"file_path":"'"$T"'/apex/child/q\"/../../../../../../etc/evil"}}'
-CONTROL_C='{"tool_input":{"file_path":"'"$T"'/apex/child/../../../../../../etc/evil"}}'
-SANE_C='{"tool_input":{"file_path":"'"$T"'/apex/child/notes.md"}}'
-EXPLOIT_G='{"tool_input":{"file_path":"'"$T"'/apex/child/.state/x\"/../../../../../../tmp/evil/.state/e"}}'
-check_json "escaped-quote traversal (containment) -> block" 2 "$T/apex/child" "$CONT" "$EXPLOIT_C"
-check_json "plain traversal control  (containment) -> block" 2 "$T/apex/child" "$CONT" "$CONTROL_C"
-check_json "normal in-^ path via JSON (containment) -> allow" 0 "$T/apex/child" "$CONT" "$SANE_C"
-check_json "escaped-quote .state traversal (gravity) -> block" 2 "$T/apex/child" "$GRAV" "$EXPLOIT_G"
-check_json "malformed JSON input                  -> block" 2 "$T/apex/child" "$CONT" '{"tool_input":{"file_path":'
-
-echo "# SECURITY: NotebookEdit carries notebook_path, NOT file_path — and the"
-echo "#   Write|Edit matcher fires on it by substring. A decoder reading only"
-echo "#   file_path yields \"\" -> the -z early-exit -> UNCONDITIONAL ALLOW."
-NB_OUT='{"tool_name":"NotebookEdit","tool_input":{"notebook_path":"'"$T"'/apex/nb.ipynb"}}'
-NB_IN='{"tool_name":"NotebookEdit","tool_input":{"notebook_path":"'"$T"'/apex/child/nb.ipynb"}}'
-NB_STATE='{"tool_name":"NotebookEdit","tool_input":{"notebook_path":"'"$T"'/apex/.state/nb.ipynb"}}'
-NB_TRAV='{"tool_name":"NotebookEdit","tool_input":{"notebook_path":"'"$T"'/apex/child/q\"/../../../../../../etc/evil.ipynb"}}'
-NB_TOP='{"tool_name":"NotebookEdit","notebook_path":"'"$T"'/apex/nb.ipynb"}'
-NB_NONE='{"tool_name":"NotebookEdit","tool_input":{"new_source":"x"}}'
-check_json "notebook ABOVE ^            (containment) -> block" 2 "$T/apex/child" "$CONT" "$NB_OUT"
-check_json "notebook within ^           (containment) -> allow" 0 "$T/apex/child" "$CONT" "$NB_IN"
-check_json "notebook parent .state      (gravity)     -> block" 2 "$T/apex/child" "$GRAV" "$NB_STATE"
-check_json "notebook escaped-quote trav (containment) -> block" 2 "$T/apex/child" "$CONT" "$NB_TRAV"
-check_json "notebook_path at top level  (containment) -> block" 2 "$T/apex/child" "$CONT" "$NB_TOP"
-check_json "no path key at all          (containment) -> allow" 0 "$T/apex/child" "$CONT" "$NB_NONE"
-
-echo "# cross-guard agreement: both guards ALLOW the true-^ write from a non-root subdir"
-check "gravity     allows ^/.state from subdir" 0 "$T/apex/child/sub" "$GRAV" "$T/apex/child/.state/x"
-check "containment allows ^ file  from subdir" 0 "$T/apex/child/sub" "$CONT" "$T/apex/child/deep/x"
-
-# --- no-root fallback: guarded for hermeticity (#10) ---------------------------
-# These require $T to have NO root:true ancestor. If TMPDIR sits under a root tree
-# (e.g. TMPDIR=/mnt/claudette/.tmp), skip rather than false-fail.
-anc="$T"; hasroot=""
-while [ "$anc" != "/" ]; do
-    anc=$(dirname "$anc")
-    if [ -f "$anc/CLAUDE.md" ] && grep -qE '^(apex-)?root:[[:space:]]*true' "$anc/CLAUDE.md" 2>/dev/null; then
-        hasroot="$anc"; break
+check() {  # <name> <expected-rc> <cpd> <guard> <json>
+    local name=$1 want=$2 cpd=$3 guard=$4 json=$5 out rc
+    out=$(printf '%s' "$json" | CLAUDE_PROJECT_DIR="$cpd" timeout 20 bash "$guard" 2>&1)
+    rc=$?
+    if [ "$rc" -ge 126 ]; then
+        printf 'FAIL  %-52s harness error rc=%s\n' "$name" "$rc"; FAIL=$((FAIL+1)); return
     fi
-done
-echo "# no-root fallback (raw launch dir; no regression)"
-if [ -z "$hasroot" ]; then
-    check "no-root fallback: write under launch dir  -> allow" 0 "$T/noroot/deep" "$GRAV" "$T/noroot/deep/.state/x"
-    check "no-root fallback: write above launch dir  -> block" 2 "$T/noroot/deep" "$GRAV" "$T/noroot/.state/x"
-else
-    echo "SKIP  no-root fallback (TMPDIR sits under root:true tree: $hasroot)"
-fi
+    if [ "$want" -eq 2 ] && ! printf '%s' "$out" | grep -q '^BLOCKED:'; then
+        printf 'FAIL  %-52s rc=%s with no BLOCKED: line\n' "$name" "$rc"; FAIL=$((FAIL+1)); return
+    fi
+    if [ "$rc" -eq "$want" ]; then
+        printf 'PASS  %-52s rc=%s\n' "$name" "$rc"; PASS=$((PASS+1))
+    else
+        printf 'FAIL  %-52s expected %s, got %s\n' "$name" "$want" "$rc"; FAIL=$((FAIL+1))
+    fi
+}
 
-if [ "$FAILED" -eq 0 ]; then echo "ALL PASS"; else echo "SOME FAILED"; fi
-exit "$FAILED"
+# both <name> <cpd> <tree-root> — runs one fixture through BOTH guards.
+# Containment target = a plain file above ^; gravity target = the parent .state/.
+# Same fixture, same expectation, so neither guard can drift unobserved.
+both() {  # <name> <expected-rc> <cpd> <above-dir>
+    local name=$1 want=$2 cpd=$3 above=$4
+    check "$name [containment]" "$want" "$cpd" "$CONT" "$(jp file_path "$above/notes.md")"
+    check "$name [gravity]"     "$want" "$cpd" "$GRAV" "$(jp file_path "$above/.state/x.md")"
+}
+
+jp() { python3 -c 'import json,sys; print(json.dumps({"tool_input":{sys.argv[1]: sys.argv[2]}}))' "$1" "$2"; }
+
+echo "# the ordinary case"
+check "in-^ write allowed             [containment]" 0 "$T/apex/proj" "$CONT" "$(jp file_path "$T/apex/proj/ok.md")"
+check "in-^ .state allowed            [gravity]"     0 "$T/apex/proj" "$GRAV" "$(jp file_path "$T/apex/proj/.state/x")"
+both  "write above ^ blocked"                        2 "$T/apex/proj"        "$T/apex"
+both  "walk-up: launched below the root"             2 "$T/apex/proj/sub"    "$T/apex"
+check "gravity has no opinion outside .state"        0 "$T/apex/proj" "$GRAV" "$(jp file_path "$T/outside/plain.md")"
+
+echo
+echo "# root: true spellings that MUST fence here (each one used to widen ^)"
+for spell in $'\xef\xbb\xbf---\nroot: true\n---\n' \
+             $'---\nroot: True\n---\n' \
+             $'---\nroot: yes\n---\n' \
+             $'---\nroot: "true"\n---\n' \
+             $'---\nroot: true  # this project\n---\n' \
+             $'---\r\nroot: true\r\n---\r\n' \
+             $'---\ntitle: x\nroot: true\n---\n'; do
+    printf '%s' "$spell" > "$T/apex/proj/CLAUDE.md"
+    label=$(printf '%s' "$spell" | tr -d '\r' | sed -n 2p)
+    both "spelling [$label]" 2 "$T/apex/proj/sub" "$T/apex"
+done
+printf -- '---\nroot: false\n---\n' > "$T/apex/proj/CLAUDE.md"
+both "root: false is NOT a root (walks up to apex)" 0 "$T/apex/proj/sub" "$T/apex"
+printf -- '---\nroot: true\n---\n' > "$T/apex/proj/CLAUDE.md"
+
+echo
+echo "# undecidable markers must FENCE, never be walked past"
+mk_tree() {  # <name> <how-to-make-CLAUDE.md>
+    mkdir -p "$T/$1/proj/sub" "$T/$1/.state"
+    printf -- '---\napex-root: true\n---\n' > "$T/$1/CLAUDE.md"
+}
+mk_tree dang; ln -sf "$T/dang/proj/no-such-target" "$T/dang/proj/CLAUDE.md"
+both "dangling CLAUDE.md symlink"       2 "$T/dang/proj/sub" "$T/dang"
+mk_tree loop; ln -sf "$T/loop/proj/CLAUDE.md" "$T/loop/proj/CLAUDE.md" 2>/dev/null
+both "self-referential CLAUDE.md symlink" 2 "$T/loop/proj/sub" "$T/loop"
+mk_tree dir;  mkdir -p "$T/dir/proj/CLAUDE.md"
+both "CLAUDE.md that is a directory"    2 "$T/dir/proj/sub" "$T/dir"
+mk_tree unt;  printf -- '---\nsome: value\nnever terminated\n' > "$T/unt/proj/CLAUDE.md"
+both "frontmatter with no terminator"   2 "$T/unt/proj/sub" "$T/unt"
+mk_tree nr;   mkfifo "$T/nr/proj/CLAUDE.md" 2>/dev/null || : > "$T/nr/proj/CLAUDE.md"
+both "non-regular CLAUDE.md"            2 "$T/nr/proj/sub" "$T/nr"
+
+echo
+echo "# a body root: true after a CLOSED block is not a declaration"
+mk_tree body
+printf -- '---\ntitle: x\n---\n\n# Notes\n\nroot: true\n' > "$T/body/proj/CLAUDE.md"
+both "body root: true after closed frontmatter" 0 "$T/body/proj/sub" "$T/body"
+mk_tree nofm
+printf -- '# Just a heading\n\nroot: true\n' > "$T/nofm/proj/CLAUDE.md"
+both "no frontmatter at all"                    0 "$T/nofm/proj/sub" "$T/nofm"
+
+echo
+echo "# no root anywhere above: fall back to the launch dir (fences tighter)"
+mkdir -p "$T/noroot/launch/sub"
+check "fallback: write under the launch dir -> allow" 0 "$T/noroot/launch" "$CONT" "$(jp file_path "$T/noroot/launch/x.md")"
+check "fallback: write above the launch dir -> block" 2 "$T/noroot/launch" "$CONT" "$(jp file_path "$T/noroot/x.md")"
+
+echo
+echo "# the ceiling must survive a hostile CLAUDE_PROJECT_DIR"
+check "empty CLAUDE_PROJECT_DIR fails closed"      2 "" "$CONT" "$(jp file_path "$T/apex/proj/ok.md")"
+# The assertion above is satisfied by any block, including an accidental
+# fallback to the process cwd. This one is not: it targets a file INSIDE the
+# cwd, so a cwd fallback would ALLOW it. Only a real fail-closed blocks here.
+check "empty CPD: write inside cwd still blocked"  2 "" "$CONT" "$(jp file_path "$PWD/probe.md")"
+check "CLAUDE_PROJECT_DIR=/ still allows in-root"  0 "/" "$CONT" "$(jp file_path "$T/apex/proj/ok.md")"
+
+echo
+echo "# a symlinked component must not carry a write out of ^"
+mkdir -p "$T/sym/proj/sub" "$T/sym/.state"
+printf -- '---\napex-root: true\n---\n' > "$T/sym/CLAUDE.md"
+printf -- '---\nroot: true\n---\n'      > "$T/sym/proj/CLAUDE.md"
+ln -sfn "$T/sym/.state" "$T/sym/proj/parentstate"
+ln -sfn "$T/sym"        "$T/sym/proj/up"
+check "symlink into the parent .state -> block" 2 "$T/sym/proj" "$GRAV" "$(jp file_path "$T/sym/proj/parentstate/x.md")"
+check "symlink out of ^                -> block" 2 "$T/sym/proj" "$CONT" "$(jp file_path "$T/sym/proj/up/notes.md")"
+
+echo
+echo "-------------------------------------------"
+echo "PASS=$PASS FAIL=$FAIL"
+[ "$FAIL" -eq 0 ] && { echo "ALL PASS"; exit 0; }
+exit 1

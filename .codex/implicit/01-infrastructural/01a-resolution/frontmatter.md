@@ -17,7 +17,15 @@ Frontmatter declares what the document **is**; the body declares what to **do**.
 3. If found, parse its YAML frontmatter.
 4. If frontmatter contains `root: true` (or `apex-root: true`, which implies `root: true`), this directory is `^`.
 5. If not found or no `root: true`, move to the parent directory and repeat.
-6. If the filesystem root is reached without finding `root: true`, `^` is undefined — error state.
+6. If the filesystem root is reached without finding `root: true`, `^` is undefined — error state. **Enforcement contexts fall back to the launch directory instead of erroring** (`containment-guard.sh`, `gravity-guard.sh`): a guard with no ceiling would have to allow everything, and the launch dir fences *tighter* than any root above it would. That fallback is the only sanctioned deviation from the error state.
+
+### What counts as a declaration
+
+`root:`/`apex-root:` is read from the **leading** frontmatter block only — a block that starts at byte 0 (after an optional UTF-8 BOM) and is closed by a `---` line. A `root: true` in the body, or in a block that is never closed, is not a declaration.
+
+The value may be bare or quoted, in any case, and may carry a trailing `# comment`: `true`, `True`, `TRUE`, `"true"`, `yes`, `on` all declare a root. `false` does not. Line endings may be LF or CRLF.
+
+Resolvers may be **more** permissive than this grammar but never less. Under-recognising a declaration walks the resolver *past* a real root to a looser ceiling, which for an enforcement context is a containment failure; over-recognising only fences tighter. For the same reason, a CLAUDE.md that exists but cannot be decided — unreadable, non-regular, a dangling or looping symlink, an unterminated block — makes an enforcement context fence **at** that directory rather than walk past it.
 
 ### Scoped Rebinding
 
@@ -39,10 +47,12 @@ An auditor launched from `claudette/` enters `ProjectA/`, encounters `root: true
 
 ### Algorithm
 
-1. If any ancestor CLAUDE.md declares `apex-root: true`, that directory is `^/^`. No further traversal.
+0. Start at the same place `^` does — the session's launch directory (`$CLAUDE_PROJECT_DIR`), captured once at session start — and use the same declaration grammar. `^/^` is computed once per session, like `^`.
+1. Walking up from there, if any ancestor (inclusive) CLAUDE.md declares `apex-root: true`, the **nearest** such directory is `^/^`. No further traversal.
 2. Otherwise, `^/^` is the outermost (highest in directory tree) CLAUDE.md with `root: true`.
 3. When only one `root: true` exists on the path, `^/^` and `^` resolve identically.
 4. Two `apex-root: true` declarations on the same ancestor path is an error.
+5. If the filesystem root is reached with no declaration of either kind, `^/^` is undefined — error state, same as `^`. Enforcement contexts take the same launch-dir fallback.
 
 `^/^` is a single opaque token, not a composed path traversal.
 

@@ -1,5 +1,5 @@
 ---
-version: 7
+version: 8
 short-desc: Pre-milestone holistic QA — blind multi-lens fan-out over an ever-growing roster; repeat until a full-roster round is clean or stops converging
 isolation: inline
 reads:
@@ -23,6 +23,8 @@ Holistic, adversarial QA of a body of work **before it becomes a milestone**. An
 
 If the scope is ambiguous, enumerate the candidates and ask before dispatching anything.
 
+**Freeze the scope set before round 1 and write it down** — an explicit path list, recorded in the run directory. It is the *declared* scope set for the whole run and **never grows**: the run's own fix commits, new tests, and round reports are all files "this session changed", so a scope set recomputed each round would swallow the QA's own output and flip findings between blocking and reportable with no operator misbehaviour. Fixes may only touch paths already on the list. If a fix genuinely needs a path outside it, that is an out-of-scope finding — report it (or escalate), do not widen the list.
+
 ## The roster — grows, never shrinks
 
 The **roster** is the set of QA **lenses** you run — each lens a *group* of one or more agents, not necessarily a single agent. It starts with the two mandatory lens groups —
@@ -43,7 +45,7 @@ This is the **no-reintroduction guarantee**: a clean round is clean against *eve
 3. **Adversarially verify every finding** — one independent verifier per finding, prompted to refute → CONFIRMED / PLAUSIBLE / refuted. Refuted findings die here; a still-PLAUSIBLE critical/high counts as CONFIRMED (conservative).
 4. **Triage** survivors: `critical | high | medium | low`.
 5. **Resolve every finding by scope.** A finding is **in-scope** if fixing it would edit *within the run's declared scope set* — the session's delta, or the named subject; **out-of-scope** if the fix would reach outside it.
-   - **Out-of-scope → REPORT, don't fix.** Valuable to have found, but not this run's job: file it to the right `^/.state/work/` register (with an owner) and move on. Out-of-scope findings **never block CLEAN and never count as regressions.** The out-of-scope claim is mechanically checkable — the fix path — so it can't be used to dodge an in-scope fix. If one is severe or cross-boundary enough to need a decision *now*, **ESCALATE** it (see Exit) instead of just filing.
+   - **Out-of-scope → REPORT, don't fix.** Valuable to have found, but not this run's job: file it to the right `^/.state/work/` register (with an owner) and move on. Out-of-scope findings **never block CLEAN and never count as regressions.** An out-of-scope claim must **name the specific path outside the frozen scope set that the minimal fix has to touch**, and that path is checked against the list. Without a named path the claim does not stand and the finding is in-scope. (The classification is a predicate over a *proposed* fix path, and the proposer picks the path — so the naming requirement, not the predicate, is what stops it being used to dodge a fix.) If one is severe or cross-boundary enough to need a decision *now*, **ESCALATE** it (see Exit) instead of just filing.
    - **In-scope → resolve it.** Fix every in-scope critical/high, each proven by a test or direct demonstration. Hold one as a **residual** only if (a) **user-owned** — you cannot edit the artifact; deliver exact fix text *plus the user-runnable verification* (the proof obligation transfers), or (b) **user-deferred** — an explicit user ruling this run. In-scope medium/low: fix if trivial, else backlog with a deferral note. Honor exclusions — never silently reintroduce cut scope.
 6. **Commit the fixes, then GROW the roster.** Add any lens this round revealed you needed — a new failure mode a finding exposed, or a region a fix newly touched (which gets a fresh cold read next round). Never remove one. Record the roster so the next round re-runs it in full.
 
@@ -66,6 +68,7 @@ Report each round's finding tuple `(criticals, highs, mediums, lows)` for legibi
 
 ## Reporting
 
+- Before round 1, persist the frozen scope set (the path list) and the starting roster to `^/.state/tests/mileqa/YYYYMMDD-HHMM/`.
 - Per round, persist `^/.state/tests/mileqa/YYYYMMDD-HHMM/round-N.md`: the roster run, findings with verdicts + severities, fixes, deferrals, checkpoint + fix commit SHAs, and **the round's aggregate-severity tuple** (so the convergence trend is legible at a glance). Final `summary.md` with the exit state.
 - Final chat report: rounds run, findings by severity, fixes, residuals/deferrals, exit — re-summarized so the last message stands alone. No error tallies.
 

@@ -54,13 +54,20 @@ thinking=$(jq -r '.alwaysThinkingEnabled // empty' ~/.claude/settings.json 2>/de
 dir=$(basename "$cwd" 2>/dev/null || echo "?")
 
 # --- Location: 🏠 launch dir, 📁 path relative to it ---
-# 📁 is ^-relative, where ^ is the session's own root (workspace.project_dir) —
-# the same anchor gravity-guard.sh and boot-inject.py resolve ^ to. Neither the
-# ^ nor ^/^ literal is printed; real folder names are.
+# Both anchor on workspace.project_dir, the raw launch directory. That is NOT
+# where the guards resolve ^ any more: since BL-35 containment-guard.sh and
+# gravity-guard.sh walk UP from $CLAUDE_PROJECT_DIR to the nearest declared
+# root, so when the session is launched below a root their ceiling sits above
+# what this bar prints. (boot-inject.py still uses the raw launch dir — BL-38.)
+# Neither the ^ nor ^/^ literal is printed; real folder names are.
 #
-# The nearest root: true ancestor is still resolved, but it colours 🏠 rather
-# than moving the path. Crossing into a child project is worth flagging; it is
-# not worth silently re-anchoring 📁 onto a root the guards don't share.
+# The nearest root: true ancestor IS resolved here, but it only colours 🏠 —
+# re-anchoring 📁 on it would render "demo" for zMisc/demo and hide the
+# traversal. Colour carries the same fact without that cost.
+#
+# This detector is deliberately looser than the guards' (see
+# 01a-resolution/frontmatter.md "What counts as a declaration"): it is a display
+# hint, not a fence, so a disagreement mis-tints an emoji and nothing more.
 _is_root() {
     [[ -f "$1" ]] || return 1
     # Frontmatter only: first --- fence to the next. A body mention doesn't count.
@@ -74,7 +81,11 @@ _is_root() {
 _nearest_root() {
     local d="$1" p
     [[ -n "$d" ]] || return 1
-    for ((i=0; i<12; i++)); do
+    # Terminate on dirname reaching a fixed point, matching the guards and the
+    # spec (frontmatter.md walks to the filesystem root). The old 12-level cap
+    # silently reported "no root" past that depth, so the tint stopped flagging
+    # a crossed child-project boundary.
+    while :; do
         _is_root "$d/CLAUDE.md" && { echo "$d"; return 0; }
         p=$(dirname "$d")
         [[ "$p" == "$d" ]] && break

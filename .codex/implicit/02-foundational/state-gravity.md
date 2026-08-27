@@ -23,6 +23,10 @@ A session can be within `^` but still violate state gravity by writing to a pare
 
 ## Verification
 
-Structurally enforced by `gravity-guard.sh` (PreToolUse hook). Writes to `.state/` paths outside `^` are blocked at the tool level.
+Enforced by `gravity-guard.sh` (PreToolUse hook) **for file-write tools only**. The hook is registered on the
+`Write|Edit` matcher, so a `.state/` write outside `^` is blocked when it comes through `Write` or `Edit` — and is
+**not seen at all** when it comes through `Bash` (`echo >`, `tee`, `sed -i`, an interpreter one-liner) or through
+`NotebookEdit`, which that matcher does not match. Those paths rest on the directive alone. Recorded as a
+single-layer gap in `^/.state/work/boundaries.md` (BDRY-10); the notebook half is BL-56.
 
 Within-`^` gravity violations (e.g., parent session writing to child's `.state/` without explicit notation) are harder to detect and rely on the `session-compliance` reflexive module for post-hoc review.

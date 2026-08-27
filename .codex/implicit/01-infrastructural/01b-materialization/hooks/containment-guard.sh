@@ -1,109 +1,238 @@
 #!/usr/bin/env bash
-# H-05: PreToolUse — block writes outside project root (^)
+# H-05: PreToolUse — block writes outside the project root (^).
 # Reads tool input JSON from stdin. Exit 2 = block, exit 0 = allow.
+#
+# MATCHER REALITY: registered on "Write|Edit" only (cboot.py). That regex does
+# NOT match NotebookEdit — a PreToolUse matcher is matched against the whole
+# tool name, so NotebookEdit never reaches this hook. notebook_path is decoded
+# below anyway so the guard is correct the moment the matcher is widened, but
+# until then notebooks are an UNGUARDED write channel. Do not claim otherwise.
+#
+# The whole decision — decode, root resolution, normalization, comparison —
+# happens in one python step. That is deliberate. Every shell tool this used to
+# lean on fails OPEN when it errors: grep returns non-zero and the prefilter
+# reads it as "no match"; realpath cannot exec an oversized path (E2BIG) and the
+# `|| echo` fallback hands back a string with `../..` still in it; awk reports
+# "not a root" for a marker it merely could not parse, walking the ceiling UP.
+# One step that already runs, and that already fails closed, does all of it.
+#
+GUARD_MODE=containment
 
-INPUT=$(cat)
-
-# Decode the write target with a REAL JSON parser — never grep. An embedded \" in
-# the value truncates a grep match and can drop a trailing ../.. traversal, letting
-# a write escape ^ while the guard sees an in-bounds prefix (a fail-open). Read
-# BOTH file_path (Write/Edit) and notebook_path (NotebookEdit — the Write|Edit
-# matcher fires on it via substring), so a notebook write outside ^ is caught too.
-# python is a hard platform dependency (already used by boot-inject.py); on any
-# parse failure or missing interpreter, FAIL CLOSED (exit 2).
+# >>> guard-core (byte-identical in gravity-guard.sh — proven by tests/test_guards_identical.sh)
 GUARD_PY=$(command -v python3 || command -v python)
 if [ -z "$GUARD_PY" ]; then
-    echo "BLOCKED: no python interpreter for the guard's JSON decode (fail closed)." >&2
+    echo "BLOCKED: no python interpreter available for the guard (fail closed)." >&2
     exit 2
 fi
-FILE_PATH=$(printf '%s' "$INPUT" | "$GUARD_PY" -c 'import json,sys
+
+"$GUARD_PY" -c 'import json, os, posixpath, re, sys
+
+MODE = sys.argv[1]
+Q = chr(34) + chr(39)          # the two quote characters, unquotable inline
+
+
+def die(*msg):
+    for m in msg:
+        sys.stderr.write(m + chr(10))
+    sys.exit(2)
+
+
+# ---- decode the write target ------------------------------------------------
+# A real JSON parser, never grep: an embedded escaped quote truncates a grep
+# match and can drop a trailing ../.. traversal, leaving the guard looking at an
+# in-bounds prefix while the write lands outside ^.
 try:
-    d = json.load(sys.stdin)
+    doc = json.load(sys.stdin)
 except Exception:
-    sys.exit(3)
-ti = d.get("tool_input") if isinstance(d.get("tool_input"), dict) else {}
-v = ti.get("file_path") or ti.get("notebook_path") or d.get("file_path") or d.get("notebook_path")
-sys.stdout.write(v if isinstance(v, str) else "")')
-if [ $? -ne 0 ]; then
-    echo "BLOCKED: could not parse tool input for the containment check (fail closed)." >&2
-    exit 2
+    die("BLOCKED: tool input is not decodable JSON (fail closed).")
+if not isinstance(doc, dict):
+    die("BLOCKED: tool input is not a JSON object (fail closed).")
+
+ti = doc.get("tool_input")
+sources = [ti if isinstance(ti, dict) else {}, doc]
+
+target = None
+badtype = False
+for src in sources:
+    for key in ("file_path", "notebook_path"):
+        if key not in src:
+            continue
+        v = src[key]
+        if isinstance(v, str):
+            if v:
+                target = v
+                break
+        else:
+            badtype = True
+    if target is not None:
+        break
+
+if target is None:
+    # A key that is PRESENT but not a string is undecodable input, not "no
+    # target" — it fails closed like every other decode failure.
+    if badtype:
+        die("BLOCKED: file_path/notebook_path is present but not a string (fail closed).")
+    sys.exit(0)                # genuinely no path parameter: not a file write
+
+# ---- establish the namespace ------------------------------------------------
+DRIVE = re.compile(r"^[A-Za-z]:[\\/]")
+cpd = os.environ.get("CLAUDE_PROJECT_DIR") or ""
+if not cpd.strip():
+    die("BLOCKED: CLAUDE_PROJECT_DIR is empty or unset — cannot resolve ^ (fail closed).")
+
+
+def is_win(p):
+    return bool(DRIVE.match(p))
+
+
+win_root = is_win(cpd)
+
+
+def canon(p):
+    if not win_root:
+        return p
+    p = p.replace(chr(92), "/")
+    if DRIVE.match(p):
+        p = p[0].lower() + p[1:]
+    return p
+
+
+target = canon(target)
+cpd = canon(cpd)
+
+if not (target.startswith("/") or is_win(target)):
+    target = cpd.rstrip("/") + "/" + target      # relative: anchor to the launch dir
+elif is_win(target) != win_root:
+    # A Windows drive path and a POSIX root are not comparable. Refusing is the
+    # only honest answer; the old code silently resolved it against the process
+    # cwd, so the verdict depended on where the hook happened to be invoked.
+    die("BLOCKED: cannot compare a Windows drive path against a POSIX project root (fail closed).",
+        "  Target: " + target,
+        "  Root:   " + cpd)
+
+
+# ---- normalization ----------------------------------------------------------
+# Lexical, in-process, never an exec. The tools this hook gates resolve ".."
+# lexically (Node path.resolve) without touching the filesystem, so normalizing
+# the same way is what actually models the write. It also has no argument-length
+# limit, which is what made the previous `realpath -m` shell-out fail open.
+def lexical(p):
+    return posixpath.normpath(p)
+
+
+def physical(p):
+    # Symlink-resolved view, so a symlinked component cannot carry a write out
+    # of ^ behind a clean-looking lexical path. Pure python: no exec, no E2BIG.
+    try:
+        return os.path.realpath(p)
+    except OSError:
+        return None
+
+
+def inside(child, parent):
+    if child == parent:
+        return True
+    return child.startswith(parent.rstrip("/") + "/")
+
+
+# ---- resolve ^ --------------------------------------------------------------
+# Nearest ancestor (inclusive) of the launch directory whose LEADING CLAUDE.md
+# frontmatter declares root: true / apex-root: true — the algorithm in
+# 01a-resolution/frontmatter.md.
+#
+# Direction of failure is the whole design here. Walking PAST a directory raises
+# the ceiling, so anything undecidable must fence AT that directory instead:
+# unreadable, non-regular, a dangling or looping symlink, a frontmatter block
+# with no terminator, or a marker too large to scan. And the detector must be at
+# least as permissive as boot-inject.py parse_frontmatter (BOM-tolerant, quoted
+# values, indented keys) — a directory the reference resolver calls a root that
+# this guard does not would loosen ^ below what governance believes it is.
+FM_CAP = 65536
+TRUE_WORDS = ("true", "yes", "on")
+
+
+def unquote(s):
+    return s.strip().strip(Q).strip(Q)
+
+
+def root_state(d):
+    """True = declared root, False = not a root, None = undecidable (fence here)."""
+    cm = os.path.join(d, "CLAUDE.md")
+    if not os.path.lexists(cm):        # lexists: a dangling symlink still counts
+        return False
+    if not os.path.isfile(cm):         # directory, fifo, dangling/looping link
+        return None
+    try:
+        fh = open(cm, "rb")
+    except OSError:
+        return None
+    try:
+        raw = fh.read(FM_CAP)
+    except OSError:
+        return None
+    finally:
+        fh.close()
+    text = raw.decode("utf-8", "replace").lstrip(chr(65279))
+    if not text.startswith("---"):
+        return False
+    m = re.search(r"(?m)^(?:---|\.\.\.)[ \t]*\r?$", text[3:])
+    if not m:
+        return None                    # unterminated (or past the scan cap)
+    for line in text[3:3 + m.start()].splitlines():
+        if ":" not in line:
+            continue
+        key, _, val = line.partition(":")
+        if unquote(key).lower() not in ("root", "apex-root"):
+            continue
+        if unquote(val.split("#", 1)[0]).lower() in TRUE_WORDS:
+            return True
+    return False
+
+
+root = lexical(cpd if cpd.startswith("/") or win_root else os.path.abspath(cpd))
+walk = root
+while True:
+    state = root_state(walk)
+    if state is not False:             # declared root, or undecidable -> fence here
+        root = walk
+        break
+    parent = os.path.dirname(walk)
+    if parent == walk:                 # filesystem root, no marker anywhere above:
+        break                          # fall back to the launch dir (fences tighter)
+    walk = parent
+
+# ---- verdict ----------------------------------------------------------------
+tgt_lex = lexical(target)
+outside = not inside(tgt_lex, root)
+if not outside:
+    tgt_phys, root_phys = physical(target), physical(root)
+    if tgt_phys and root_phys:
+        outside = not inside(tgt_phys, root_phys)
+
+if MODE == "gravity":
+    def touches_state(p):
+        return p is not None and ".state" in p.split("/")
+    if not (touches_state(tgt_lex) or touches_state(physical(target))):
+        sys.exit(0)                    # not a .state write: gravity has no opinion
+    if outside:
+        die("BLOCKED: State gravity violation - writing to .state/ outside project root.",
+            "  Target: " + tgt_lex,
+            "  Root:   " + root,
+            "State gravity: .state/ writes default to the nearest root: true context.",
+            "Use explicit ^ or ^/^ path notation to write to a parent .state/ on purpose.")
+elif outside:
+    die("BLOCKED: Write target is outside project root.",
+        "  Target: " + tgt_lex,
+        "  Root:   " + root,
+        "Path containment: writes stay within ^ (the nearest root: true context).")
+
+sys.exit(0)
+' "$GUARD_MODE"
+rc=$?
+# <<< guard-core
+
+if [ "$rc" -eq 0 ] || [ "$rc" -eq 2 ]; then
+    exit "$rc"
 fi
-
-if [ -z "$FILE_PATH" ]; then
-    exit 0  # No file_path parameter — not a file write tool call
-fi
-
-# Resolve to absolute (handle both Unix / and Windows C:\ / C:/ paths)
-if [[ "$FILE_PATH" != /* ]] && [[ ! "$FILE_PATH" =~ ^[A-Za-z]:[\\/] ]]; then
-    FILE_PATH="$CLAUDE_PROJECT_DIR/$FILE_PATH"
-fi
-
-# Normalize to POSIX paths for consistent comparison
-if command -v cygpath &>/dev/null; then
-    FILE_PATH=$(cygpath -u "$FILE_PATH" 2>/dev/null || echo "$FILE_PATH")
-    CLAUDE_PROJECT_DIR=$(cygpath -u "$CLAUDE_PROJECT_DIR" 2>/dev/null || echo "$CLAUDE_PROJECT_DIR")
-fi
-
-# Normalize path (resolve .. etc)
-FILE_PATH=$(realpath -m "$FILE_PATH" 2>/dev/null || echo "$FILE_PATH")
-
-# Resolve ^ the way frontmatter.md does: nearest ancestor (inclusive) of the
-# launch dir whose LEADING CLAUDE.md frontmatter declares root: true / apex-root:
-# true. MUST stay in lockstep with 01a-resolution/frontmatter.md and the sibling
-# guard (shared scenarios: tests/test_guards_walkup.sh).
-# Security posture: this is a containment boundary, so it fails CLOSED. A CLAUDE.md
-# that exists but cannot be read/parsed fences AT that dir rather than being walked
-# past to a looser ceiling. Detection tolerates a trailing "# comment", quoted
-# "true", CRLF, and mawk (`[ \t]`, not `[[:space:]]`); only the LEADING `---`
-# block counts as frontmatter (a body `---` rule is not a fence). Fall back to the
-# raw launch dir only when no root is found anywhere above.
-resolve_root() {
-    local dir cm
-    dir=$(realpath -m "$1" 2>/dev/null) || dir=""
-    [ -n "$dir" ] || return 1
-    while :; do
-        cm="$dir/CLAUDE.md"
-        if [ -e "$cm" ]; then
-            if [ -f "$cm" ] && [ -r "$cm" ]; then
-                if awk '
-                    FNR==1 { if ($0 !~ /^---[ \t]*\r?$/) exit 1; next }
-                    /^---[ \t]*\r?$/ { exit 1 }
-                    /^(apex-)?root:[ \t]*"?true"?([ \t]+#|[ \t]*\r?$)/ { found=1; exit }
-                    END { exit (found ? 0 : 1) }' "$cm"; then
-                    printf '%s\n' "$dir"; return 0
-                fi
-            else
-                printf '%s\n' "$dir"; return 0   # exists but unreadable/non-regular -> fail closed
-            fi
-        fi
-        [ "$dir" = "/" ] && return 1
-        dir=$(dirname "$dir")
-    done
-}
-
-PROJECT_ROOT=$(resolve_root "$CLAUDE_PROJECT_DIR") \
-    || PROJECT_ROOT=$(realpath -m "$CLAUDE_PROJECT_DIR" 2>/dev/null || echo "$CLAUDE_PROJECT_DIR")
-
-# Fail CLOSED if no root could be established (e.g. empty/unset CLAUDE_PROJECT_DIR):
-# an empty PROJECT_ROOT would make the "$PROJECT_ROOT"/* glob match every path.
-if [ -z "$PROJECT_ROOT" ]; then
-    echo "BLOCKED: cannot resolve project root (CLAUDE_PROJECT_DIR empty/unset)." >&2
-    exit 2
-fi
-
-# Check if path is within project root
-case "$FILE_PATH" in
-    "$PROJECT_ROOT"/*)
-        exit 0  # Within project root — allowed
-        ;;
-    "$PROJECT_ROOT")
-        exit 0  # Is project root — allowed
-        ;;
-    *)
-        echo "BLOCKED: Write target is outside project root." >&2
-        echo "  Target: $FILE_PATH" >&2
-        echo "  Root:   $PROJECT_ROOT" >&2
-        echo "Path containment: all writes must target paths within ^." >&2
-        exit 2
-        ;;
-esac
+echo "BLOCKED: guard did not complete (rc=$rc) — fail closed." >&2
+exit 2
