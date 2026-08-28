@@ -1,10 +1,10 @@
 ---
-version: 2
+version: 3
 runtime: sh
 reads:
-  - "^/.codex/settings.json"
+  - "the Claude Code status payload on stdin (model, cwd, workspace.project_dir, effort.level, thinking.enabled, rate_limits.five_hour, context_window, transcript_path)"
+  - "the transcript file named by transcript_path (context-window fill)"
   - "<cwd>/CLAUDE.md and ancestors (root: true probe, anchor for the 📁 field)"
-  - "~/.claude/settings.json (effort, thinking)"
 writes: []
 ---
 
@@ -32,7 +32,15 @@ This module is a shell script — an acknowledged exception to the Python-only r
 
 ## Script
 
-`statusline.sh` is invoked by Claude Code to generate the status bar content. It reads environment variables provided by Claude Code and prints formatted output to stdout.
+`statusline.sh` is invoked by Claude Code to generate the status bar content. It reads a JSON status payload on **stdin** (not environment variables, and no longer `settings.json`) and prints one formatted line to stdout.
+
+## Bar contents
+
+Left to right: **model** · **effort** (`⚡lo`/`⚡md`/`⚡hi`) · **thinking** (`💭on`) · **location** (`🏠`/`📁`, detailed below) · **git** (`🔀branch (status)`, omitted when `cwd` is gitignored) · **context bar** (`~N% of Mk tokens`) · **5h quota bar** (`⏳ N% (reset countdown)`).
+
+Every field is read from the stdin payload — including `effort.level` and `thinking.enabled`, which therefore reflect the session's **current** state rather than whatever is configured in `settings.json`. That is deliberate: configured values drift from reality (a mid-session `/model`, effort toggle, or thinking change), and stdin does not.
+
+The two budget bars share one renderer (`_render_bar`) so the context window and the 5-hour rate-limit window read as one visual family rather than lookalikes; both countdowns use `_fmt_secs`. The quota bar is **absent** before the first response and for accounts with no 5-hour window (no `rate_limits.five_hour` in the payload) — the bar just ends after the context segment.
 
 ## Location Display
 
