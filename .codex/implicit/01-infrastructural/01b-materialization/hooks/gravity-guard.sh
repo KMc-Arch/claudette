@@ -119,24 +119,19 @@ elif is_win(target) != win_root:
 
 
 # ---- normalization ----------------------------------------------------------
-# Lexical, in-process, never an exec. The tools this hook gates resolve ".."
-# lexically (Node path.resolve) without touching the filesystem, so normalizing
-# the same way is what actually models the write. It also has no argument-length
-# limit, which is what made the previous `realpath -m` shell-out fail open.
+# AS REFERENCED: normpath collapses "." and ".." TEXTUALLY, in-process, and never
+# follows a symlink. That is deliberate and load-bearing — a symlink inside ^ is
+# an authorised extension of the project (a human placed it; the ABSOLUTE HOLD in
+# root CLAUDE.md keeps symlink construction human-only), so a write through it is
+# in-project BY REFERENCE and must be allowed. Egress via a symlink pointing OUT
+# of ^ is delegated to environment isolation (BL-61) and surfaced by
+# symlink-egress-scan.sh — it is NOT decided here. normpath still collapses "..",
+# so ../ traversal and oversized paths are blocked, with no exec and no
+# argument-length limit (which is what made the old `realpath -m` shell-out fail
+# open). We never call realpath: resolving a symlink would override the human
+# decision to extend the project through it.
 def lexical(p):
     return posixpath.normpath(p)
-
-
-def physical(p):
-    # Symlink-resolved view: resolves symlinks AND ".." in pure python (no exec,
-    # no argument-length limit), so it also collapses the oversized-traversal and
-    # escaped-quote cases. Returns None on any failure (OSError, or ValueError
-    # from a NUL byte) so the caller falls back to the lexical view and fails
-    # closed rather than crashing.
-    try:
-        return os.path.realpath(p)
-    except (OSError, ValueError):
-        return None
 
 
 def inside(child, parent):
@@ -199,11 +194,11 @@ def root_state(d):
     return False
 
 
-if win_root:
-    root = lexical(cpd)                       # a Windows interpreter path; realpath n/a
-else:
-    base = cpd if cpd.startswith("/") else os.path.abspath(cpd)
-    root = physical(base) or lexical(base)    # resolve launch-dir symlinks first
+# Resolve ^ over the REFERENCED launch path — abspath/normpath make it absolute
+# and collapse "." / ".." without touching the filesystem. A symlinked launch dir
+# is treated as the project it is referenced as, never resolved to its target.
+base = cpd if cpd.startswith("/") or win_root else os.path.abspath(cpd)
+root = lexical(base)
 walk = root
 while True:
     state = root_state(walk)
@@ -216,25 +211,18 @@ while True:
     walk = parent
 
 # ---- verdict ----------------------------------------------------------------
-# Resolve BOTH sides the same way and let the SYMLINK-RESOLVED view decide, as
-# main did (`realpath -m` on target and root alike). Asymmetry is what regressed:
-# resolving root but not the target over-blocks an in-^ write reached through a
-# symlinked launch dir, while lexical-only would miss a symlink that carries a
-# write OUT of ^. realpath resolves both symlinks and "..", so it subsumes the
-# lexical view; lexical is kept only as the fallback when realpath is unavailable
-# for either side (then it fences on names, which is the safe direction).
+# Compare AS REFERENCED (see normalization above): the target is inside ^ iff its
+# referenced, ".."-collapsed path is inside the referenced ^. No symlink is
+# resolved on either side — symmetric by construction, so the asymmetry that made
+# the physical scheme regress cannot arise.
 tgt_lex, root_lex = lexical(target), lexical(root)
-tgt_phys, root_phys = physical(target), physical(root)
-if tgt_phys is not None and root_phys is not None:
-    outside = not inside(tgt_phys, root_phys)
-else:
-    outside = not inside(tgt_lex, root_lex)
+outside = not inside(tgt_lex, root_lex)
 
 if MODE == "gravity":
     def touches_state(p):
         return p is not None and ".state" in [c.lower() for c in p.split("/")]
-    if not (touches_state(tgt_lex) or touches_state(tgt_phys)):
-        sys.exit(0)                    # not a .state write: gravity has no opinion
+    if not touches_state(tgt_lex):
+        sys.exit(0)                    # not a .state write (as referenced): gravity has no opinion
     if outside:
         die("BLOCKED: State gravity violation - writing to .state/ outside project root.",
             "  Target: " + tgt_lex,

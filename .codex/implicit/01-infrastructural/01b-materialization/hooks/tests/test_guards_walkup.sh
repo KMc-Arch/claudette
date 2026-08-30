@@ -142,46 +142,38 @@ check "empty CPD: write inside cwd still blocked"  2 "" "$CONT" "$(jp file_path 
 check "CLAUDE_PROJECT_DIR=/ still allows in-root"  0 "/" "$CONT" "$(jp file_path "$T/apex/proj/ok.md")"
 
 echo
-echo "# a symlinked component must not carry a write out of ^"
+echo "# AS-REFERENCED: a symlink is an AUTHORISED project extension — in AND out"
+# The lexical model treats a symlink inside ^ as part of the project (a human
+# placed it; the ABSOLUTE HOLD keeps symlink construction human-only). A write
+# THROUGH a symlink is in-project by reference, whether it points at a parent's
+# .state, a sibling, or clean out of the tree. Egress is delegated to environment
+# isolation (BL-61) + symlink-egress-scan.sh — it is NOT blocked here.
 mkdir -p "$T/sym/proj/sub" "$T/sym/.state"
 printf -- '---\napex-root: true\n---\n' > "$T/sym/CLAUDE.md"
 printf -- '---\nroot: true\n---\n'      > "$T/sym/proj/CLAUDE.md"
-ln -sfn "$T/sym/.state" "$T/sym/proj/parentstate"
-ln -sfn "$T/sym"        "$T/sym/proj/up"
-check "symlink into the parent .state -> block" 2 "$T/sym/proj" "$GRAV" "$(jp file_path "$T/sym/proj/parentstate/x.md")"
-check "symlink out of ^                -> block" 2 "$T/sym/proj" "$CONT" "$(jp file_path "$T/sym/proj/up/notes.md")"
+ln -sfn "$T/sym/.state" "$T/sym/proj/parentstate"   # -> a parent's .state
+ln -sfn "$T/sym"        "$T/sym/proj/up"            # -> up, out of ^
+ln -sfn /etc            "$T/sym/proj/etclink"       # -> clean out of the tree
+check "symlink to a parent .state -> allow" 0 "$T/sym/proj" "$GRAV" "$(jp file_path "$T/sym/proj/parentstate/x.md")"
+check "symlink up out of ^        -> allow" 0 "$T/sym/proj" "$CONT" "$(jp file_path "$T/sym/proj/up/notes.md")"
+check "symlink to /etc            -> allow" 0 "$T/sym/proj" "$CONT" "$(jp file_path "$T/sym/proj/etclink/passwd")"
+# ...but ../ TRAVERSAL is NOT a symlink — normpath collapses "..", so it stays blocked.
+check "../ traversal (not a symlink) -> block" 2 "$T/sym/proj" "$CONT" "$(jp file_path "$T/sym/proj/../../outside/x")"
 
 echo
-echo "# a symlinked LAUNCH DIR must resolve ^ to the real ancestry, not the link's name"
-# (R2 [2]) The walk seeds from the symlink-resolved launch dir, matching
-# boot-inject.py's start_dir.resolve(); a name-only walk would climb the wrong tree.
+echo "# a symlinked LAUNCH DIR: ^ is the REFERENCED (name) path, never resolved"
 mkdir -p "$T/real/proj/sub" "$T/real/.state"
 printf -- '---\napex-root: true\n---\n' > "$T/real/CLAUDE.md"
 printf -- '---\nroot: true\n---\n'      > "$T/real/proj/CLAUDE.md"
 ln -sfn "$T/real/proj" "$T/launchlink"          # a symlink that IS the launch dir
-both  "launch dir is a symlink (block above ^)" 2 "$T/launchlink" "$T/real"
-# (R3 [0]) The comparison is symmetric + physical-authoritative, so a LEGITIMATE
-# in-^ write reached through the symlinked launch dir is ALLOWED — resolving root
-# but not the target (the R2 asymmetry) wrongly blocked every in-^ write here.
 check "in-^ file via symlinked launch  -> allow" 0 "$T/launchlink" "$CONT" "$(jp file_path "$T/launchlink/sub/ok.md")"
 check "in-^ .state via symlinked launch -> allow" 0 "$T/launchlink" "$GRAV" "$(jp file_path "$T/launchlink/.state/n")"
-# a symlinked ANCESTOR of the launch dir, same expectation
+# a DIFFERENT name-path above the referenced ^ is still outside it
+both  "name-path above referenced ^ blocked"     2 "$T/launchlink" "$T/real"
+# a symlinked ANCESTOR of the launch dir, same as-referenced treatment
 mkdir -p "$T/realhome/myproj/sub"; printf -- '---\nroot: true\n---\n' > "$T/realhome/myproj/CLAUDE.md"
 ln -sfn "$T/realhome" "$T/homelink"
 check "in-^ via symlinked ancestor      -> allow" 0 "$T/homelink/myproj" "$CONT" "$(jp file_path "$T/homelink/myproj/sub/x")"
-# but a symlink INSIDE ^ pointing OUT must still block (physical view catches it)
-ln -sfn /etc "$T/real/proj/evillink"
-check "inside-^ symlink pointing OUT     -> block" 2 "$T/real/proj" "$CONT" "$(jp file_path "$T/real/proj/evillink/passwd")"
-# ^ is resolved in the REAL directory tree: a launch dir reached via a symlink to
-# a NON-root dir must not inherit a root that exists only in the symlink's NAME
-# ancestry. The launch dir's real path (plainreal) has no root above it, so ^ is
-# the launch dir and the write is inside it — a NAME-ancestry walk would wrongly
-# fence at $T/deep and block. (This is what makes the physical walk SEED, not just
-# the physical verdict, load-bearing.)
-mkdir -p "$T/deep/nested" "$T/plainreal/sub"
-printf -- '---\nroot: true\n---\n' > "$T/deep/CLAUDE.md"
-ln -sfn "$T/plainreal" "$T/deep/nested/plink"
-check "^ from the real tree, not the name tree -> allow" 0 "$T/deep/nested/plink" "$CONT" "$(jp file_path "$T/deep/nested/plink/sub/x")"
 
 echo
 echo "# a '...' line inside the leading block is NOT a terminator (R2 [4])"

@@ -29,6 +29,16 @@ The value may be bare or quoted, in any case, and may carry a trailing `# commen
 
 **Display-only** resolvers (e.g. the statusline's `🏠` tint) are exempt from the "never less" rule: under-recognising a root only mis-colours a hint, never loosens a boundary. They may implement a narrower subset, and say so where they do.
 
+### Symlinks — resolved **as referenced**, never followed
+
+Path containment compares paths **as referenced**: `.` and `..` are collapsed *textually* (so traversal is caught), but a symlink is **never** followed. A symlink inside `^` is therefore an **authorised extension of the project** — a write *through* it is in-project by reference, even when the link's real target is a parent's `.state/`, a sibling, or outside the tree entirely. This is a deliberate authorisation model: placing a symlink in a project is a human act of extending it. It depends on the **ABSOLUTE HOLD that keeps symlink construction human-only** (root `CLAUDE.md` boot-core) — if the agent could create symlinks, it could authorise its own egress.
+
+The flip side is intrinsic and accepted: an in-`^` symlink pointing **out** of `^` is an egress path, and containment does **not** block it. Egress is delegated to **environment isolation** (BL-61, the unattended lane) and surfaced by `symlink-egress-scan.sh`. The guards are a **referenced-namespace** boundary, not an egress boundary — do not claim otherwise.
+
+`..` is not a symlink: `normpath` collapses it, so `^/a/../../etc` resolves textually outside `^` and is blocked. Only symlinks get the as-referenced treatment.
+
+This binds **every** resolver: none calls `realpath` / `os.path.realpath` on a write target or on the `^` walk. (Reading a CLAUDE.md marker still follows a link to fetch its content — that is I/O to *detect a root*, not the containment *decision*.)
+
 ### Scoped Rebinding
 
 When a reader crosses into a directory whose CLAUDE.md declares `root: true`, `^` rebinds to that directory **for the scope of interpreting that project**. The reader's own `^` is unaffected — this creates a namespaced binding, not a global reassignment.

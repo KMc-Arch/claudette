@@ -105,14 +105,11 @@ if run_suites "$SRC"; then echo "GREEN control (correct)"
 else echo "control is RED — fix the suites before trusting any mutant"; exit 1; fi
 echo
 
-# The verdict is symmetric + physical-authoritative: it compares realpath(target)
-# to realpath(root), falling back to the lexical view only when realpath is
-# unavailable for either side. M1 proves the authoritative physical comparison is
-# load-bearing; M1b proves the lexical fallback still blocks when physical is gone.
-mutate "M1  physical comparison disabled (lexical-only asymmetry)" \
-       "if tgt_phys is not None and root_phys is not None:" "if False:"
-mutate "M1b no normalization anywhere (physical off + lexical off)" \
-       "        return os.path.realpath(p)" "        return None" \
+# AS-REFERENCED: the verdict compares normpath(target) to normpath(root) — no
+# realpath, symmetric by construction. lexical() (normpath) is the SOLE normaliser,
+# so turning it off leaves "../" uncollapsed and a traversal escapes. Caught by the
+# "../ traversal -> block" assertions.
+mutate "M1  no lexical normalization (traversal not collapsed)" \
        "    return posixpath.normpath(p)" "    return p"
 mutate "M2  no BOM strip"                     ".lstrip(chr(65279))" ""
 mutate "M3  only bare lowercase true"         'TRUE_WORDS = ("true", "yes", "on")' 'TRUE_WORDS = ("true",)'
@@ -120,9 +117,6 @@ mutate "M4  lexists -> exists (follows link)" "os.path.lexists(cm)" "os.path.exi
 mutate "M5  unterminated block read as non-root" \
        "        return None                    # unterminated" \
        "        return False                   # unterminated"
-mutate "M6  gravity .state check on lexical only (miss symlinked .state)" \
-       "    if not (touches_state(tgt_lex) or touches_state(tgt_phys)):" \
-       "    if not touches_state(tgt_lex):"
 mutate "M7  non-string path allowed"          "    if badtype:" "    if False:"
 mutate "M8  missing python allows"            "    exit 2
 fi" "    exit 0
@@ -144,9 +138,6 @@ mutate "M16 no interpreter isolation (-I)"    '"$GUARD_PY" -I -c ' '"$GUARD_PY" 
 mutate "M17 accept ... as a terminator again" \
        'm = re.search(r"(?m)^---[ \t]*\r?$", text[3:])' \
        'm = re.search(r"(?m)^(?:---|\.\.\.)[ \t]*\r?$", text[3:])'
-mutate "M18 walk from lexical launch dir (no realpath)" \
-       "    root = physical(base) or lexical(base)    # resolve launch-dir symlinks first" \
-       "    root = lexical(base)"
 mutate "M19 case-sensitive .state detector" \
        '        return p is not None and ".state" in [c.lower() for c in p.split("/")]' \
        '        return p is not None and ".state" in p.split("/")'
