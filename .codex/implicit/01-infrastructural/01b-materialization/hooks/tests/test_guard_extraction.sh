@@ -112,6 +112,22 @@ for g in "$CONT" "$GRAV"; do
 done
 
 echo
+echo "# R4 [0]: the outer wrapper fails closed on an abnormal python exit (rc not in {0,2})."
+# Force the guard-core python step to exit 1 (a crash/uncaught-exception stand-in) by
+# feeding a python shim that ignores the real program and exits 1. The wrapper must
+# turn that into a BLOCK (rc=2), never an allow.
+SHIM=$(mktemp -d); printf '#!/bin/sh\nexit 1\n' > "$SHIM/python3"; printf '#!/bin/sh\nexit 1\n' > "$SHIM/python"
+chmod +x "$SHIM/python3" "$SHIM/python"
+for g in "$CONT" "$GRAV"; do
+    case "$g" in *containment*) nm=containment ;; *) nm=gravity ;; esac
+    out=$(printf '%s' '{"tool_input":{"file_path":"'"$ROOT"'/sub/x.md"}}' \
+          | env PATH="$SHIM:$PATH" CLAUDE_PROJECT_DIR="$ROOT" /bin/bash "$g" 2>&1); rc=$?
+    if [ "$rc" -eq 2 ] && printf '%s' "$out" | grep -q 'did not complete'; then
+        printf 'PASS  %-46s rc=2\n' "abnormal python exit -> fail closed ($nm)"; PASS=$((PASS+1))
+    else printf 'FAIL  %-46s rc=%s out=%s\n' "abnormal python exit ($nm)" "$rc" "$out"; FAIL=$((FAIL+1)); fi
+done
+rm -rf "$SHIM"
+
 echo "# a missing interpreter must fail closed"
 for g in "$CONT" "$GRAV"; do
     case "$g" in *containment*) nm=containment ;; *) nm=gravity ;; esac

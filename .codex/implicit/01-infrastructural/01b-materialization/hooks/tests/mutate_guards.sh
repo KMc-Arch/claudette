@@ -123,7 +123,7 @@ fi" "    exit 0
 fi"
 mutate "M9  no trailing-slash strip (sibling)" 'child.startswith(parent.rstrip("/") + "/")' 'child.startswith(parent.rstrip("/"))'
 mutate "M10 undecidable marker walked past"   "    if state is not False:" "    if state is True:"
-mutate "M11 empty CLAUDE_PROJECT_DIR allowed" "if not cpd.strip():" "if False:"
+mutate "M11 empty CLAUDE_PROJECT_DIR allowed" "if not cpd:" "if False:"
 # M12: a REAL grep-style extraction (strip backslash escapes, then decode) — the
 # regression the JSON decoder exists to prevent. Written with chr()-built quotes so
 # it introduces no bash-string syntax error (the mutant must PARSE, see judge()).
@@ -144,11 +144,26 @@ mutate "M19 case-sensitive .state detector" \
 mutate "M20 gravity .state depth-1 only" \
        '        return p is not None and ".state" in [c.lower() for c in p.split("/")]' \
        '        return p is not None and ".state" in [c.lower() for c in p.split("/")[-2:-1]]'
+mutate "M21 outer wrapper fail-OPEN (abnormal exit -> allow, R4 [0])" \
+       'echo "BLOCKED: guard did not complete (rc=$rc) — fail closed." >&2
+exit 2' 'echo "BLOCKED: guard did not complete (rc=$rc) — fail closed." >&2
+exit 0'
+mutate "M22 key-strip dropped (indented root not seen, R4 [1])" \
+       'if unquote(key).lower() not in ("root", "apex-root"):' \
+       'if key.lower() not in ("root", "apex-root"):'
+mutate "M23 main .state as substring (R4 [10])" \
+       '        return p is not None and ".state" in [c.lower() for c in p.split("/")]' \
+       '        return p is not None and ".state" in p.lower()'
 # M14/M15 edit ONE guard only — the drift the docs once called impossible.
 mutate_one "M14 single-guard drift (containment)" containment-guard.sh \
        "    if state is not False:" "    if state is True:"
 mutate_one "M15 single-guard drift (gravity)" gravity-guard.sh \
        "os.path.lexists(cm)" "os.path.exists(cm)"
+# M24 edits a single guard's COMMENT — behaviourally invisible, so the behavioural
+# suites stay green; ONLY test_guards_identical can catch it. This is what proves the
+# identity check earns its keep (R4 [8]).
+mutate_one "M24 comment-only drift (identity-only catch)" containment-guard.sh \
+       "# ---- verdict" "# ---- VERDICT"
 
 echo
 echo "-------------------------------------------"

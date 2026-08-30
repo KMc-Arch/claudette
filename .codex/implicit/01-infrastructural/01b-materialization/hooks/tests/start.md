@@ -32,7 +32,7 @@ them at mutated copies.
   and requires the suites above to go **red**. This is what makes them evidence
   rather than decoration; run it after any change to a guard or a suite.
   Run: `bash mutate_guards.sh` — exit 0 = every mutant caught. Takes a few minutes
-  (16 mutants x 3 suites); it is a developer gate, not something to run inline.
+  (22 mutants x 3 suites); it is a developer gate, not something to run inline.
 
 ## Two things these suites deliberately do NOT establish
 

@@ -75,9 +75,12 @@ if target is None:
 
 # ---- establish the namespace ------------------------------------------------
 DRIVE = re.compile(r"^[A-Za-z]:[\\/]")
-cpd = os.environ.get("CLAUDE_PROJECT_DIR") or ""
-if not cpd.strip():
+cpd = (os.environ.get("CLAUDE_PROJECT_DIR") or "").strip()
+if not cpd:
     die("BLOCKED: CLAUDE_PROJECT_DIR is empty or unset — cannot resolve ^ (fail closed).")
+# strip() above also removes a stray trailing newline/space: without it the raw
+# value flows into the walk seed and root_lex carries the newline, so an ordinary
+# in-tree write fails the prefix test (fail-closed false positive). R4 [2].
 
 
 def is_win(p):

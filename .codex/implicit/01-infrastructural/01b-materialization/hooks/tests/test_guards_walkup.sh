@@ -78,11 +78,12 @@ for spell in $'\xef\xbb\xbf---\nroot: true\n---\n' \
              $'---\nroot: "true"\n---\n' \
              $'---\nroot: true  # this project\n---\n' \
              $'---\r\nroot: true\r\n---\r\n' \
-             $'---\ntitle: x\nroot: true\n---\n'; do
+             $'---\ntitle: x\nroot: true\n---\n' \
+             $'---\n  root: true\n---\n'; do
     printf '%s' "$spell" > "$T/apex/proj/CLAUDE.md"
     label=$(printf '%s' "$spell" | tr -d '\r' | sed -n 2p)
     both "spelling [$label]" 2 "$T/apex/proj/sub" "$T/apex"
-done
+done  # last spelling: an INDENTED key must still count as a root (R4 [1]), matching boot-inject
 printf -- '---\nroot: false\n---\n' > "$T/apex/proj/CLAUDE.md"
 both "root: false is NOT a root (walks up to apex)" 0 "$T/apex/proj/sub" "$T/apex"
 printf -- '---\nroot: true\n---\n' > "$T/apex/proj/CLAUDE.md"
@@ -101,8 +102,16 @@ mk_tree dir;  mkdir -p "$T/dir/proj/CLAUDE.md"
 both "CLAUDE.md that is a directory"    2 "$T/dir/proj/sub" "$T/dir"
 mk_tree unt;  printf -- '---\nsome: value\nnever terminated\n' > "$T/unt/proj/CLAUDE.md"
 both "frontmatter with no terminator"   2 "$T/unt/proj/sub" "$T/unt"
-mk_tree nr;   mkfifo "$T/nr/proj/CLAUDE.md" 2>/dev/null || : > "$T/nr/proj/CLAUDE.md"
-both "non-regular CLAUDE.md"            2 "$T/nr/proj/sub" "$T/nr"
+mk_tree nr
+if mkfifo "$T/nr/proj/CLAUDE.md" 2>/dev/null; then
+    both "non-regular CLAUDE.md (fifo)"    2 "$T/nr/proj/sub" "$T/nr"
+else
+    # R4 [9]: do NOT silently fall back to an empty regular file — that inverts the
+    # case (a decidable non-root, walked past) and the test would pass for the wrong
+    # reason. A directory is genuinely non-regular and already portable.
+    rm -f "$T/nr/proj/CLAUDE.md"; mkdir -p "$T/nr/proj/CLAUDE.md"
+    both "non-regular CLAUDE.md (dir)"     2 "$T/nr/proj/sub" "$T/nr"
+fi
 # (R3 [3]) an existing-but-UNREADABLE root marker must fence here, not be walked
 # past. Skip only if running as root, where the permission bit is ignored.
 if [ "$(id -u)" -ne 0 ]; then
@@ -151,10 +160,14 @@ echo "# AS-REFERENCED: a symlink is an AUTHORISED project extension — in AND o
 mkdir -p "$T/sym/proj/sub" "$T/sym/.state"
 printf -- '---\napex-root: true\n---\n' > "$T/sym/CLAUDE.md"
 printf -- '---\nroot: true\n---\n'      > "$T/sym/proj/CLAUDE.md"
-ln -sfn "$T/sym/.state" "$T/sym/proj/parentstate"   # -> a parent's .state
+ln -sfn "$T/sym/.state" "$T/sym/proj/parentlink"   # -> a parent's .state (name has NO .state component)
+ln -sfn "$T/sym/.state" "$T/sym/proj/.state"       # -> a parent .state, but referenced name IS .state (R4 [7])
 ln -sfn "$T/sym"        "$T/sym/proj/up"            # -> up, out of ^
 ln -sfn /etc            "$T/sym/proj/etclink"       # -> clean out of the tree
-check "symlink to a parent .state -> allow" 0 "$T/sym/proj" "$GRAV" "$(jp file_path "$T/sym/proj/parentstate/x.md")"
+# R4 [7]: the referenced name carries no .state component -> gravity has no opinion -> allow.
+check "symlink whose NAME is not .state  -> allow" 0 "$T/sym/proj" "$GRAV" "$(jp file_path "$T/sym/proj/parentlink/x.md")"
+# ...and one whose referenced name IS a .state component, but INSIDE ^ -> allow (in-^ .state).
+check "symlink named .state, inside ^     -> allow" 0 "$T/sym/proj" "$GRAV" "$(jp file_path "$T/sym/proj/.state/x.md")"
 check "symlink up out of ^        -> allow" 0 "$T/sym/proj" "$CONT" "$(jp file_path "$T/sym/proj/up/notes.md")"
 check "symlink to /etc            -> allow" 0 "$T/sym/proj" "$CONT" "$(jp file_path "$T/sym/proj/etclink/passwd")"
 # ...but ../ TRAVERSAL is NOT a symlink — normpath collapses "..", so it stays blocked.
@@ -209,6 +222,9 @@ printf -- '---\nroot: true\n---\n'      > "$T/deep/proj/CLAUDE.md"
 check "parent .state nested deep -> block"      2 "$T/deep/proj" "$GRAV" "$(jp file_path "$T/deep/.state/memory/x.md")"
 mkdir -p "$T/deep/.State"
 check "parent .State (case-insensitive) -> block" 2 "$T/deep/proj" "$GRAV" "$(jp file_path "$T/deep/.State/x.md")"
+# R4 [10]: on the MAIN POSIX verdict (not the Win/POSIX branch), ".state" as a mere
+# SUBSTRING (.stateful) is not a component -> gravity has no opinion even outside ^.
+check "outside-^ .stateful substring -> allow"    0 "$T/deep/proj" "$GRAV" "$(jp file_path "$T/deep/.stateful/x.md")"
 
 echo
 echo "-------------------------------------------"
