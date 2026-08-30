@@ -37,3 +37,13 @@ PreToolUse hooks provide **structural enforcement** — they block violations be
 | Push / remote | `remote-guard.sh` | Blocks main/master pushes, force-pushes, and GitHub API writes in Bash |
 | Audit immutability | `audit-immutability-guard.sh` | Blocks writes to existing audit run folders |
 | CLAUDE.md immutability | `claude-md-immutability-guard.sh` | Blocks writes to root CLAUDE.md |
+
+## Adjacent scripts (NOT registered hooks)
+
+Operational scripts that live here but are **not** wired into the hook system —
+run by hand or by `cboot`, never as PreToolUse/SessionStart hooks.
+
+| Script | Kind | Purpose |
+|---|---|---|
+| `symlink-egress-scan.sh` | detective (read-only; `--quarantine` to neutralise) | Report symlinks under a root whose real target escapes it. Catches the egress links the as-referenced resolution model authorises but no input-gate can prevent (interpreter-created, and transitive from `git`/`tar`/`npm`/`venv`). **Not a boundary** — the boundary is environment isolation (BL-61); this only surfaces what slipped in. Run at session start and on demand: `symlink-egress-scan.sh [ROOT]`. |
+| `tests/` | dev harnesses | See `tests/start.md`. |

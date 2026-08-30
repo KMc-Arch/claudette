@@ -28,7 +28,10 @@
       "Bash(git remote remove:*)",
       "Bash(gh issue:*)",
       "Bash(gh api:*)",
-      "Bash(gh release:*)"
+      "Bash(gh release:*)",
+      "Bash(ln:*)",
+      "Bash(cp -s:*)",
+      "Bash(cp --symbolic-link:*)"
     ]
   },
   "modules": {
