@@ -134,7 +134,7 @@ _render_bar() {
 }
 
 # Format a seconds count as "Xd Yh" / "Xh Ym" / "Xm Ys" depending on
-# magnitude. Shared by rate-limit reset countdowns and session duration.
+# magnitude. Used by the 5h rate-limit reset countdown.
 _fmt_secs() {
     local s=$1
     [[ $s -lt 0 ]] && s=0
@@ -299,9 +299,10 @@ if [[ -n "$transcript_path" && -f "$transcript_path" ]]; then
     # Parse LINE-BY-LINE (`jq -nR '[inputs | fromjson? // empty]'`), NOT `jq -s`.
     # `jq -s` aborts the WHOLE parse on one malformed line, and transcripts on
     # this 9p mount can carry runs of NUL bytes mid-file. When that happened the
-    # 💬 row vanished AND context_length fell to 0 (rendering the fake ~2%
-    # baseline instead of the real fill). `fromjson? // empty` drops only the bad
-    # line. Benchmarked free (23ms vs 25ms on the largest transcript here).
+    # 💬 row vanished AND context_length fell to 0 (rendering the fake baseline —
+    # ~10% of the default 200k window, ~2% of a 1M window — instead of the real
+    # fill). `fromjson? // empty` drops only the bad line. Benchmarked free
+    # (23ms vs 25ms on the largest transcript here).
     #
     # last_user_msg is a WHITELIST, not a blacklist. Claude Code writes many
     # things as type:"user" — task-notifications, hook/meta payloads, tool
@@ -309,9 +310,12 @@ if [[ -n "$transcript_path" && -f "$transcript_path" ]]; then
     # new kind (auto-continuation already appeared). Every real human prompt
     # carries origin.kind=="human" (or, for one legacy shape, promptSource=="typed");
     # nothing else does. So: keep human-origin/typed, drop isMeta/isSidechain/
-    # toolUseResult. On 2.1.251 a typed slash command records with NO origin, so
-    # it is correctly skipped and the row holds the previous real prompt; older
-    # transcripts tagged them "human" as raw <command-name> XML — unwrap those.
+    # toolUseResult. Slash commands vary (verified on 2.1.251): a skill command
+    # (e.g. /mileqa) IS tagged origin.kind=="human", its content the raw
+    # <command-name>…</command-name>+<command-args> XML — kept and unwrapped below
+    # to its command-name text + args (e.g. "/mileqa …"); some built-ins (e.g.
+    # /model) record with NO origin and are skipped, so the row keeps the previous
+    # real prompt. Older transcripts also tagged commands "human" as that XML.
     _transcript_data=$(jq -nR '
         [inputs | fromjson? // empty] as $es
         | {
@@ -319,8 +323,15 @@ if [[ -n "$transcript_path" && -f "$transcript_path" ]]; then
                 $es
                 | map(select(.message.usage and .isSidechain != true and .isApiErrorMessage != true))
                 | last
-                | if . then (.message.usage.input_tokens // 0) + (.message.usage.cache_read_input_tokens // 0)
-                           + (.message.usage.cache_creation_input_tokens // 0) + (.message.usage.output_tokens // 0)
+                # Coerce each usage field with `tonumber? // 0`: a corrupt entry
+                # carrying a STRING token count is valid JSON (so fromjson? keeps
+                # it), and `(string) + (number)` would abort the WHOLE jq program —
+                # blanking the 💬 row AND collapsing the context bar to baseline,
+                # the exact failure the line-by-line parse above set out to prevent.
+                | if . then ((.message.usage.input_tokens // 0) | tonumber? // 0)
+                           + ((.message.usage.cache_read_input_tokens // 0) | tonumber? // 0)
+                           + ((.message.usage.cache_creation_input_tokens // 0) | tonumber? // 0)
+                           + ((.message.usage.output_tokens // 0) | tonumber? // 0)
                   else 0 end
             ),
             last_user_msg: (
@@ -437,10 +448,20 @@ if [[ -n "$transcript_path" && -f "$transcript_path" ]]; then
     [[ -n "$branch" ]] && plain_output+=" | ${branch} ${git_status}"
     plain_output+=" | xxxxxxxxxx ${pct}% of ${max_k}k tokens"
     width=${COLUMNS:-${#plain_output}}
+    # $COLUMNS is untyped harness input; validate before arithmetic (mirrors the
+    # max_context guard above) so a non-numeric value can't reach $(( )) as an
+    # eval surface, and fall back to the row-1 plain width.
+    [[ "$width" =~ ^[0-9]+$ && "$width" -gt 0 ]] || width=${#plain_output}
     budget=$((width - 4))
     [[ $budget -lt 20 ]] && budget=20
     # last_user_msg already extracted in single-pass above; newlines preserved.
     if [[ -n "$last_user_msg" ]]; then
+        # Strip C0/C1 control bytes (keep \n=\012 for the line split below): a
+        # prompt carrying raw ESC could otherwise emit cursor-up/erase sequences
+        # that rewrite row 1 and bleed colour. Row 1 defends the same way (the
+        # separator-normalization + printf '%b' comment near the top); row 2 must
+        # too. One pass, byte-wise; the ⏎ separator (U+23CE) is not a control byte.
+        last_user_msg=$(printf '%s' "$last_user_msg" | LC_ALL=C tr -d '\000-\011\013-\037\177')
         out=""
         while IFS= read -r line; do
             # trim leading/trailing whitespace; skip blank lines
@@ -457,6 +478,9 @@ if [[ -n "$transcript_path" && -f "$transcript_path" ]]; then
             [[ ${#out} -ge $budget ]] && break
         done <<< "$last_user_msg"
         [[ ${#out} -gt $budget ]] && out="${out:0:$((budget - 3))}..."
-        [[ -n "$out" ]] && echo "💬 $out"
+        # printf '%s\n', never echo: `echo` interprets backslashes under xpg_echo
+        # (some Git-Bash builds this file ships to), turning a literal \n in a
+        # prompt into a real newline / an extra row. %s prints the bytes verbatim.
+        [[ -n "$out" ]] && printf '%s\n' "💬 $out"
     fi
 fi
