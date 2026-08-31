@@ -34,6 +34,16 @@ them at mutated copies.
   Run: `bash mutate_guards.sh` — exit 0 = every mutant caught. Takes a few minutes
   (22 mutants x 3 suites); it is a developer gate, not something to run inline.
 
+- `test_egress_scan.sh` — the DETECTIVE egress sweep `symlink-egress-scan.sh`
+  (on-demand, **not** a PreToolUse hook and not part of `mutate_guards.sh`'s guard
+  matrix). Proves an in-^ symlink is left alone, a symlink whose real target
+  escapes ^ is reported (exit 1) naming the target, the `_`-prefix and `.git/`
+  skips hold, a symlink to ^ itself is not an escape, dangling links are
+  range-checked by their lexical target (out flagged, in fine), `--quarantine`
+  neutralises the link, and usage / not-a-directory errors exit 2. Creates its
+  fixtures as symlinks in a disposable `mktemp` sandbox outside ^.
+  Run: `bash test_egress_scan.sh` — exit 0 = all pass.
+
 ## Two things these suites deliberately do NOT establish
 
 **Notebooks are not guarded.** The live PreToolUse matcher is `Write|Edit`,

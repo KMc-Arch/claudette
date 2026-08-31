@@ -45,5 +45,5 @@ run by hand or by `cboot`, never as PreToolUse/SessionStart hooks.
 
 | Script | Kind | Purpose |
 |---|---|---|
-| `symlink-egress-scan.sh` | detective (read-only; `--quarantine` to neutralise) | Report symlinks under a root whose real target escapes it. Catches the egress links the as-referenced resolution model authorises but no input-gate can prevent (interpreter-created, and transitive from `git`/`tar`/`npm`/`venv`). **Not a boundary** — the boundary is environment isolation (BL-61); this only surfaces what slipped in. Run at session start and on demand: `symlink-egress-scan.sh [ROOT]`. |
+| `tools/` | on-demand detective / maintenance scripts | See `tools/start.md` (holds `symlink-egress-scan.sh`, the egress sweep). |
 | `tests/` | dev harnesses | See `tests/start.md`. |
