@@ -1,5 +1,5 @@
 ---
-version: 4
+version: 5
 runtime: sh
 reads:
   - "the Claude Code status payload on stdin (model, cwd, workspace.project_dir, effort.level, thinking.enabled, rate_limits.five_hour, context_window, transcript_path)"
@@ -44,14 +44,14 @@ The two budget bars share one renderer (`_render_bar`) so the context window and
 
 ## Second row — 💬 last user message
 
-A second line (multi-line status lines are officially supported; each `echo` is a row) shows `💬 <the user's last typed prompt>`, truncated to roughly the width of row 1. Both the row and the context bar are computed from the transcript in one `_transcript_data` pass.
+A second line (multi-line status lines are officially supported; each `echo` is a row) shows `💬 <the user's last typed prompt>`. It renders the prompt's first non-empty line, then appends each following non-empty line (joined by `⏎`) until the terminal width runs out; a first line that alone overruns is hard-truncated with `…`. Width is `$COLUMNS`, which Claude Code sets to the live terminal size before running the script (`tput cols` cannot work — stdout is captured, not attached to the terminal); the budget reserves the `💬 ` prefix plus a column so the row never wraps. Fallback when `COLUMNS` is unset: the plain-text width of row 1. Both the row and the context bar are computed from the transcript in one `_transcript_data` pass.
 
 The extraction has two non-obvious properties, each earning its own red-first proof (see the module's git history for the proof transcript paths):
 
 - **Whitelist, not blacklist.** Claude Code writes far more than human prompts as `type:"user"` — task-notifications, hook/`isMeta` payloads, tool results, `sdk` and `auto-continuation` entries. The row keeps only entries whose `origin.kind == "human"` (or, for one legacy shape, `promptSource == "typed"`) and drops `isMeta` / `isSidechain` / `toolUseResult`. A blacklist has to chase every new kind as Claude Code adds them; the whitelist does not. On this version (2.1.251) a **typed slash command records with no `origin`**, so it is correctly skipped and the row holds the previous real prompt; older transcripts tagged slash commands `human` as raw `<command-name>` XML, which is unwrapped to `/name args`.
 - **Line-by-line parse, not `jq -s`.** `jq -s` aborts the entire parse on a single malformed line, and transcripts on this 9p mount can carry runs of NUL bytes mid-file. When that happened, the 💬 row vanished **and** the context bar silently fell back to its fake `~2%` baseline. `jq -nR '[inputs | fromjson? // empty]'` drops only the bad line and is benchmarked free.
 
-Held for a later pass (scoped 2026-08-31, not yet built): rendering the row as the prompt's first *N* lines joined by `⏎` up to `$COLUMNS` width, and an optional third functional-status row.
+Held for a later pass (scoped 2026-08-31, not yet built): an optional third functional-status row — KMc has not yet chosen its contents (free stdin fields vs. claudette-state behind a TTL cache).
 
 ## Location Display
 

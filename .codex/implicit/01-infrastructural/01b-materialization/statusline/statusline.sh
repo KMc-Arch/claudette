@@ -342,7 +342,6 @@ if [[ -n "$transcript_path" && -f "$transcript_path" ]]; then
                 | map(select(test("^[[:space:]]*$") | not))
                 | map(select(startswith("[Request interrupted") or startswith("[Request cancelled") | not))
                 | first // ""
-                | gsub("\n"; " ") | gsub("  +"; " ")
             )
         }
     ' < "$transcript_path" 2>/dev/null)
@@ -418,7 +417,18 @@ output+="${C_RESET}"
 
 printf '%b\n' "$output"
 
-# --- Last user message ---
+# --- Second row: 💬 last user message ---
+# Render the prompt's first non-empty line, then keep appending the following
+# non-empty lines (joined by ⏎) until the terminal width runs out. A strict
+# first-line-only rule loses too much (a scoping prompt whose real question is two
+# lines down); appending until full keeps the useful head of a multi-line prompt.
+#
+# Width is $COLUMNS, which Claude Code sets to the live terminal size before
+# running the script — `tput cols` and language-level detection cannot work here
+# because the script's stdout is captured, not attached to the terminal (docs).
+# Fallback when COLUMNS is somehow unset: the plain-text width of row 1 (what
+# shipped before). The budget reserves the "💬 " prefix plus a 1-col gap so the
+# row never reaches the edge and wraps.
 if [[ -n "$transcript_path" && -f "$transcript_path" ]]; then
     plain_output="${model}"
     [[ -n "$launch_plain" ]] && plain_output+=" | ${launch_plain}"
@@ -426,13 +436,27 @@ if [[ -n "$transcript_path" && -f "$transcript_path" ]]; then
     [[ -n "$project_info" ]] && plain_output+=" | ${project_id} [xxxxxxx]"
     [[ -n "$branch" ]] && plain_output+=" | ${branch} ${git_status}"
     plain_output+=" | xxxxxxxxxx ${pct}% of ${max_k}k tokens"
-    max_len=${#plain_output}
-    # last_user_msg already extracted in single-pass above
+    width=${COLUMNS:-${#plain_output}}
+    budget=$((width - 4))
+    [[ $budget -lt 20 ]] && budget=20
+    # last_user_msg already extracted in single-pass above; newlines preserved.
     if [[ -n "$last_user_msg" ]]; then
-        if [[ ${#last_user_msg} -gt $max_len ]]; then
-            echo "💬 ${last_user_msg:0:$((max_len - 3))}..."
-        else
-            echo "💬 ${last_user_msg}"
-        fi
+        out=""
+        while IFS= read -r line; do
+            # trim leading/trailing whitespace; skip blank lines
+            line="${line#"${line%%[![:space:]]*}"}"
+            line="${line%"${line##*[![:space:]]}"}"
+            [[ -z "$line" ]] && continue
+            if [[ -z "$out" ]]; then
+                out="$line"
+            else
+                cand="$out ⏎ $line"
+                [[ ${#cand} -gt $budget ]] && break
+                out="$cand"
+            fi
+            [[ ${#out} -ge $budget ]] && break
+        done <<< "$last_user_msg"
+        [[ ${#out} -gt $budget ]] && out="${out:0:$((budget - 3))}..."
+        [[ -n "$out" ]] && echo "💬 $out"
     fi
 fi
