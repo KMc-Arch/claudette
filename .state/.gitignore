@@ -2,6 +2,16 @@
 # Track structure (start.md manifests), ignore accumulation.
 # State is instance-specific — only the skeleton travels with the framework.
 
+# ── ⚠ NOT A MODEL FOR CHILD PROJECTS ──
+# Same inverted shape as the repo root, and for the same reason: this directory
+# is framework structure holding instance-specific accumulation, so the default
+# is "ignore" and only the manifests are named back in. That is a property of
+# what claudette is — a framework — not a house style.
+#
+# A child project is insular and uses an ordinary deny-list; see
+# .templates/child/.gitignore. A child's own .state/ does not need this file's
+# shape, and copying it would ignore that child's content by default.
+
 # Ignore everything
 *
 
@@ -29,3 +39,6 @@
 # tracked on main); `!/tests/*/start.md` re-includes them at exactly that depth
 # without re-opening the sandbox trees, which live deeper (tests/mileqa/<run>/…).
 !/tests/*/start.md
+# Belt-and-suspenders (from main): the anchored rule above already excludes deep
+# sandbox start.md copies by depth; this names the mileqa sandbox trees explicitly.
+tests/mileqa/*/sb/

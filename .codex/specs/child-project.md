@@ -9,6 +9,10 @@ Minimum standard for child projects created under a claudette2 instance.
 ```
 <project>/
     CLAUDE.md                   # root: true, codex: ^/^/.codex
+    ~inbox/                     # Exchange Surfaces: drops addressed to this project
+        start.md
+    ~outbox/                    # Exchange Surfaces: outbound handoffs to another actor
+        start.md
     .state/
         start.md                # references ^/^ for inherited definitions
         prefs.json              # project preference overrides (may be empty)

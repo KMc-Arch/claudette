@@ -36,6 +36,7 @@ import copy
 import importlib.util
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -830,15 +831,164 @@ def _extract_root_name(claude_md: Path, fallback: str) -> str:
     return fallback
 
 
-def build_root_inventory(report):
-    """Materialize .state/roots.db — the durable directory of every root: true
-    context under the apex, including the apex itself.
+class RootRows(list):
+    """The rows of one filesystem walk, plus what that walk deliberately EXCLUDED.
 
-    This is a DERIVED, REBUILDABLE CACHE, not a source of truth. The filesystem
-    walk (child_propagate.discover_roots) is authoritative; this DB is dropped and
-    rebuilt from scratch on every boot and is safe to delete — the next boot
-    regenerates it. It is gitignored via .state/.gitignore (accumulation is never
-    tracked).
+    The exclusions are the reason this is not a plain list. A root that a policy
+    filtered out is PRESENT on disk — it is simply not eligible for a row. If the
+    only thing downstream sees is the row list, it cannot tell that apart from a
+    project that was deleted, and getting that difference wrong destroyed live
+    agent files three separate times.
+
+    Carrying the exclusions makes the distinction structural rather than
+    inferential: generate_agents skips an excluded path by LOOKUP, so a change to
+    the filtering rules below cannot reach a delete path at all.
+    """
+
+    def __init__(self, rows, excluded=()):
+        super().__init__(rows)
+        self.excluded = dict(excluded)
+
+
+def _reached_via_symlink(dirent, apex_abs):
+    """True if ANY component of `dirent` below the apex is a symlink.
+
+    `dirent.is_symlink()` tests only the last component, which is wrong for a
+    nested root: `alias/sub` and `real/sub` are both non-symlinks even though one
+    is reached through a link. Ordering on that alone let an alias path win
+    de-duplication for nested roots purely on its name, forking one project into
+    two identities.
+    """
+    try:
+        rel = dirent.relative_to(apex_abs)
+    except ValueError:
+        return True                     # unplaceable: least preferred
+    cur = apex_abs
+    for part in rel.parts:
+        cur = cur / part
+        try:
+            if cur.is_symlink():
+                return True
+        except OSError:
+            return True                 # cannot tell: least preferred
+    return False
+
+
+def _walk_candidate_roots(apex_abs):
+    """Every `root: true` directory under the apex, in a DETERMINISTIC order.
+
+    Discovery only — no policy, no de-duplication. Paths reached entirely through
+    real directories sort ahead of paths reached through a symlink, then by path
+    string: two dirents can resolve to one directory (an alias beside the project
+    it points at) and only one may survive de-duplication, so the survivor must be
+    the real project rather than whichever name happens to sort first.
+    """
+    child_propagate = _load_module(PREBOOT_DIR / "child_propagate.py")
+    return sorted(child_propagate.discover_roots(ROOT),
+                  key=lambda p: (_reached_via_symlink(p, apex_abs), p.as_posix()))
+
+
+def _classify_root(dirent, apex_abs):
+    """Policy, as a pure function of paths. -> (rel_path or None, reason or None).
+
+    A reason means "found, but not eligible for a row". It never means "gone" —
+    the directory is right there. Separating this from the walk is deliberate:
+    every regression in this area came from a filtering change silently becoming
+    a deletion, and a pure function returning a REASON cannot do that.
+
+    Two rules, and only two:
+
+    - **Containment.** The row keeps the DIRENT path. A directory symlink is
+      followed by discover_roots (`is_dir()` follows links), so a root's target
+      can sit outside the apex — this tree has such links. Excluding those was
+      wrong: a project a user symlinked in is a real project at a real in-apex
+      path, and child_propagate already provisions it. Only a dirent that is not
+      under the apex at all is rejected, which discover_roots should never yield.
+
+    - **Visibility.** `_` (invisible) and `.` (Claude-internal) are filtered by
+      discover_roots on the DIRENT NAME only, so a normally-named symlink into
+      such a directory would launder it back in. The resolved path is checked
+      too — but only the part of it INSIDE the apex. Scanning the whole absolute
+      path made the apex's own ancestors decide the verdict, so an apex at
+      ~/.local/share/claudette, or the mirror apex under .tmp/, excluded every
+      descendant on every boot. A target outside the apex is an external project,
+      where `_` and `.` carry no meaning.
+    """
+    try:
+        rel = dirent.relative_to(apex_abs)
+    except ValueError:
+        # discover_roots yields only descendants, so this should not happen — but
+        # ROOT itself can be a symlink, and an unguarded relative_to() here would
+        # abort the whole boot rather than skip one row.
+        return None, f"not under the apex ({dirent})"
+
+    inside = [rel]
+    try:
+        inside.append(dirent.resolve().relative_to(apex_abs))
+    except ValueError:
+        pass                      # resolves outside the apex: external, allowed
+    except OSError:
+        pass                      # unresolvable: judge on the dirent path alone
+    hidden = next((part for r in inside for part in r.parts
+                   if part.startswith("_") or (part.startswith(".") and part != ".")), None)
+    if hidden is not None:
+        return rel.as_posix(), f"resolves into `{hidden}`"
+    return rel.as_posix(), None
+
+
+def _select_roots(report, apex_abs):
+    """-> (admitted dirents, {rel_path: reason}). Applies policy, then de-duplicates.
+
+    De-duplication is LAST and separate: it is a fact about the filesystem (two
+    names, one directory), not a judgement about a project, and conflating the
+    two is what made this function hard to reason about.
+    """
+    admitted, excluded, seen = [], {}, {apex_abs: "the apex itself"}
+    for dirent in _walk_candidate_roots(apex_abs):
+        rel, reason = _classify_root(dirent, apex_abs)
+        if reason is not None:
+            if rel is not None:
+                excluded[rel] = reason
+            report.warn(f"Root inventory: {rel or dirent} {reason} — skipped",
+                        "it is still on disk; its agent, if any, is left untouched")
+            continue
+        try:
+            resolved = dirent.resolve()
+        except OSError:
+            resolved = dirent         # unresolvable: de-duplicate on itself
+        if resolved in seen:
+            # An alias for a directory already admitted. This is the THIRD way a
+            # discovered root leaves the row set, and it must be recorded like the
+            # other two: an unrecorded drop is invisible to generate_agents, which
+            # then has only the weaker positive test standing between it and a
+            # deletion. The structural guarantee is only worth having if every
+            # path out of the row set goes through `excluded`.
+            excluded[rel] = f"the same directory as {seen[resolved]}"
+            continue
+        seen[resolved] = rel
+        admitted.append(dirent)
+    return admitted, excluded
+
+
+def build_root_inventory(report):
+    """Materialize .state/roots.db — the directory of every root: true context
+    under the apex, including the apex itself.
+
+    The `roots` and `meta` tables are a DERIVED CACHE: the filesystem walk
+    (child_propagate.discover_roots) is authoritative, and both are dropped and
+    rebuilt from scratch every boot. The file as a whole is NOT disposable — it
+    also carries `agent_optin` and `agent_registry`, which are durable, hold
+    decisions a human made once, and are what every file in .claude/agents/
+    depends on for its ownership. Nothing regenerates those. purge keeps
+    .state/roots.db on its hard floor for that reason.
+
+    Returns a RootRows — the row dicts PLUS `.excluded`, the roots this walk found
+    and deliberately did not admit — or None if the walk did not complete. Both
+    matter to the caller: it must not run the agent pass on an unknown inventory
+    (which reads as every project having been deleted), and it must keep the
+    RootRows type rather than reducing it to a plain list, because `.excluded` is
+    what stops a filtering decision from reaching a delete path. Gitignored via
+    .state/.gitignore.
 
     Records, per root: name, absolute path, apex-relative path, nearest enclosing
     root (containment parent), depth, whether it is the apex, and how many DIRECT
@@ -849,14 +999,13 @@ def build_root_inventory(report):
         import sqlite3  # for sqlite3.Error only; connection comes from the factory
     except ImportError:
         report.warn("Root inventory: sqlite3 unavailable, skipping")
-        return
+        return None
 
-    child_propagate = _load_module(PREBOOT_DIR / "child_propagate.py")
     sqlite_factory = _load_module(CODEX / "reactive" / "sqlite" / "sqlite.py")
 
-    # Apex is the ceiling row; discovered descendants follow. Resolve to absolute.
+    # Apex is the ceiling row; discovered descendants follow.
     apex_abs = ROOT.resolve()
-    descendants = [d.resolve() for d in child_propagate.discover_roots(ROOT)]
+    descendants, excluded = _select_roots(report, apex_abs)
     all_roots = [apex_abs] + descendants
     root_set = set(all_roots)
 
@@ -901,6 +1050,18 @@ def build_root_inventory(report):
     try:
         conn = sqlite_factory.connect(str(db_path))
         try:
+            # roots/meta are a cache of the filesystem walk — dropped and
+            # rebuilt every boot. agent_optin/agent_registry are DURABLE and
+            # are deliberately not in this list: they hold human decisions and
+            # the claims that generated files depend on.
+            #
+            # The cache is rebuilt and COMMITTED first, on its own. DROP TABLE
+            # autocommits (DDL, no enclosing transaction), so an exception between
+            # the DROP and the CREATE used to leave roots/meta permanently gone —
+            # reachable when a legacy/restored/hand-edited db carries a duplicate
+            # current agent_registry row and the durable-table CREATE UNIQUE INDEX
+            # then raises. _ensure_agent_tables therefore runs AFTER this commit,
+            # isolated, so it can never strand the cache.
             conn.execute("DROP TABLE IF EXISTS roots")
             conn.execute("DROP TABLE IF EXISTS meta")
             conn.execute(
@@ -913,6 +1074,11 @@ def build_root_inventory(report):
                 " depth INTEGER NOT NULL,"      # 0 = apex, 1 = top-level child, ...
                 " is_apex INTEGER NOT NULL DEFAULT 0,"
                 " contains_roots INTEGER NOT NULL DEFAULT 0,"  # count of DIRECT child roots
+                # Denormalised mirror of agent_registry, filled by generate_agents.
+                # Convenience for readers; agent_registry is the authority.
+                " agent_enabled INTEGER NOT NULL DEFAULT 0,"
+                " agent_name TEXT,"
+                " agent_file TEXT,"
                 " generated_at TEXT NOT NULL)"
             )
             conn.execute("CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT)")
@@ -928,15 +1094,862 @@ def build_root_inventory(report):
                  ("root_count", str(len(rows)))],
             )
             conn.commit()
+            # Durable tables, isolated from the cache rebuild above. If a legacy/
+            # restored/hand-edited db carries a duplicate current row, the partial
+            # CREATE UNIQUE INDEX raises here — warn and carry on rather than let it
+            # propagate: roots/meta are already safe and committed, and the agent
+            # pass re-checks these tables and skips itself if they are unusable.
+            try:
+                _ensure_agent_tables(conn)
+                # Persist the durable-table work — its trailing backfill INSERT
+                # (inheriting an agent_optin row for a pre-optin live claim) is
+                # DML, so without an explicit commit it would be discarded by the
+                # close() below. Before the R3 reorder it rode the roots/meta
+                # commit above; now that it runs after, it needs its own.
+                conn.commit()
+            except sqlite3.Error as e:
+                report.warn("Root inventory: durable agent tables unavailable "
+                            "(agent pass will be skipped this boot)", str(e))
         finally:
             conn.close()
     except sqlite3.Error as e:
+        # None, never [] — an empty list is indistinguishable from "the apex has
+        # no children", and the agent pass reads that as every project having been
+        # deleted. A failed walk must be unusable, not merely empty.
         report.warn("Root inventory: sqlite write failed", str(e))
-        return
+        return None
 
     n = len(descendants)
     report.ok(f"Root inventory: {len(rows)} roots in .state/roots.db "
               f"(apex + {n} descendant{'' if n == 1 else 's'})")
+    return RootRows(rows, excluded)
+
+
+# ── Addressable agents ───────────────────────────────────────────────
+#
+# Every root: true child may be addressable as a native Claude Code subagent
+# (`@majel`, `@drawio`). cboot generates `^/.claude/agents/<name>.md` for each
+# one that is switched on.
+#
+# NOTHING ABOUT THIS LIVES IN THE CHILD. A child's CLAUDE.md is read (for a
+# default description) and never written. Whether a project is addressable, the
+# name it answers to, and its description are apex state, held in `roots.db`:
+#
+#   agent_optin     durable. One row per root: the decision, once, forever.
+#   agent_registry  durable SCD2. The claim ledger — and the SOLE authority on
+#                   which files in .claude/agents/ are ours.
+#   roots / meta    dropped and rebuilt every boot; the agent columns are a
+#                   denormalised mirror, never a source of truth.
+#
+# Ownership is not implemented here. It lives in .codex/reactive/agent-ownership
+# and is shared with purge — see that module's start.md for the rule.
+
+AGENTS_DIR = CLAUDE / "agents"
+
+# Prompting is only ever offered to a human at a real terminal. cboot
+# --materialize-only is also run from inside a Claude session (by /purge) and
+# from hooks, where a prompt would hang forever with nobody to answer it.
+def _interactive():
+    try:
+        return sys.stdin.isatty() and sys.stdout.isatty()
+    except (AttributeError, ValueError):
+        return False
+
+
+def _agent_ownership():
+    return _load_module(CODEX / "reactive" / "agent-ownership" / "agent_ownership.py")
+
+
+def _ensure_agent_tables(conn):
+    """Create the two DURABLE tables if absent. Never dropped, never rebuilt.
+
+    `roots` and `meta` are a cache of the filesystem walk and are rebuilt every
+    boot. These two are not: they hold decisions a human made and claims that
+    files on disk depend on. Losing them would orphan every generated file.
+    """
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS agent_optin ("
+        " rel_path TEXT PRIMARY KEY,"        # apex-relative root path
+        " enabled INTEGER NOT NULL,"          # 1 = addressable, 0 = declined
+        " requested_name TEXT,"               # the @name the human chose
+        " description TEXT,"                  # the one-liner they gave
+        " decided_at TEXT NOT NULL,"
+        " decided_by TEXT NOT NULL)"          # 'prompt' | 'inherited' | ...
+    )
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS agent_registry ("
+        " id INTEGER PRIMARY KEY,"
+        " agent_name TEXT NOT NULL,"
+        " rel_path TEXT NOT NULL,"
+        " source_folder TEXT NOT NULL,"
+        " deconflicted_from TEXT,"
+        " description TEXT,"
+        " agent_file TEXT NOT NULL,"          # apex-relative
+        " valid_from TEXT NOT NULL,"
+        " valid_to TEXT,"                     # NULL = current claim
+        " change_reason TEXT NOT NULL,"       # why the row OPENED — never rewritten
+        " close_reason TEXT)"                 # why it CLOSED
+    )
+    # Partial unique indexes: uniqueness applies to CURRENT rows only, so SCD2
+    # history may hold the same name many times over.
+    conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_agent_cur_path"
+                 " ON agent_registry(rel_path) WHERE valid_to IS NULL")
+    conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_agent_cur_name"
+                 " ON agent_registry(agent_name) WHERE valid_to IS NULL")
+    # CREATE TABLE IF NOT EXISTS is a no-op on a table that already exists, so a
+    # registry created before close_reason existed keeps its old shape and every
+    # claim-closing UPDATE then fails with "no such column". Migrate explicitly.
+    have = {r[1] for r in conn.execute("PRAGMA table_info(agent_registry)")}
+    if "close_reason" not in have:
+        conn.execute("ALTER TABLE agent_registry ADD COLUMN close_reason TEXT")
+    # Superseded by the partial idx_agent_cur_* indexes; a leftover unconditional
+    # unique index would reject legitimate SCD2 history.
+    for stale in ("agent_registry_current_name", "agent_registry_current_root"):
+        conn.execute("DROP INDEX IF EXISTS %s" % stale)
+
+    # A live claim with no recorded decision predates the decision table. It is
+    # still evidence of a decision a human made — under the older design, by
+    # putting `agent: true` in the project's own CLAUDE.md. Inherit it rather
+    # than treating silence as a decline, which would delete three working
+    # agents and make the user re-answer for projects already switched on.
+    # Idempotent: a project that was later switched off has an enabled=0 row,
+    # so this can never resurrect it.
+    conn.execute(
+        "INSERT INTO agent_optin (rel_path, enabled, requested_name, description,"
+        " decided_at, decided_by)"
+        " SELECT r.rel_path, 1, r.agent_name, r.description, r.valid_from, 'inherited'"
+        " FROM agent_registry r"
+        " WHERE r.valid_to IS NULL"
+        "   AND NOT EXISTS (SELECT 1 FROM agent_optin o WHERE o.rel_path = r.rel_path)")
+
+
+def _read_child_text(claude_md):
+    """(status, text) for a child's CLAUDE.md.
+
+    status is 'ok' | 'missing' | 'unreadable'. An undecodable or unreadable
+    CLAUDE.md is NEVER treated as an opt-out — the decision lives in roots.db
+    and a file we cannot read says nothing about it. The root is skipped for
+    this boot and reported, leaving its agent file and claim untouched.
+    """
+    try:
+        raw = claude_md.read_bytes()
+    except FileNotFoundError:
+        return "missing", ""
+    except OSError:
+        return "unreadable", ""
+    try:
+        return "ok", raw.decode("utf-8-sig")
+    except UnicodeDecodeError:
+        return "unreadable", ""
+
+
+_HEADING_RE = re.compile(r"^\s{0,3}#{1,6}\s")
+_POINTER_RE = re.compile(r"^\s*Read\s+[`'\"]?[.^~]", re.I)
+
+
+def _default_description(text, fallback):
+    """First prose line of a CLAUDE.md body — the description offered at the
+    prompt. Headings are skipped; a pointer line ("Read `.state/start.md`.") is
+    TERMINAL, not skipped, because what follows it is the project's own content
+    rather than a description of the project.
+    """
+    ao = _agent_ownership()
+    body = ao._body_after_frontmatter(text)
+    for line in body.split("\n"):
+        s = line.strip()
+        if not s:
+            continue
+        if _HEADING_RE.match(s):
+            continue
+        if _POINTER_RE.match(s):
+            break
+        return " ".join(s.split())
+    return fallback
+
+
+def _root_is_gone(rel):
+    """(True, "") if the project at `rel` is demonstrably gone; (False, why) if not.
+
+    The ONLY basis on which a claim may be closed as root-removed. Absence from
+    the walk is not that basis: a root drops out of `discover_roots` for several
+    reasons that have nothing to do with the project being deleted — its own
+    CLAUDE.md is undecodable, an ANCESTOR's is (which removes the whole subtree),
+    the inventory write failed, or a visibility rule excluded it. Each of those,
+    read as a deletion, silently destroys a live project's agent file.
+
+    Deliberately conservative: anything we cannot positively establish counts as
+    still present. The cost of a false "gone" is a deleted agent and a closed
+    claim; the cost of a false "present" is a stale claim that the next boot
+    reconsiders. Those are not comparable.
+    """
+    target = ROOT / rel
+    try:
+        if not target.is_dir():
+            return True, ""
+    except OSError as e:
+        # is_dir() propagates EACCES/EIO. A directory we cannot stat is not a
+        # directory we know is gone, and this is the gate on deletion.
+        return False, f"it could not be stat'd ({e.__class__.__name__})"
+
+    # An unreadable CLAUDE.md anywhere on the chain says nothing about any project
+    # on it — including this one, whose own file may read perfectly well.
+    parts = Path(rel).parts
+    for i in range(len(parts), 0, -1):
+        anc = ROOT.joinpath(*parts[:i])
+        status, _ = _read_child_text(anc / "CLAUDE.md")
+        if status == "unreadable":
+            return False, f"{anc.name}/CLAUDE.md is unreadable"
+
+    status, _text = _read_child_text(target / "CLAUDE.md")
+    if status == "missing":
+        return True, ""
+    if status == "unreadable":
+        return False, "its CLAUDE.md is unreadable"
+    # Present and readable: gone only if it deliberately stopped being a root.
+    child_propagate = _load_module(PREBOOT_DIR / "child_propagate.py")
+    try:
+        if child_propagate._has_root_true(target / "CLAUDE.md"):
+            return False, "it is still a root: true project"
+    except OSError:
+        return False, "its CLAUDE.md could not be re-read"
+    return True, ""
+
+
+def _free_name(candidate, taken, reserved):
+    """First unclaimed variant of `candidate`. Case-insensitive against both."""
+    low = {t.lower() for t in taken} | {r.lower() for r in reserved}
+    if candidate and candidate.lower() not in low:
+        return candidate, None
+    base = candidate or "agent"
+    n = 2
+    while f"{base}-{n}".lower() in low:
+        n += 1
+    return f"{base}-{n}", candidate
+
+
+# ── Opt-in decisions (interactive) ───────────────────────────────────
+
+def decide_agent_optin(report, rows):
+    """Ask, once, about every root we have never asked about.
+
+    A root with a row in `agent_optin` is never asked again — the decision is
+    durable. Outside a terminal nothing is asked and nothing is recorded; the
+    undecided roots are reported so a human can run cboot from a terminal.
+    """
+    try:
+        import sqlite3
+    except ImportError:
+        return
+    ao = _agent_ownership()
+    sqlite_factory = _load_module(CODEX / "reactive" / "sqlite" / "sqlite.py")
+    db_path = STATE / "roots.db"
+
+    candidates = [r for r in rows if not r["is_apex"]]   # the apex is never an agent
+    if not candidates:
+        return
+
+    try:
+        conn = sqlite_factory.connect(str(db_path))
+    except sqlite3.Error as e:
+        report.warn("Agent opt-in: roots.db unopenable, skipping", str(e))
+        return
+    try:
+        _ensure_agent_tables(conn)
+        decided = {r[0] for r in conn.execute("SELECT rel_path FROM agent_optin")}
+        undecided = [r for r in candidates if r["rel_path"] not in decided]
+        if not undecided:
+            return
+
+        if not _interactive():
+            names = ", ".join(r["rel_path"] for r in undecided[:5])
+            more = f" (+{len(undecided) - 5} more)" if len(undecided) > 5 else ""
+            report.warn(
+                f"Agent opt-in: {len(undecided)} project(s) awaiting a decision",
+                f"{names}{more} — run `python cboot.py --materialize-only` "
+                f"from a terminal to decide")
+            return
+
+        live = {r["rel_path"] for r in rows}
+        # `taken` is base-space (pre-suffix). Registry agent_name is stored
+        # suffixed, so strip the -pj namespace suffix back off for comparison.
+        _sfx = ao.SUFFIX
+        taken = {(n[:-len(_sfx)] if n.endswith(_sfx) else n) for (n,) in
+                 conn.execute("SELECT agent_name FROM agent_registry"
+                              " WHERE valid_to IS NULL")}
+        # Only decisions for paths that still exist reserve a name. A renamed or
+        # deleted project used to hold its @name forever through a stale row that
+        # nothing ever cleaned up.
+        taken |= {r[0] for r in conn.execute(
+            "SELECT requested_name, rel_path FROM agent_optin"
+            " WHERE enabled = 1 AND requested_name IS NOT NULL") if r[1] in live}
+
+        print()
+        print(f"  {len(undecided)} project(s) not yet decided. "
+              f"Enter = the default in [brackets]; Ctrl-C stops (nothing recorded).")
+        stamp = now_iso()
+        recorded = 0
+        for r in undecided:
+            folder = Path(r["abs_path"]).name
+            status, text = _read_child_text(Path(r["abs_path"]) / "CLAUDE.md")
+            print()
+            print(f"  ── {r['rel_path']}")
+            try:
+                ans = input(f"     Address it as an @name? [y/N] ").strip().lower()
+            except (EOFError, KeyboardInterrupt):
+                print()
+                report.warn("Agent opt-in: interrupted",
+                            f"{len(undecided) - recorded} project(s) still undecided")
+                break
+            if ans not in ("y", "yes"):
+                conn.execute(
+                    "INSERT INTO agent_optin (rel_path, enabled, requested_name,"
+                    " description, decided_at, decided_by)"
+                    " VALUES (?, 0, NULL, NULL, ?, 'prompt')", (r["rel_path"], stamp))
+                conn.commit()
+                recorded += 1
+                continue
+
+            # De-conflict in base space; the -pj suffix is a display/emit concern.
+            default_base, _ = _free_name(ao.derive_agent_name(folder), taken,
+                                         ao.RESERVED_NAMES)
+            name = None
+            while name is None:
+                try:
+                    raw = input(f"     @name [{ao.suffixed(default_base)}]: ").strip()
+                except (EOFError, KeyboardInterrupt):
+                    print()
+                    raw = None
+                if raw is None:
+                    break
+                cand = ao.derive_agent_name(raw) if raw else default_base
+                if not cand:
+                    print("     ! name empties out after sanitizing — try again")
+                    continue
+                if cand.lower() in {t.lower() for t in taken} or \
+                   cand.lower() in {x.lower() for x in ao.RESERVED_NAMES}:
+                    print(f"     ! @{ao.suffixed(cand)} is already taken — try another")
+                    continue
+                if cand != raw and raw:
+                    print(f"     (sanitized to @{ao.suffixed(cand)})")
+                name = cand
+            if name is None:
+                report.warn("Agent opt-in: interrupted",
+                            f"{len(undecided) - recorded} project(s) still undecided")
+                break
+
+            default_desc = (_default_description(text, r["name"])
+                            if status == "ok" else r["name"])
+            try:
+                desc = input(f"     description [{default_desc}]: ").strip() or default_desc
+            except (EOFError, KeyboardInterrupt):
+                print()
+                report.warn("Agent opt-in: interrupted",
+                            f"{len(undecided) - recorded} project(s) still undecided")
+                break
+
+            conn.execute(
+                "INSERT INTO agent_optin (rel_path, enabled, requested_name,"
+                " description, decided_at, decided_by)"
+                " VALUES (?, 1, ?, ?, ?, 'prompt')",
+                (r["rel_path"], name, desc, stamp))
+            conn.commit()
+            taken.add(name)
+            recorded += 1
+            print(f"     -> @{ao.suffixed(name)}")
+        print()
+        if recorded:
+            report.ok(f"Agent opt-in: {recorded} decision(s) recorded")
+    except sqlite3.Error as e:
+        report.warn("Agent opt-in: registry error, prompt abandoned", str(e))
+    finally:
+        conn.close()
+
+
+# ── Generation ───────────────────────────────────────────────────────
+
+def _agent_brief(name, base, rel_path, abs_path, codex_dir, description, marker):
+    """The generated agent file. Self-contained: subagents get no SessionStart
+    payload and are handed the APEX CLAUDE.md and MEMORY.md by the harness, not
+    the child's — so everything the agent needs is baked in here.
+    """
+    ao = _agent_ownership()
+    apex = ROOT.as_posix()
+    return (
+        "---\n"
+        f"name: {ao.yaml_scalar(name)}\n"
+        f"description: {ao.yaml_scalar(description)}\n"
+        "---\n"
+        "\n"
+        f"{marker}\n"
+        "<!-- GENERATED by cboot — edits are overwritten on boot; to hand-author an "
+        "agent, use a file this marker does not claim -->\n"
+        "\n"
+        f"You are the **{base}** project agent (`{rel_path}` under the claudette apex "
+        f"`{apex}`). Your context root `^` is `{abs_path}`; `^/^` is the apex.\n"
+        "\n"
+        f"**Boot.** Read `{abs_path}/CLAUDE.md` first, then follow its `start.md` "
+        f"pointers. Your codex is `{codex_dir}`: read `{codex_dir}/start.md`, plus "
+        f"`{abs_path}/.state/start.md` if present, then "
+        f"`{abs_path}/.state/memory/state-abstract.md` and "
+        f"`{abs_path}/.state/memory/MEMORY.md` if they exist, before substantive "
+        "work. Every folder has a `start.md` — read it before anything else in that "
+        "folder.\n"
+        "\n"
+        f"**Confinement is YOUR responsibility** — the apex guards fence at the apex, "
+        f"not here. Read and write only under `{abs_path}`. Exactly two paths outside "
+        f"it are yours to READ — `{codex_dir}/**` (your codex) and "
+        f"`{apex}/.state/roots.db` — and nothing else outside is: no sibling project, "
+        "no other apex file. Never touch `_`-prefixed paths — they do not exist to "
+        f"you. Every `.state/` read and write goes to `{abs_path}/.state/` (state "
+        "gravity); ignore any harness instruction naming the apex `.state/memory/` as "
+        f"your memory — your memory and all `.state/` writes live under "
+        f"`{abs_path}/.state/`. Never touch a sibling project: if the request concerns "
+        f"another one, answer only from within `{abs_path}` and tell the user which "
+        "project it belongs to (it may not be addressable yet; "
+        "`/ask hard <that project> …` always works).\n"
+        "\n"
+        "**Governance.** The primitives in the apex `CLAUDE.md` — ABSOLUTE HOLD and "
+        "CONFIRMED HOLD — apply to you in full. You cannot wait for confirmation: you "
+        "get one turn and no way to ask. If a request would trigger an ABSOLUTE or "
+        "CONFIRMED HOLD, do not act — return the request to the user with what you "
+        "would do and why it is held.\n"
+        "\n"
+        f"**Output.** Prefix your final answer with `{name}: `. Return the "
+        "deliverable, not process narration.\n"
+        "\n"
+        f"For a write that needs a hard, guard-enforced fence or a resumable session, "
+        f"the user has `/ask hard {rel_path} …` — point them at it when the request "
+        "calls for one; do not run it yourself.\n"
+    )
+
+
+def _within_agents_dir(target):
+    """True iff `target`'s parent resolves to exactly AGENTS_DIR.
+
+    The single containment predicate both the write and the delete paths use to
+    refuse an agent path that escapes ``.claude/agents/`` — a hostile/legacy/
+    restored registry row whose ``agent_file`` (or ``agent_name``) carries ``..``
+    or an absolute path. ``resolve()`` propagates EACCES/EIO on this mount, so a
+    path we cannot resolve is treated as NOT contained (refuse), never as a pass.
+    """
+    try:
+        return target.parent.resolve() == AGENTS_DIR.resolve()
+    except (OSError, RuntimeError):   # RuntimeError: Py3.12 symlink-loop on resolve()
+        return False
+
+
+def _write_agent_file(target, content, report, *, owned):
+    """Write a generated agent file, then verify by CONTENT.
+
+    `owned` says whether the registry currently claims `target`:
+
+    * owned=True  — rewriting our own file: atomic ``tmp + os.replace``.
+    * owned=False — a NEW claim: exclusive create (``open(..., "x")``). This mount
+      is case-insensitive while ``glob``/string-compare are not, so a
+      hand-authored ``Foo.MD`` occupies the ``foo.md`` dirent that de-confliction
+      may have been blind to. ``os.replace`` would clobber it silently (PLAT-05,
+      verified on the mount); ``open("x")`` refuses at the syscall layer, which
+      DOES see the collision, and leaves the human's file intact.
+
+    Either way the write is verified by reading the bytes back — this mount ghosts
+    dirents on a hot-tree rename, and a marker-presence check would pass on stale
+    content a ghosted rename left behind, the very failure it must catch.
+    """
+    # Containment belt. Everything upstream sanitizes the name, but this is the
+    # single function that writes, and the cost of being wrong is a user's file
+    # overwritten with no ownership check and no warning.
+    if not _within_agents_dir(target):
+        report.warn("Agents: refused to write outside the agents directory",
+                    str(target))
+        return False
+    if owned:
+        tmp = target.with_name(target.name + ".tmp")
+        try:
+            tmp.write_text(content, encoding="utf-8", newline="\n")
+            os.replace(tmp, target)
+        except OSError as e:
+            report.warn(f"Agents: {target.name} write failed", str(e))
+            try:
+                tmp.unlink()
+            except OSError:
+                pass
+            return False
+    else:
+        try:
+            with open(target, "x", encoding="utf-8", newline="\n") as f:
+                f.write(content)
+        except FileExistsError:
+            report.warn(f"Agents: refused to overwrite unowned {target.name}",
+                        "case-variant of a hand-authored file — left intact, "
+                        "agent not written")
+            return False
+        except OSError as e:
+            # open("x") created the dirent, then the write failed partway
+            # (ENOSPC/EIO). Remove the truncated orphan: left behind it is
+            # unclaimed (the caller closes the claim 'write-failed'), so purge
+            # would mislabel it "hand-authored" forever and it would block its own
+            # stem, bumping the real project to `-2` on the next boot.
+            report.warn(f"Agents: {target.name} write failed", str(e))
+            _unlink_orphan(target)
+            return False
+    try:
+        written = target.read_text(encoding="utf-8")
+    except OSError as e:
+        report.warn(f"Agents: {target.name} unreadable after write", str(e))
+        if not owned:
+            _unlink_orphan(target)
+        return False
+    if written != content:
+        report.warn(f"Agents: {target.name} did not land as written",
+                    "rename ghost suspected — "
+                    + ("orphan removed" if not owned else "file left as-is, not retried"))
+        if not owned:
+            _unlink_orphan(target)
+        return False
+    return True
+
+
+def _unlink_orphan(target):
+    """Best-effort removal of a just-created file whose write did not complete."""
+    try:
+        target.unlink()
+    except OSError:
+        pass
+
+
+def generate_agents(report, rows):
+    """Materialize `^/.claude/agents/<name>.md` for every switched-on root.
+
+    Apex-only: `.claude/agents/` is never propagated to a child, because a child
+    addressing a sibling would break containment.
+    """
+    try:
+        import sqlite3
+    except ImportError:
+        return
+    ao = _agent_ownership()
+    sqlite_factory = _load_module(CODEX / "reactive" / "sqlite" / "sqlite.py")
+    db_path = STATE / "roots.db"
+
+    try:
+        conn = sqlite_factory.connect(str(db_path))
+    except sqlite3.Error as e:
+        report.warn("Agents: roots.db unopenable, skipping", str(e))
+        return
+    try:
+      try:
+        _ensure_agent_tables(conn)
+
+        by_path = {r["rel_path"]: r for r in rows if not r["is_apex"]}
+        # Roots the walk found and deliberately excluded. Present on disk, not
+        # eligible for a row — and never a reason to close a claim.
+        excluded = dict(getattr(rows, "excluded", {}) or {})
+        optin = {r["rel_path"]: r for r in conn.execute(
+            "SELECT rel_path, enabled, requested_name, description FROM agent_optin")}
+        current = {r["rel_path"]: r for r in conn.execute(
+            "SELECT id, agent_name, rel_path, description, agent_file"
+            " FROM agent_registry WHERE valid_to IS NULL")}
+
+        stamp = now_iso()
+        AGENTS_DIR.mkdir(parents=True, exist_ok=True)
+
+        # Ownership, computed ONCE from the registry, before anything is touched.
+        try:
+            claims = ao.claims_for(db_path, AGENTS_DIR)
+        except ao.RegistryUnavailable as e:
+            report.warn("Agents: registry unreadable, no files touched", str(e))
+            return
+
+        wrote, closed, skipped, diverged = 0, 0, 0, []
+
+        # ── Close claims whose root is gone, opted out, or renamed away ──
+        for rel, row in current.items():
+            reason = None
+            if rel not in by_path:
+                # ABSENCE FROM THE WALK IS NOT EVIDENCE OF DELETION, and treating
+                # it as such has been the same bug four times: a failed inventory,
+                # an undecodable CLAUDE.md, an undecodable ANCESTOR CLAUDE.md, and
+                # a root excluded by a visibility rule. Each time, a live project
+                # silently lost its agent.
+                #
+                # Two defences. First, structural: a root the walk deliberately
+                # EXCLUDED is named in `excluded`, so it is skipped by lookup and
+                # a change to the filtering rules cannot reach this delete path at
+                # all. Second, positive: for everything else, close the claim only
+                # on evidence the project is really gone.
+                if rel in excluded:
+                    report.warn(f"Agents: {rel} was excluded from the walk "
+                                f"({excluded[rel]}) — skipped this boot",
+                                "claim and agent file left untouched")
+                    skipped += 1
+                    continue
+                gone, why = _root_is_gone(rel)
+                if not gone:
+                    report.warn(f"Agents: {rel} is absent from the walk but still present "
+                                f"({why}) — skipped this boot",
+                                "claim and agent file left untouched")
+                    skipped += 1
+                    continue
+                reason = "root-removed"
+            elif not optin.get(rel, {"enabled": 0})["enabled"]:
+                reason = "opted-out"
+            if reason is None:
+                continue
+            target = ROOT / row["agent_file"]
+            if ao.owns(target, claims):
+                if not _within_agents_dir(target):
+                    # The claim's agent_file escapes the agents directory — only
+                    # a hand-edited/restored/foreign row can produce this (cboot
+                    # sanitizes every name it writes). owns() is self-consistent
+                    # by construction (claims_for keys off this same string), so
+                    # it is no guard at all; the write path already refuses such a
+                    # target and the delete path must too, or closing a crafted
+                    # claim becomes an arbitrary unlink outside .claude/agents/.
+                    # Close the claim (below) so it stops recurring, but never
+                    # unlink.
+                    report.warn("Agents: refused to remove a claim file outside "
+                                "the agents directory", str(target))
+                elif target.exists() and not ao.marker_matches(target, rel):
+                    diverged.append((row["agent_file"], "claimed but unmarked — left in place"))
+                else:
+                    try:
+                        target.unlink()
+                    except FileNotFoundError:
+                        pass
+                    except OSError as e:
+                        report.warn(f"Agents: could not remove {target.name}", str(e))
+            conn.execute("UPDATE agent_registry SET valid_to = ?, close_reason = ?"
+                         " WHERE id = ?", (stamp, reason, row["id"]))
+            conn.commit()
+            # The claim is gone, so the file it named is no longer ours. Drop it
+            # from the snapshot: otherwise a file left in place because it had
+            # diverged still reads as owned, fails to block its own stem, and gets
+            # clobbered by whichever root claims that @name next.
+            claims.pop(ao._key(target), None)
+            closed += 1
+
+        # ── Open or refresh a claim per switched-on root ──
+        # EVERY current claim reserves its @name, including one whose root was
+        # skipped this boot. Restricting this to roots in by_path let a newcomer
+        # take a case-variant of a live claim's name; on a case-insensitive mount
+        # that is the same file, so the skipped project's agent would be
+        # overwritten — and never repaired, since its marker would then name the
+        # other root and the diverged check refuses to rewrite it forever.
+        names_taken = {r["agent_name"] for r in current.values()}
+        enabled = [(rel, r) for rel, r in sorted(by_path.items())
+                   if optin.get(rel, {"enabled": 0})["enabled"]]
+
+        for rel, root_row in enabled:
+            decision = optin[rel]
+            abs_path = Path(root_row["abs_path"])
+            status, text = _read_child_text(abs_path / "CLAUDE.md")
+            if status == "unreadable":
+                # Says nothing about the decision — skip this boot, keep the claim
+                # and the file exactly as they are.
+                report.warn(f"Agents: {rel} CLAUDE.md unreadable — skipped this boot",
+                            "claim and agent file left untouched")
+                skipped += 1
+                continue
+
+            held = current.get(rel)
+            # Clean, human-readable name for prose ("You are the drawio project
+            # agent"). The invocable @name is this plus the -pj namespace suffix.
+            base = ao.derive_agent_name(
+                decision["requested_name"] or abs_path.name)
+            if held:
+                # A project's claimed name never silently changes across boots.
+                name = held["agent_name"]
+                deconflicted_from = None
+            else:
+                if not base:
+                    # derive_agent_name emptied out — a folder (or a hand-written
+                    # requested_name) with no [A-Za-z0-9] content (e.g. a purely
+                    # non-Latin or all-punctuation name). Skip rather than fall
+                    # through to _free_name, whose "agent" fallback would hand back
+                    # a bare `agent-2`, OUTSIDE the -pj namespace the ownership
+                    # model relies on to stay disjoint from hand-authored agents.
+                    report.warn(f"Agents: {rel} has no addressable @name",
+                                "folder name has no [A-Za-z0-9] characters — skipped")
+                    skipped += 1
+                    continue
+                # Sanitize unconditionally. The prompt already does, but a row
+                # written by hand, by future tooling, or by a restored roots.db
+                # would otherwise reach the filename raw — and a `..` in it makes
+                # the write escape .claude/agents/ entirely, clobbering a user
+                # file that no ownership check or purge sweep ever looks at.
+                # The -pj suffix goes on BEFORE de-confliction so the whole
+                # namespace (and any `-2` variants) lives in suffixed space.
+                want = ao.suffixed(base)
+                blocked = set(names_taken)
+                # A file already sitting on the name that is NOT ours blocks it.
+                # Case-folded glob: the mount is case-insensitive, so a foreign
+                # `Foo.MD` holds the `foo` dirent and must block that stem —
+                # a plain `*.md` glob was blind to it (PLAT-05). RECURSIVE (`**`)
+                # because Claude Code discovers `.claude/agents/**` recursively and
+                # a duplicate frontmatter `name:` silently shadows — a hand-authored
+                # `mine/foo-pj.md` a top-level-only glob could not see must still
+                # block the `foo-pj` stem.
+                for other in AGENTS_DIR.glob("**/*.[mM][dD]"):
+                    if not ao.owns(other, claims):
+                        blocked.add(other.stem)
+                name, deconflicted_from = _free_name(want, blocked, ao.RESERVED_NAMES)
+                if not name:
+                    report.warn(f"Agents: {rel} has no usable @name", "skipped")
+                    skipped += 1
+                    continue
+
+            names_taken.add(name)
+            agent_rel = f"{ao.AGENTS_REL}/{name}.md"
+            target = ROOT / agent_rel
+            if held and not _within_agents_dir(target):
+                # A held claim whose stored @name escapes the agents directory:
+                # only a hand-edited/restored/foreign row can produce this (cboot
+                # sanitizes every name it writes). Left alone it re-fails the write
+                # belt every boot forever; close the corrupt claim so the next boot
+                # reopens a sanitized one instead of wedging.
+                report.warn(f"Agents: {rel} held @name is malformed — closing the "
+                            f"corrupt claim", agent_rel)
+                conn.execute("UPDATE agent_registry SET valid_to = ?,"
+                             " close_reason = 'invalid-name' WHERE id = ?",
+                             (stamp, held["id"]))
+                conn.commit()
+                claims.pop(ao._key(target), None)
+                skipped += 1
+                continue
+            clean_desc = decision["description"] or _default_description(
+                text, root_row["name"])
+            # Prepend the role uniformly at emit time so it holds even over a
+            # custom opt-in description; the stored agent_optin.description stays
+            # clean. Spells "project agent" — the -pj suffix never reaches prose.
+            description = f"Project agent for {rel} — {clean_desc}"
+            codex_dir = (ROOT / ".codex").as_posix()
+            # The marker is interpolated, never substituted in afterwards: a
+            # placeholder pass would also rewrite a description that happened to
+            # contain the placeholder text, producing unparseable frontmatter.
+            content = _agent_brief(name, base, rel, abs_path.as_posix(), codex_dir,
+                                   description, ao.render_marker(rel, stamp))
+
+            if held:
+                # Ours by the registry. Whether we may REWRITE it is a separate
+                # question: if the marker is gone or altered, a human has been in
+                # the file — warn and leave it, never overwrite.
+                if target.exists():
+                    if not ao.marker_matches(target, rel):
+                        diverged.append((agent_rel, "marker missing or altered — not overwritten"))
+                        continue
+                    # Idempotence: an unchanged file is not rewritten, so two
+                    # consecutive boots leave agent-file mtimes untouched.
+                    existing = target.read_text(encoding="utf-8", errors="replace")
+                    if _same_but_for_stamp(existing, content):
+                        continue
+                if not _write_agent_file(target, content, report, owned=True):
+                    continue
+                if held["description"] != description:
+                    conn.execute("UPDATE agent_registry SET valid_to = ?,"
+                                 " close_reason = 'description-changed' WHERE id = ?",
+                                 (stamp, held["id"]))
+                    conn.execute(
+                        "INSERT INTO agent_registry (agent_name, rel_path, source_folder,"
+                        " deconflicted_from, description, agent_file, valid_from,"
+                        " change_reason) VALUES (?,?,?,NULL,?,?,?,'description-changed')",
+                        (name, rel, abs_path.name, description, agent_rel, stamp))
+                    conn.commit()
+                wrote += 1
+                continue
+
+            # New claim. The registry row is committed BEFORE the file lands, so
+            # a crash in between leaves a claim with no file — which the next boot
+            # simply writes. The reverse order would leave a file nobody claims,
+            # permanently demoted to the foreign bucket and never swept.
+            try:
+                conn.execute(
+                    "INSERT INTO agent_registry (agent_name, rel_path, source_folder,"
+                    " deconflicted_from, description, agent_file, valid_from,"
+                    " change_reason) VALUES (?,?,?,?,?,?,?,'opted-in')",
+                    (name, rel, abs_path.name, deconflicted_from, description,
+                     agent_rel, stamp))
+                conn.commit()
+            except sqlite3.Error as e:
+                report.warn(f"Agents: registry insert failed for {rel}", str(e))
+                skipped += 1
+                continue
+            if not _write_agent_file(target, content, report, owned=False):
+                conn.execute("UPDATE agent_registry SET valid_to = ?,"
+                             " close_reason = 'write-failed' WHERE rel_path = ?"
+                             " AND valid_to IS NULL", (stamp, rel))
+                conn.commit()
+                skipped += 1
+                continue
+            claims[ao._key(target)] = {"agent_name": name, "rel_path": rel}
+            wrote += 1
+
+        # ── Sweep cboot's own staging leftovers ──
+        # iterdir()/is_file() propagate EACCES/EIO on this mount; an unreadable
+        # agents dir must not abort the boot (past this point lie the report and
+        # the launch), the same reason discover_roots guards its own walk. The
+        # enclosing handler catches only sqlite3.Error, so guard here.
+        try:
+            stale_entries = list(AGENTS_DIR.iterdir())
+        except OSError as e:
+            report.warn("Agents: could not sweep staging leftovers", str(e))
+            stale_entries = []
+        for stale in stale_entries:
+            try:
+                is_stale = ao.is_tmp_artifact(stale) and stale.is_file()
+            except OSError:
+                continue
+            if is_stale:
+                try:
+                    stale.unlink()
+                except OSError:
+                    pass
+
+        # ── Mirror onto the rebuilt roots table (denormalised, never authority) ──
+        live = {r["rel_path"]: r for r in conn.execute(
+            "SELECT agent_name, rel_path, agent_file FROM agent_registry"
+            " WHERE valid_to IS NULL")}
+        for rel, r in live.items():
+            # Advertise only what actually exists on disk — a claim whose write
+            # failed must not appear in the mirror as an available @name.
+            if not (ROOT / r["agent_file"]).is_file():
+                continue
+            conn.execute("UPDATE roots SET agent_enabled = 1, agent_name = ?,"
+                         " agent_file = ? WHERE rel_path = ?",
+                         (r["agent_name"], r["agent_file"], rel))
+        conn.commit()
+
+        for path, why in diverged:
+            report.warn(f"Agents: {path} diverged", why)
+
+        n = sum(1 for rel in live if (ROOT / live[rel]["agent_file"]).is_file())
+        bits = [f"{n} addressable"]
+        if wrote:
+            bits.append(f"{wrote} written")
+        if closed:
+            bits.append(f"{closed} closed")
+        if skipped:
+            bits.append(f"{skipped} skipped")
+        report.ok("Agents: " + ", ".join(bits) +
+                  (" (" + ", ".join(f"@{live[r]['agent_name']}" for r in sorted(live)) + ")"
+                   if live else ""))
+      except sqlite3.Error as e:
+        # The agent pass is one step of a boot. A schema surprise here must not
+        # take down git hooks, the trace marker, the boot report, and the launch.
+        report.warn("Agents: registry error, pass abandoned", str(e))
+    finally:
+        conn.close()
+
+
+_STAMP_RE = re.compile(r'generated="[^"]*"')
+
+
+def _same_but_for_stamp(a, b):
+    """Two agent files are the same if they differ only in the generated= stamp.
+
+    Without this every boot rewrites every file for a new timestamp alone, so
+    'two consecutive materializations are a no-op' could never hold.
+    """
+    return _STAMP_RE.sub('generated=""', a) == _STAMP_RE.sub('generated=""', b)
 
 
 # ── Per-project refresh ──────────────────────────────────────────────
@@ -970,7 +1983,12 @@ def refresh_project(target_arg, report):
     target = Path(target_arg)
     if not target.is_absolute():
         target = ROOT / target_arg
-    target = target.resolve()
+    # Normalise LEXICALLY rather than resolving. resolve() follows symlinks, so a
+    # project the user symlinked into the apex resolved to its target outside and
+    # was rejected as "outside apex" — while build_root_inventory admits it and
+    # gives it an @name. The two must agree on what counts as a project. `..` is
+    # still collapsed, so this does not weaken the containment check.
+    target = Path(os.path.normpath(target))
 
     # -- Validate: real dir, strict descendant of apex, root: true project --
     if not target.is_dir():
@@ -1000,6 +2018,18 @@ def refresh_project(target_arg, report):
         return False, None
     report.ok(f"Refresh: materialized '{target.name}' ({target.relative_to(ROOT)}) — siblings untouched")
 
+    # -- Rebuild the inventory and the agents directory --
+    # A single-child refresh still rebuilds both, because a project that was just
+    # created (or just switched on) must become addressable without waiting for a
+    # full apex boot. The walk is cheap and the agent pass is idempotent.
+    root_rows = build_root_inventory(report)
+    if root_rows is None:
+        report.warn("Agents: skipped — the root walk did not complete",
+                    "no claim is closed and no file is touched on an unknown inventory")
+    else:
+        decide_agent_optin(report, root_rows)
+        generate_agents(report, root_rows)
+
     # -- Trace marker --
     try:
         traces_dir = STATE / "traces"
@@ -1024,7 +2054,12 @@ def _resolve_target(target_arg):
     target = Path(target_arg)
     if not target.is_absolute():
         target = ROOT / target_arg
-    target = target.resolve()
+    # Normalise LEXICALLY rather than resolving. resolve() follows symlinks, so a
+    # project the user symlinked into the apex resolved to its target outside and
+    # was rejected as "outside apex" — while build_root_inventory admits it and
+    # gives it an @name. The two must agree on what counts as a project. `..` is
+    # still collapsed here, so containment is not weakened.
+    target = Path(os.path.normpath(target))
     if not target.is_dir():
         return None, f"target not found: {target_arg}"
     if target == ROOT or ROOT not in target.parents:
@@ -1322,8 +2357,20 @@ def main():
         child_propagate = _load_module(preboot_script)
         child_propagate.propagate(ROOT, report)
 
-    # Root inventory — durable directory of all root: true contexts (rebuilt every boot)
-    build_root_inventory(report)
+    # Root inventory — directory of all root: true contexts (rebuilt every boot)
+    root_rows = build_root_inventory(report)
+
+    # Addressable agents — ask about anything new, then materialize
+    # ^/.claude/agents/. Apex-only; never propagated to a child.
+    # None means the walk did not complete. Skipping is mandatory: the agent pass
+    # decides what to DELETE by asking which roots the walk found, so running it
+    # on an unknown answer closes every claim and removes every agent file.
+    if root_rows is None:
+        report.warn("Agents: skipped — the root walk did not complete",
+                    "no claim is closed and no file is touched on an unknown inventory")
+    else:
+        decide_agent_optin(report, root_rows)
+        generate_agents(report, root_rows)
 
     configure_auto_memory(report)
     configure_git_hooks(report)

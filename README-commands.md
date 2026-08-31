@@ -167,7 +167,8 @@ purge all          # nuclear reset: transcripts, memory, work, .tmp/ (requires c
 
 **Default scope** (bare `purge`) removes:
 - `.claude/` session files (`.jsonl`, `.md`) -- preserves `settings*.json`
-- `.claude/skills/` and `.claude/agents/` (regenerated at next boot)
+- `.claude/skills/` (regenerated at next boot)
+- `.claude/agents/` — **only the files cboot currently claims** in `.state/roots.db`. Hand-authored agents are preserved, as is a claimed file a human has edited. If the registry is unreadable the whole directory is preserved.
 - `.state/prefs-resolved.json` (regenerated at next boot)
 - `.state/tests/` transient outputs (not audits, not boot reports)
 - **keep-recent**, pruned to the newest 5: `.state/traces/` and `.state/tests/boot/`

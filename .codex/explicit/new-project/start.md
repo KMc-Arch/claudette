@@ -41,10 +41,13 @@ Folder structure (see `.codex/specs/child-project.md` for contents):
 ```
 <folder>/
     CLAUDE.md                   # root: true, name: <name>, codex: ^/^/.codex
+    ~inbox/, ~outbox/           # Exchange Surfaces mailboxes (each with a start.md)
     .state/
         start.md, prefs.json
         memory/, work/, tests/, traces/
 ```
+
+Every child is scaffolded with `~inbox/` and `~outbox/` per the apex **Exchange Surfaces** rule (boot-core `CLAUDE.md`): inbound drops addressed to the project, and outbound handoffs to other actors. They ship as part of `^/^/.templates/child/`, so no bespoke step creates them.
 
 ## Execution
 
