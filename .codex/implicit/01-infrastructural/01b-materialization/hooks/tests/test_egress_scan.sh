@@ -105,6 +105,27 @@ d=$(new); ln -s "$d/outside" "$d/root/escape"
 CLAUDE_PROJECT_DIR="$d/root" bash "$SCAN" >/dev/null 2>&1
 ok "ROOT defaults to \$CLAUDE_PROJECT_DIR" $? 1; rm -rf "$d"
 
+# E14 — sibling-PREFIX egress target: /.../rootX must NOT be read as inside /.../root.
+#       Mutation-proofs the escape check against a `case "$real" in "$ROOT"*)` refactor,
+#       which the "outside"-named fixtures above cannot catch (they share no prefix).
+d=$(new); mkdir -p "$d/rootX"; ln -s "$d/rootX" "$d/root/pfx"
+cap=$(CLAUDE_PROJECT_DIR="" bash "$SCAN" "$d/root" 2>&1 >/dev/null); rc=$?
+ok  "sibling-prefix target (rootX) -> found, not read as inside" "$rc" 1
+oks "sibling-prefix egress names rootX" "$cap" "$d/rootX"; rm -rf "$d"
+
+# E15 — ROOT under _-prefixed ANCESTORS is still swept (#3): a _-ancestor of ROOT
+#       must NOT fail the whole tree open. Mirrors /_foo/_bar/apex/project.
+d=$(new); mkdir -p "$d/_foo/_bar/apex" "$d/target"
+ln -s "$d/target" "$d/_foo/_bar/apex/escape"
+CLAUDE_PROJECT_DIR="" bash "$SCAN" "$d/_foo/_bar/apex" >/dev/null 2>&1
+ok "egress under ROOT with _-prefixed ancestors -> found" $? 1; rm -rf "$d"
+
+# E16 — a _-prefixed component INSIDE ROOT is still skipped (the relative skip works)
+d=$(new); mkdir -p "$d/root/_hidden" "$d/target2"
+ln -s "$d/target2" "$d/root/_hidden/escape"
+CLAUDE_PROJECT_DIR="" bash "$SCAN" "$d/root" >/dev/null 2>&1
+ok "_-prefixed dir INSIDE ROOT -> skipped (allow)" $? 0; rm -rf "$d"
+
 echo "-------------------------------------------"
 if [ "$FAIL" -eq 0 ]; then echo "PASS=$PASS FAIL=0"; echo "ALL PASS"; exit 0
 else echo "PASS=$PASS FAIL=$FAIL"; echo "SOME FAILED"; exit 1; fi

@@ -22,4 +22,4 @@ completeness check (test-safe T14) only ever sees real hooks directly in
   It has **no allowlist**, so a boot-time sweep would flag every accepted egress
   link (a client-data mount, `.tmp` shims) on each run. Wiring it at boot is
   therefore deferred hardening (BL-62 [R4-5]) that first needs a `.tmp` skip plus
-  an accepted-egress allowlist; today it is on-demand / heartbeat-run only.
+  an accepted-egress allowlist; today it is on-demand only.

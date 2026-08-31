@@ -16,7 +16,7 @@ YYYYMMDD-HHMM/
     summary.md      # convergence verdict (CLEAN, or the open escalations)
     <coda>.md       # coda / verification registers as a run produces them
     sb/             # (optional) disposable full-tree clone staged for isolated
-                    # testing — gitignored (see ^/.state/.gitignore)
+                    # testing — gitignored by the blanket `*` in ^/.state/.gitignore
 ```
 
 Run subdirectories (`YYYYMMDD-HHMM/`) are report data and are **not** required to

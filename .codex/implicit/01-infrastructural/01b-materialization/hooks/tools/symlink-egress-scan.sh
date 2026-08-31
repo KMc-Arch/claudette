@@ -42,7 +42,13 @@ ROOT=$("$PY" -c 'import os,sys; sys.stdout.write(os.path.realpath(sys.argv[1]))'
 # the .git internals (git's own refs/objects never symlink outside the tree).
 FOUND=0
 while IFS= read -r -d '' link; do
-    case "$link" in
+    # Skip _-prefixed and .git paths RELATIVE TO ROOT. Matching the absolute
+    # $link would fail OPEN when a _-prefixed ANCESTOR of ROOT exists (e.g.
+    # ROOT=/_foo/_bar/apex) — every link path would contain "/_" and the whole
+    # sweep would skip. Strip ROOT first: only _-components AT or BELOW ROOT are
+    # invisible-by-convention.
+    rel=${link#"$ROOT"/}
+    case "/$rel" in
         */_*|*/.git/*) continue ;;
     esac
     # Real destination of the link. A dangling link realpaths to its lexical target,
