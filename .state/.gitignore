@@ -15,13 +15,30 @@
 # Ignore everything
 *
 
-# Keep directory tree
+# Keep the directory tree walkable, so the negations below can reach their files
 !*/
 
-# Keep manifests and this gitignore
-!start.md
-!.gitignore
-
-# mileqa run sandboxes are disposable full-tree clones for isolated testing —
-# their start.md copies are scratch, not manifests; re-exclude after the blanket keep above
+# ── Manifests, ANCHORED ──
+# A leading slash anchors a pattern to this directory. That matters: an
+# UNANCHORED `!start.md` matches at ANY depth, and both mileqa and audit runs
+# stage a full copy of the codex tree under tests/<run>/ — each copy carrying
+# ~30 start.md files of its own. Every one of them was being un-ignored, so
+# `git add .state` would have committed a duplicate codex.
+#
+# Excluding the output directories instead (`tests/*/` with a `!tests/audits/`
+# hole) does not hold: re-including that directory puts everything beneath it
+# back under the unanchored rule, and an audit run writes its own
+# `YYYYMMDD-HHMM/codex-snapshot/` inside it. Anchoring the manifests is the
+# rule that cannot be re-opened by adding a directory.
+#
+# Adding a manifest deeper than TWO levels needs its own anchored line here.
+!/.gitignore
+!/start.md
+!/*/start.md
+# tests/ has manifests one level deeper (tests/audits/, tests/mileqa/ are both
+# tracked on main); `!/tests/*/start.md` re-includes them at exactly that depth
+# without re-opening the sandbox trees, which live deeper (tests/mileqa/<run>/…).
+!/tests/*/start.md
+# Belt-and-suspenders (from main): the anchored rule above already excludes deep
+# sandbox start.md copies by depth; this names the mileqa sandbox trees explicitly.
 tests/mileqa/*/sb/

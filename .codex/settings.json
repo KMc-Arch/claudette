@@ -4,7 +4,8 @@
   "effortLevel": "xhigh",
   "skipAutoPermissionPrompt": true,
   "env": {
-    "CLAUDE_CODE_NO_FLICKER": "1"
+    "CLAUDE_CODE_NO_FLICKER": "1",
+    "CLAUDE_CODE_ALT_SCREEN_FULL_REPAINT": "1"
   },
   "permissions": {
     "allow": [
@@ -28,7 +29,10 @@
       "Bash(git remote remove:*)",
       "Bash(gh issue:*)",
       "Bash(gh api:*)",
-      "Bash(gh release:*)"
+      "Bash(gh release:*)",
+      "Bash(ln:*)",
+      "Bash(cp -s:*)",
+      "Bash(cp --symbolic-link:*)"
     ]
   },
   "modules": {

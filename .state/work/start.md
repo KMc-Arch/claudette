@@ -17,8 +17,9 @@ Work tracking captures all mutable project state — distinct from memory (knowl
 | `architecture.md` | Design debt, structural weaknesses |
 | `boundaries.md` | Defense-layer gaps, observed failures |
 | `enhancements.md` | Good ideas not yet implemented |
-| `codex-analysis-20260801-reconciled.md` | Reconciled 2026-08-01 codex redundancy/consolidation analysis |
-| `requirements-inventory.md` | Reverse-engineered requirements inventory for modularization |
+| `requirements-inventory.md` | Durable A–J requirements map for the modularization analysis (BL-05) |
+| `codex-analysis-20260801-reconciled.md` | Reconciled codex architecture analysis (2026-08-01) |
+| `spec-cross-project-orchestration.md` | Cross-project orchestration spec (BL-34) |
 
 ---
 

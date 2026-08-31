@@ -60,13 +60,24 @@ five_h_pct=$(echo "$input" | jq -r '.rate_limits.five_hour.used_percentage // em
 five_h_resets=$(echo "$input" | jq -r '.rate_limits.five_hour.resets_at // empty')
 
 # --- Location: 🏠 launch dir, 📁 path relative to it ---
-# 📁 is ^-relative, where ^ is the session's own root (workspace.project_dir) —
-# the same anchor gravity-guard.sh and boot-inject.py resolve ^ to. Neither the
-# ^ nor ^/^ literal is printed; real folder names are.
+# Both anchor on workspace.project_dir, the raw launch directory. That is NOT
+# where the guards resolve ^ any more: since BL-35 containment-guard.sh and
+# gravity-guard.sh walk UP from $CLAUDE_PROJECT_DIR to the nearest declared
+# root, so when the session is launched below a root their ceiling sits above
+# what this bar prints. (boot-inject.py still uses the raw launch dir — BL-38.)
+# Neither the ^ nor ^/^ literal is printed; real folder names are.
 #
-# The nearest root: true ancestor is still resolved, but it colours 🏠 rather
-# than moving the path. Crossing into a child project is worth flagging; it is
-# not worth silently re-anchoring 📁 onto a root the guards don't share.
+# The nearest root: true ancestor IS resolved here, but it only colours 🏠 —
+# re-anchoring 📁 on it would render "demo" for zMisc/demo and hide the
+# traversal. Colour carries the same fact without that cost.
+#
+# This detector is deliberately STRICTER (narrower) than the guards' and the
+# frontmatter.md grammar — bare lowercase `root: true` only, no BOM, quotes,
+# `True`/`yes`, or trailing comment. That is the opposite of what a FENCE may do
+# (a fence must be at least as permissive as the grammar, or it walks past a real
+# root to a looser ceiling). It is allowed here because this is a display HINT,
+# not a fence: under-recognising a root only mis-tints an emoji. frontmatter.md's
+# permissive-not-strict rule is explicitly scoped to enforcement contexts.
 _is_root() {
     [[ -f "$1" ]] || return 1
     # Frontmatter only: first --- fence to the next. A body mention doesn't count.
@@ -80,7 +91,11 @@ _is_root() {
 _nearest_root() {
     local d="$1" p
     [[ -n "$d" ]] || return 1
-    for ((i=0; i<12; i++)); do
+    # Terminate on dirname reaching a fixed point, matching the guards and the
+    # spec (frontmatter.md walks to the filesystem root). The old 12-level cap
+    # silently reported "no root" past that depth, so the tint stopped flagging
+    # a crossed child-project boundary.
+    while :; do
         _is_root "$d/CLAUDE.md" && { echo "$d"; return 0; }
         p=$(dirname "$d")
         [[ "$p" == "$d" ]] && break
@@ -143,8 +158,14 @@ if [[ -n "$cwd" ]]; then
     nearest=$(_nearest_root "$cwd")
 
     if [[ "$cwd" == "$launch_dir" ]]; then
-        launch_label="🏠${launch_name}"
         dir="$launch_name"
+        if [[ -n "$nearest" && "$nearest" != "$launch_dir" ]]; then
+            # Launched BELOW a root: the guards' ceiling sits above 🏠, and no
+            # field names it — so tint 🏠 to flag that ^ is not the launch dir.
+            launch_label="${C_CAUTION}🏠${launch_name}${C_GRAY}"
+        else
+            launch_label="🏠${launch_name}"
+        fi
     elif [[ "$cwd" == "$launch_dir"/* ]]; then
         dir=$(_elide "${cwd#"$launch_dir"/}")
         if [[ -n "$nearest" && "$nearest" != "$launch_dir" ]]; then

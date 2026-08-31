@@ -248,19 +248,27 @@ def test_containment_allows_relative_inside(t: HookTestRunner):
     t.assert_exit("CG04", "Allows relative path (resolves inside ^)", code, 0, err)
 
 @register_test("containment-guard.sh")
-def test_containment_blocks_symlink_escape(t: HookTestRunner):
-    # A symlink inside the root pointing OUT must not be a write-escape hatch.
-    # Requires symlink-resolving normalization (realpath -m, not -ms).
+def test_containment_allows_symlink_extension(t: HookTestRunner):
+    # AS-REFERENCED model: a symlink inside ^ pointing OUT is an AUTHORISED
+    # extension of the project (a human placed it; the ABSOLUTE HOLD keeps symlink
+    # construction human-only), so a write through it is ALLOWED. Egress is
+    # delegated to environment isolation (BL-61) + symlink-egress-scan.sh, NOT the
+    # guard. The guard never calls realpath — see 01a-resolution/frontmatter.md.
     import tempfile, shutil
     sandbox = Path(tempfile.mkdtemp(prefix="cg-sym-")).resolve()
     outside = Path(tempfile.mkdtemp(prefix="cg-out-")).resolve()
     try:
         link = sandbox / "escape"
         os.symlink(outside, link)
-        target = str(link / "evil.txt")  # lexically under sandbox, physically in outside
+        target = str(link / "evil.txt")  # referenced under sandbox -> allowed
         code, out, err = t.run_hook("containment-guard.sh", write_tool(target),
                                     env_overrides={"CLAUDE_PROJECT_DIR": str(sandbox)})
-        t.assert_exit("CG05", "Blocks write through a symlink escaping the root", code, 2, err)
+        t.assert_exit("CG05", "Allows write through a symlink (as-referenced extension)", code, 0, err)
+        # but a ../ traversal is not a symlink and stays blocked
+        code2, _, err2 = t.run_hook("containment-guard.sh",
+                                    write_tool(str(sandbox / ".." / ".." / "etc" / "x")),
+                                    env_overrides={"CLAUDE_PROJECT_DIR": str(sandbox)})
+        t.assert_exit("CG05b", "Blocks ../ traversal (not a symlink)", code2, 2, err2)
     finally:
         shutil.rmtree(sandbox, ignore_errors=True)
         shutil.rmtree(outside, ignore_errors=True)

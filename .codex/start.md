@@ -26,7 +26,7 @@ The codex is the shareable behavior layer of a claudette2 instance. Everything p
 
 ## State Gravity
 
-All `.state/` reads and writes default to the nearest `root: true` context — the current working folder's `.state/`. Deviations require the user to explicitly provide a path using `^` or `^/^` notation.
+All `.state/` reads and writes default to the nearest `root: true` context — the session root's `.state/`, resolved from the launch directory (not live CWD; see `^` resolution). Deviations require the user to explicitly provide a path using `^` or `^/^` notation.
 
 - Path containment is the fence (don't go outside `^`). State gravity is the default (default to here, not up).
 - A child project session writing to `^/^/.state/` without explicit user path notation is a violation.
@@ -232,7 +232,7 @@ Each boundary should have at least two defense layers. Single-layer boundaries a
 | Access (API) | — | — (out-of-band only) | — (`api-guard.sh` retired 2026-08-09) | account-level $0 API quota — admin-set (raise to authorize) |
 | Session | — | persistence rules | `session-close.sh` | `.claude/` gitignored |
 | Instance | classification | — | — | — (env assumption, BDRY-02) |
-| Project | — | path containment + state gravity | `containment-guard.sh` + `gravity-guard.sh` | `root: true` scoping |
+| Project | — | path containment + state gravity | `containment-guard.sh` + `gravity-guard.sh` — **Write/Edit only**; Bash and NotebookEdit writes are unguarded (BDRY-10, BL-56) | `root: true` scoping |
 | CLAUDE.md | — | design constraint | `claude-md-immutability-guard.sh` | — |
 | Audit records | — | immutability rule | `audit-immutability-guard.sh` | — |
 

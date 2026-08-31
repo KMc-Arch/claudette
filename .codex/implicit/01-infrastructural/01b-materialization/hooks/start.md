@@ -37,3 +37,13 @@ PreToolUse hooks provide **structural enforcement** — they block violations be
 | Push / remote | `remote-guard.sh` | Blocks main/master pushes, force-pushes, and GitHub API writes in Bash |
 | Audit immutability | `audit-immutability-guard.sh` | Blocks writes to existing audit run folders |
 | CLAUDE.md immutability | `claude-md-immutability-guard.sh` | Blocks writes to root CLAUDE.md |
+
+## Adjacent scripts (NOT registered hooks)
+
+Operational scripts that live here but are **not** wired into the hook system —
+run by hand or by `cboot`, never as PreToolUse/SessionStart hooks.
+
+| Script | Kind | Purpose |
+|---|---|---|
+| `tools/` | on-demand detective / maintenance scripts | See `tools/start.md` (holds `symlink-egress-scan.sh`, the egress sweep). |
+| `tests/` | dev harnesses | See `tests/start.md`. |

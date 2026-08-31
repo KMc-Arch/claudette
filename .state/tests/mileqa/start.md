@@ -2,15 +2,24 @@
 version: 1
 ---
 
-# mileqa reports
+# mileqa
 
-Run records produced by `/mileqa` (`.codex/explicit/mileqa/start.md`). Each run is a timestamped, point-in-time QA record — not edited retroactively.
+Pre-milestone holistic QA run reports. Each `/mileqa` run produces a
+timestamped folder holding the round-by-round blind multi-agent findings and the
+convergence summary.
 
 ## Folder Structure
 
 ```
 YYYYMMDD-HHMM/
-    <round/coda findings, fix summaries, verify passes — shape varies per run>
+    round-N.md      # per-round findings from the blind panel
+    summary.md      # convergence verdict (CLEAN, or the open escalations)
+    <coda>.md       # coda / verification registers as a run produces them
+    sb/             # (optional) disposable full-tree clone staged for isolated
+                    # testing — gitignored by the blanket `*` in ^/.state/.gitignore
 ```
 
-Run subdirectories are report data and do not carry their own `start.md` (test-safe T30a).
+Run subdirectories (`YYYYMMDD-HHMM/`) are report data and are **not** required to
+carry their own `start.md`; this every-folder manifest covers the convention.
+Reports are point-in-time records — read them as of their run date, not as
+current state.
