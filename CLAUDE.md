@@ -31,6 +31,18 @@ A CONFIRMED HOLD on [X] means:
 1. You MUST NOT perform [X] without user confirmation.
 2. State your intent and wait for a single confirmation.
 
+### Active Holds
+
+- **ABSOLUTE HOLD: creating symbolic links.** Do not *deliberately* create a
+  symlink — via `ln -s`, `cp -s`, an interpreter's symlink call (`os.symlink`,
+  `Path.symlink_to`, `fs.symlinkSync`, …), or any other means — except under the
+  ABSOLUTE HOLD terms above. Path containment resolves paths **as referenced**, so a
+  symlink inside `^` is an authorized extension of the project and a symlink pointing
+  out of `^` is an egress path; this hold is what keeps that authorization human-only.
+  (Side-effect symlinks from allowed commands — `git checkout`, `tar`/`unzip`,
+  `npm install`, `python -m venv` — are outside any hold's reach and are covered by
+  the on-demand egress detector, not this rule.)
+
 ## Naming Conventions
 
 | Prefix | Meaning | Enforcement |
