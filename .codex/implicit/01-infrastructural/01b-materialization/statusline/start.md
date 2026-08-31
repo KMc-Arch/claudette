@@ -1,9 +1,9 @@
 ---
-version: 3
+version: 4
 runtime: sh
 reads:
   - "the Claude Code status payload on stdin (model, cwd, workspace.project_dir, effort.level, thinking.enabled, rate_limits.five_hour, context_window, transcript_path)"
-  - "the transcript file named by transcript_path (context-window fill)"
+  - "the transcript file named by transcript_path (context-window fill + last user message)"
   - "<cwd>/CLAUDE.md and ancestors (root: true probe, anchor for the 📁 field)"
 writes: []
 ---
@@ -41,6 +41,17 @@ Left to right: **model** · **effort** (`⚡lo`/`⚡md`/`⚡hi`) · **thinking**
 Every field is read from the stdin payload — including `effort.level` and `thinking.enabled`, which therefore reflect the session's **current** state rather than whatever is configured in `settings.json`. That is deliberate: configured values drift from reality (a mid-session `/model`, effort toggle, or thinking change), and stdin does not.
 
 The two budget bars share one renderer (`_render_bar`) so the context window and the 5-hour rate-limit window read as one visual family rather than lookalikes; both countdowns use `_fmt_secs`. The quota bar is **absent** before the first response and for accounts with no 5-hour window (no `rate_limits.five_hour` in the payload) — the bar just ends after the context segment.
+
+## Second row — 💬 last user message
+
+A second line (multi-line status lines are officially supported; each `echo` is a row) shows `💬 <the user's last typed prompt>`, truncated to roughly the width of row 1. Both the row and the context bar are computed from the transcript in one `_transcript_data` pass.
+
+The extraction has two non-obvious properties, each earning its own red-first proof (see the module's git history for the proof transcript paths):
+
+- **Whitelist, not blacklist.** Claude Code writes far more than human prompts as `type:"user"` — task-notifications, hook/`isMeta` payloads, tool results, `sdk` and `auto-continuation` entries. The row keeps only entries whose `origin.kind == "human"` (or, for one legacy shape, `promptSource == "typed"`) and drops `isMeta` / `isSidechain` / `toolUseResult`. A blacklist has to chase every new kind as Claude Code adds them; the whitelist does not. On this version (2.1.251) a **typed slash command records with no `origin`**, so it is correctly skipped and the row holds the previous real prompt; older transcripts tagged slash commands `human` as raw `<command-name>` XML, which is unwrapped to `/name args`.
+- **Line-by-line parse, not `jq -s`.** `jq -s` aborts the entire parse on a single malformed line, and transcripts on this 9p mount can carry runs of NUL bytes mid-file. When that happened, the 💬 row vanished **and** the context bar silently fell back to its fake `~2%` baseline. `jq -nR '[inputs | fromjson? // empty]'` drops only the bad line and is benchmarked free.
+
+Held for a later pass (scoped 2026-08-31, not yet built): rendering the row as the prompt's first *N* lines joined by `⏎` up to `$COLUMNS` width, and an optional third functional-status row.
 
 ## Location Display
 

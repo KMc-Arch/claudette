@@ -294,34 +294,55 @@ max_context=$(echo "$input" | jq -r '.context_window.context_window_size // 2000
 max_k=$((max_context / 1000))
 
 if [[ -n "$transcript_path" && -f "$transcript_path" ]]; then
-    # Single-pass transcript extraction: context tokens + last user message
-    _transcript_data=$(jq -s '
-        def is_unhelpful:
-            startswith("[Request interrupted") or
-            startswith("[Request cancelled") or
-            . == "";
-        {
+    # Single-pass transcript extraction: context tokens + last user message.
+    #
+    # Parse LINE-BY-LINE (`jq -nR '[inputs | fromjson? // empty]'`), NOT `jq -s`.
+    # `jq -s` aborts the WHOLE parse on one malformed line, and transcripts on
+    # this 9p mount can carry runs of NUL bytes mid-file. When that happened the
+    # 💬 row vanished AND context_length fell to 0 (rendering the fake ~2%
+    # baseline instead of the real fill). `fromjson? // empty` drops only the bad
+    # line. Benchmarked free (23ms vs 25ms on the largest transcript here).
+    #
+    # last_user_msg is a WHITELIST, not a blacklist. Claude Code writes many
+    # things as type:"user" — task-notifications, hook/meta payloads, tool
+    # results, sdk/auto-continuation entries — and a blacklist has to chase every
+    # new kind (auto-continuation already appeared). Every real human prompt
+    # carries origin.kind=="human" (or, for one legacy shape, promptSource=="typed");
+    # nothing else does. So: keep human-origin/typed, drop isMeta/isSidechain/
+    # toolUseResult. On 2.1.251 a typed slash command records with NO origin, so
+    # it is correctly skipped and the row holds the previous real prompt; older
+    # transcripts tagged them "human" as raw <command-name> XML — unwrap those.
+    _transcript_data=$(jq -nR '
+        [inputs | fromjson? // empty] as $es
+        | {
             context_length: (
-                map(select(.message.usage and .isSidechain != true and .isApiErrorMessage != true)) |
-                last |
-                if . then
-                    (.message.usage.input_tokens // 0) +
-                    (.message.usage.cache_read_input_tokens // 0) +
-                    (.message.usage.cache_creation_input_tokens // 0) +
-                    (.message.usage.output_tokens // 0)
-                else 0 end
+                $es
+                | map(select(.message.usage and .isSidechain != true and .isApiErrorMessage != true))
+                | last
+                | if . then (.message.usage.input_tokens // 0) + (.message.usage.cache_read_input_tokens // 0)
+                           + (.message.usage.cache_creation_input_tokens // 0) + (.message.usage.output_tokens // 0)
+                  else 0 end
             ),
             last_user_msg: (
-                [.[] | select(.type == "user") |
-                 select(.message.content | type == "string" or
-                        (type == "array" and any(.[]; .type == "text")))] |
-                reverse |
-                map(.message.content |
-                    if type == "string" then .
-                    else [.[] | select(.type == "text") | .text] | join(" ") end |
-                    gsub("\n"; " ") | gsub("  +"; " ")) |
-                map(select(is_unhelpful | not)) |
-                first // ""
+                $es
+                | map(select(.type == "user"
+                             and (.isMeta // false) != true
+                             and (.isSidechain // false) != true
+                             and (.toolUseResult | not)
+                             and (.origin.kind == "human" or .promptSource == "typed")))
+                | reverse
+                | map(.message.content
+                      | if type == "string" then .
+                        else [.[]? | select(.type == "text") | .text] | join("\n") end)
+                | map(if test("<command-name>") then
+                        ((capture("<command-name>(?<n>[^<]*)</command-name>").n // "")
+                         + (((capture("<command-args>(?<a>[^<]*)</command-args>").a) // "")
+                            | if . == "" then "" else " " + . end))
+                      else . end)
+                | map(select(test("^[[:space:]]*$") | not))
+                | map(select(startswith("[Request interrupted") or startswith("[Request cancelled") | not))
+                | first // ""
+                | gsub("\n"; " ") | gsub("  +"; " ")
             )
         }
     ' < "$transcript_path" 2>/dev/null)
