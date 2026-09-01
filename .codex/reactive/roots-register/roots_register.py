@@ -375,6 +375,25 @@ def relink(conn, root_id, new_rel_path, *, home=None):
             "no current roots_register row for root_id %r to relink" % (root_id,))
     old_rel_path = spine["rel_path"]
 
+    # Occupancy pre-check, mirroring `mint`: REFUSE a relink onto a rel_path a
+    # DIFFERENT current identity already holds (COLLATE NOCASE — case-variant paths
+    # are one directory on this mount). Without it the new-spine INSERT below trips
+    # idx_rr_cur_relpath with a RAW sqlite IntegrityError AFTER the savepoint's
+    # UPDATE has already closed the old spine — leaving the identity half-moved, and
+    # (for a composed caller) its earlier writes lost to the full rollback `close()`
+    # then does. Raising a clean, catchable ValueError BEFORE any write keeps the
+    # caller's transaction intact. Excludes THIS identity's own current row: a relink
+    # onto its own path is a (degenerate) self-move, not a collision.
+    clash = conn.execute(
+        "SELECT root_id FROM roots_register"
+        " WHERE rel_path = ? COLLATE NOCASE AND valid_to IS NULL AND root_id != ?",
+        (new_rel_path, root_id)).fetchone()
+    if clash is not None:
+        raise ValueError(
+            "cannot relink root_id %r onto %r: a different current root "
+            "(root_id=%d) already occupies that rel_path — that path is taken." %
+            (root_id, new_rel_path, clash["root_id"]))
+
     # Resolve both transcript stores up front and REFUSE a destination collision
     # BEFORE any DB write, so a pre-existing store is never clobbered and the DB is
     # never left with identity moved but transcripts un-moved.

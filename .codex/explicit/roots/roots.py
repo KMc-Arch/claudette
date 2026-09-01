@@ -181,6 +181,10 @@ def compute_drift(conn, apex):
             orphaned.append({"root_id": row["root_id"], "rel_path": row["rel_path"],
                              "is_apex": row["is_apex"], "agent_name": row["agent_name"]})
 
+    # Spine history so a relinked-but-unprojected file (marker still names a PAST rel
+    # of its identity) is recognised as ours and NOT mis-reported as divergence —
+    # the same move-aware judgement cboot's projection and the file-sweep use.
+    hist = ao.spine_history(conn)
     divergence = []
     for row in conn.execute(
             "SELECT ar.agent_name, ar.agent_file, ar.root_id,"
@@ -191,7 +195,7 @@ def compute_drift(conn, apex):
             " WHERE ar.valid_to IS NULL"):
         p = Path(row["agent_file"])
         target = p if p.is_absolute() else apex / p
-        if ao.marker_matches(target, row["cur_rel"]):
+        if ao.marker_is_current_or_past_rel(target, row["cur_rel"], row["root_id"], hist):
             continue
         reason = "file missing" if not target.exists() else "marker altered/removed"
         divergence.append({"agent_name": row["agent_name"],
@@ -245,11 +249,18 @@ def print_drift(drift, have_roots=True, out=None):
 _UNSET = object()
 
 
-def _sweep_owned_file(apex, agent_file, rel):
+def _sweep_owned_file(apex, agent_file, rel, root_id=None, hist=None):
     """Remove an agent file this session just un-claimed, guarded exactly like
-    cboot's delete path: only OUR file (marker still names `rel`), only inside
-    `.claude/agents/`. A hand-edited or foreign file is preserved. Returns a
-    status string for the report; never raises on a divergent/absent file."""
+    cboot's delete path: only OUR file, only inside `.claude/agents/`. A hand-edited
+    or foreign file is preserved. Returns a status string for the report; never
+    raises on a divergent/absent file.
+
+    "OUR file" is the shared MOVE-AWARE judgement (`marker_is_current_or_past_rel`),
+    so a relinked-but-not-yet-reprojected file — whose marker still names a PAST rel
+    of THIS identity — is swept rather than STRANDED as "preserved-hand-edited". Pass
+    `root_id` and `hist` (`agent_ownership.spine_history(conn)`) to enable the
+    past-rel arm; omit them (or an empty `hist`) and the judgement degrades to exact
+    `marker_matches`, which only ever preserves MORE."""
     if apex is None or not agent_file:
         return "skipped"
     ao = _ao()
@@ -264,7 +275,7 @@ def _sweep_owned_file(apex, agent_file, rel):
         return "outside-agents-dir"
     if not target.exists():
         return "no-file"
-    if not ao.marker_matches(target, rel):
+    if not ao.marker_is_current_or_past_rel(target, rel, root_id, hist or {}):
         return "preserved-hand-edited"
     try:
         target.unlink()
@@ -281,18 +292,23 @@ def op_disable(conn, root_id, *, apex=None):
     guarded by the ownership marker (a hand-edited file is left in place). Returns
     the file-sweep status.
     """
-    rr = _rr()
+    rr, ao = _rr(), _ao()
     held = conn.execute(
         "SELECT ar.agent_file, COALESCE(rr.rel_path, ar.rel_path) AS cur_rel"
         " FROM agent_registry ar"
         " LEFT JOIN roots_register rr"
         "   ON rr.root_id = ar.root_id AND rr.valid_to IS NULL"
         " WHERE ar.root_id = ? AND ar.valid_to IS NULL", (root_id,)).fetchone()
+    # The identity's spine history, so the sweep recognises a relinked-but-unprojected
+    # file (marker still names a PAST rel) as ours. Read BEFORE the close — close_claim
+    # never touches roots_register, so it is stable either way.
+    hist = ao.spine_history(conn)
     rr.close_claim(conn, root_id, "opted-out")
     conn.commit()
     if held is None:
         return "no-claim"
-    return _sweep_owned_file(apex, held["agent_file"], held["cur_rel"])
+    return _sweep_owned_file(apex, held["agent_file"], held["cur_rel"],
+                             root_id=root_id, hist=hist)
 
 
 def op_enable(conn, root_id, *, requested_name=_UNSET, description=_UNSET):
@@ -347,6 +363,10 @@ def op_rename(conn, root_id, new_base, *, taken=None, apex=None,
         " LEFT JOIN roots_register rr"
         "   ON rr.root_id = ar.root_id AND rr.valid_to IS NULL"
         " WHERE ar.root_id = ? AND ar.valid_to IS NULL", (root_id,)).fetchone()
+    # Spine history for the move-aware sweep of the OLD file (a relinked-but-
+    # unprojected file's marker names a PAST rel of this same identity). rename_claim
+    # does not touch roots_register, so reading it up front is stable.
+    hist = ao.spine_history(conn)
     want = ao.suffixed(base)
     name = rr.deconflict(want, taken, ao.RESERVED_NAMES)
     deconflicted_from = want if name != want else None
@@ -359,7 +379,8 @@ def op_rename(conn, root_id, new_base, *, taken=None, apex=None,
                     deconflicted_from=deconflicted_from, requested_name=base)
     conn.commit()
     if old is not None and old["agent_file"] != agent_file:
-        _sweep_owned_file(apex, old["agent_file"], old["cur_rel"])
+        _sweep_owned_file(apex, old["agent_file"], old["cur_rel"],
+                          root_id=root_id, hist=hist)
     return name
 
 

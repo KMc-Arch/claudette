@@ -5,8 +5,8 @@ Claude Code stores a project's session transcripts under
 path with every non-alphanumeric character replaced by '-'. Verified against the
 real store: `/mnt/claudette/~majel` -> `-mnt-claudette--majel` (the leading slash,
 the `/` separators, and the `~` all fold to `-`). The slug is always keyed on the
-whole resolved path — there is no short form, so a bare `.steward` becomes
-`-mnt-claudette--steward`, not `--steward`.
+whole resolved path — there is no short form, so a bare `~majel` is keyed as
+`-mnt-claudette--majel`, never `--majel`.
 
 Callers need this identical derivation: purge (to find a project's transcript
 store) and the `/roots` relink (to rename the store when a root moves out of

@@ -1441,25 +1441,29 @@ def _migrate_to_v1(conn):
     #    there is never again a claim without one. Keyed on root_id (just backfilled
     #    above). A project switched off has an enabled=0 row, so this can never
     #    resurrect it.
-    # requested_name is the BASE, never the suffixed historical @name: a legacy
-    # claim's agent_name carries the -pj suffix (`x-pj`), so store `desuffix(...)`
-    # (`x`). Storing the suffixed name would make a later re-projection derive
-    # `x-pj` and re-suffix it to `x-pj-pj`. Done in Python (not one SELECT-INSERT)
-    # so the single naming rule in agent_ownership is applied, never re-encoded in
-    # SQL.
+    # requested_name is the clean, PRE-suffix, PRE-deconflict BASE, never the
+    # suffixed/de-conflicted historical @name: a legacy claim's agent_name carries
+    # the -pj suffix (`x-pj`) and may be de-conflicted (`x-pj-2`). Recover the base
+    # from `deconflicted_from` when present (the pre-deconflict, still-suffixed name)
+    # else the agent_name, then strip the one suffix — so `x-pj-2` (deconflicted_from
+    # `x-pj`) recovers `x`, not `x-pj-2`, which a later re-projection would double to
+    # `x-pj-2-pj`. Done in Python so the single naming rule in agent_ownership is
+    # applied, never re-encoded in SQL.
     _ao = _agent_ownership()
     inherit_rows = conn.execute(
-        "SELECT r.root_id, r.rel_path, r.agent_name, r.description, r.valid_from"
+        "SELECT r.root_id, r.rel_path, r.agent_name, r.deconflicted_from,"
+        " r.description, r.valid_from"
         " FROM agent_registry r"
         " WHERE r.valid_to IS NULL AND r.root_id IS NOT NULL"
         "   AND NOT EXISTS (SELECT 1 FROM agent_optin o WHERE o.root_id = r.root_id)"
     ).fetchall()
     for r in inherit_rows:
+        base = _ao.desuffix(r["deconflicted_from"] or r["agent_name"])
         conn.execute(
             "INSERT INTO agent_optin (root_id, rel_path, enabled, requested_name,"
             " description, decided_at, decided_by)"
             " VALUES (?, ?, 1, ?, ?, ?, 'inherited')",
-            (r["root_id"], r["rel_path"], _ao.desuffix(r["agent_name"]),
+            (r["root_id"], r["rel_path"], base,
              r["description"], r["valid_from"]))
 
     conn.execute("PRAGMA user_version = 1")
@@ -1964,22 +1968,6 @@ def _unlink_orphan(target):
         pass
 
 
-def _marker_names_past_rel(target, root_id, spine_history, ao):
-    """True iff `target`'s marker names a rel_path this identity used to hold.
-
-    The move-aware ownership recogniser: a relink moves an identity but leaves its
-    agent file's marker naming the PRIOR rel_path until the file is re-projected.
-    The projection's held-refresh already uses this (via `spine_history`) to tell a
-    moved-but-ours file from a human edit; the close-pass sweep uses it too so an
-    opt-out (or removal) sweeps a moved file instead of misreading it as diverged
-    and stranding it. Only ever widens to a file the registry already owns and whose
-    marker names a PAST rel of THIS same root_id — never a foreign file.
-    """
-    marker_rel = ao.read_marker(target)
-    return (marker_rel is not None
-            and marker_rel.casefold() in spine_history.get(root_id, set()))
-
-
 def generate_agents(report, rows):
     """Materialize `^/.claude/agents/<name>.md` for every switched-on root.
 
@@ -2018,15 +2006,12 @@ def generate_agents(report, rows):
                                 " WHERE valid_to IS NULL"):
             rel_rootid[row["rel_path"].casefold()] = row["root_id"]
 
-        # Every rel_path an identity has EVER held (current + closed spine rows).
-        # The refresh path uses it to tell a MOVED file (its marker names a rel this
-        # identity used to sit at) from a HUMAN-EDITED one (its marker names a rel
-        # this identity never had, or is gone): the former is ours to re-project
-        # with the current marker, the latter is left untouched.
-        spine_history = {}
-        for row in conn.execute("SELECT root_id, rel_path FROM roots_register"):
-            spine_history.setdefault(row["root_id"], set()).add(
-                row["rel_path"].casefold())
+        # Every rel_path an identity has EVER held (current + closed spine rows),
+        # from the shared reader. The refresh path uses it to tell a MOVED file (its
+        # marker names a rel this identity used to sit at) from a HUMAN-EDITED one
+        # (its marker names a rel this identity never had, or is gone): the former is
+        # ours to re-project with the current marker, the latter is left untouched.
+        spine_history = ao.spine_history(conn)
 
         # Decisions keyed on identity. `optin[root_id]` is the durable answer.
         optin = {row["root_id"]: row for row in conn.execute(
@@ -2107,8 +2092,8 @@ def generate_agents(report, rows):
                     # unlink.
                     report.warn("Agents: refused to remove a claim file outside "
                                 "the agents directory", str(target))
-                elif (target.exists() and not ao.marker_matches(target, rel)
-                      and not _marker_names_past_rel(target, root_id, spine_history, ao)):
+                elif (target.exists() and not ao.marker_is_current_or_past_rel(
+                        target, rel, root_id, spine_history)):
                     # The marker names neither the CURRENT rel nor any PAST rel of
                     # THIS identity — a human has been in the file (or it belongs to
                     # another root). Report, never touch.
@@ -2264,13 +2249,13 @@ def generate_agents(report, rows):
                         existing = target.read_text(encoding="utf-8", errors="replace")
                         if _same_but_for_stamp(existing, content):
                             continue
-                    else:
-                        marker_rel = ao.read_marker(target)
-                        moved = (marker_rel is not None and marker_rel.casefold()
-                                 in spine_history.get(root_id, set()))
-                        if not moved:
-                            diverged.append((agent_rel, "marker missing or altered — not overwritten"))
-                            continue
+                    elif not ao.marker_is_current_or_past_rel(
+                            target, rel, root_id, spine_history):
+                        # marker_matches(current) is already False here, so this is
+                        # the PAST-rel arm: a marker naming a rel this identity never
+                        # held is a human edit — report and leave it.
+                        diverged.append((agent_rel, "marker missing or altered — not overwritten"))
+                        continue
                         # else: ours at a stale (past) rel — fall through to refresh.
                 # A re-projection: the owned file was deleted, moved, or its
                 # (derived) description drifted. Rewrite it in place; NO history row
@@ -2287,9 +2272,15 @@ def generate_agents(report, rows):
             # and never swept. The human's decision fields are passed through so the
             # upsert re-affirms (never clobbers) the answer already recorded.
             try:
+                # requested_name is the clean, PRE-suffix, PRE-deconflict base
+                # (`base`), never the de-conflicted @name. Passing
+                # decision["requested_name"] let the open_claim fallback store a
+                # de-conflicted name (`foo-pj-2`, which desuffix cannot strip), so a
+                # later off→on re-projection doubled it to `foo-pj-2-pj`. `base` is
+                # already derived above and is exactly what a re-projection re-derives.
                 rr.open_claim(conn, root_id, name, abs_path.name, agent_rel,
                               deconflicted_from=deconflicted_from,
-                              requested_name=decision["requested_name"],
+                              requested_name=base,
                               description=decision["description"],
                               decided_by=decision["decided_by"])
                 conn.commit()

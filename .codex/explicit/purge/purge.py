@@ -154,10 +154,10 @@ def _project_slug(project_root: Path) -> str:
     path with every non-alphanumeric character replaced by '-'.
 
     This matches how Claude Code itself names ~/.claude/projects/<slug>/ (verified
-    against the real store: `/mnt/claudette/~majel` → `-mnt-claudette--majel`,
-    `.steward` → `--steward`). The earlier `\\ / :`-only replacement left `~`, `.`
-    and other characters intact, so `~`/`.`-rooted projects never matched their
-    real store and their transcripts were silently skipped under `purge all`.
+    against the real store: `/mnt/claudette/~majel` → `-mnt-claudette--majel`). The
+    earlier `\\ / :`-only replacement left `~`, `.` and other characters intact, so
+    `~`/`.`-rooted projects never matched their real store and their transcripts were
+    silently skipped under `purge all`.
     """
     return _transcript_slug().project_slug(project_root)
 
@@ -358,6 +358,17 @@ def _purge_agents_dir(purger: Purger, agents_dir: Path, project_root: Path) -> N
             f"{purger._label(agents_dir)} [{e}]")
         return
 
+    # The identity spine history, so a relinked-but-unprojected claimed file (its
+    # marker still names a PAST rel of the same identity) is recognised as ours —
+    # the same move-aware judgement cboot uses — rather than mis-preserved as
+    # "hand-edited". A deleter that cannot read the spine degrades to an EMPTY
+    # history, which collapses the judgement to exact marker_matches: preserve-more,
+    # never delete-more.
+    try:
+        hist = ao.read_spine_history(db_path)
+    except ao.RegistryUnavailable:
+        hist = {}
+
     try:
         entries = sorted(agents_dir.iterdir())
     except OSError as e:
@@ -393,8 +404,13 @@ def _purge_agents_dir(purger: Purger, agents_dir: Path, project_root: Path) -> N
             # for that reason. Deleting what cboot preserves is the two callers
             # disagreeing, which is the whole failure this module exists to stop.
             # Reading the marker here only ever PREVENTS a deletion, so it does
-            # not reintroduce deciding ownership from content.
-            if not ao.marker_matches(item, claims[ao._key(item)]["rel_path"]):
+            # not reintroduce deciding ownership from content. The judgement is
+            # move-aware (marker names the current OR a past rel of THIS identity),
+            # so a relinked-but-unprojected file is recognised as ours, exactly as
+            # cboot's projection would rewrite it — never stranded as hand-edited.
+            claim = claims[ao._key(item)]
+            if not ao.marker_is_current_or_past_rel(
+                    item, claim["rel_path"], claim["root_id"], hist):
                 purger.skipped.append(
                     f"  PRESERVED (claimed but hand-edited): {purger._label(item)}")
             else:

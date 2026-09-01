@@ -22,5 +22,5 @@ claim-mutation is the divergence bug the shared `agent-ownership` and
 `transcript-slug` modules also exist to prevent.
 
 Imports, never reimplements: `agent-ownership` for name derivation
-(`derive_agent_name` / `suffixed` / `RESERVED_NAMES`, re-exported here) and
-`transcript-slug` for `project_slug` (the store re-slug in `relink`).
+(`derive_agent_name` / `suffixed` / `desuffix` / `reserved_names`, re-exported
+here) and `transcript-slug` for `project_slug` (the store re-slug in `relink`).
