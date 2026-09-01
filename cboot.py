@@ -1161,15 +1161,25 @@ def _agent_ownership():
 
 
 def _ensure_agent_tables(conn):
-    """Create the two DURABLE tables if absent. Never dropped, never rebuilt.
+    """Create/migrate the DURABLE tables. Never dropped, never rebuilt from the walk.
 
-    `roots` and `meta` are a cache of the filesystem walk and are rebuilt every
-    boot. These two are not: they hold decisions a human made and claims that
-    files on disk depend on. Losing them would orphan every generated file.
+    Durable tables hold identity and decisions that generated files depend on:
+      - roots_register : the identity spine. One stable `root_id` per root (agent
+                         or not, apex included), minted once and never reused;
+                         `rel_path` is the maintained current location; SCD2.
+      - agent_optin    : the decision (one row per root_id), mutable.
+      - agent_registry : the SCD2 @name claim ledger.
+    `roots`/`meta` are the transient walk cache, rebuilt every boot elsewhere.
+
+    Shape is versioned by PRAGMA user_version and upgraded by an atomic ladder
+    (`_migrate_to_v1`): the base CREATEs below are the pre-spine shape a fresh or
+    legacy db carries; the ladder adds the spine and re-keys the two tables to
+    `root_id`. Idempotent — safe to call twice per boot.
     """
+    # ── Base durable tables (idempotent; pre-spine shape) ──────────────
     conn.execute(
         "CREATE TABLE IF NOT EXISTS agent_optin ("
-        " rel_path TEXT PRIMARY KEY,"        # apex-relative root path
+        " rel_path TEXT PRIMARY KEY,"        # pre-spine shape; the v1 ladder re-keys to root_id
         " enabled INTEGER NOT NULL,"          # 1 = addressable, 0 = declined
         " requested_name TEXT,"               # the @name the human chose
         " description TEXT,"                  # the one-liner they gave
@@ -1180,7 +1190,7 @@ def _ensure_agent_tables(conn):
         "CREATE TABLE IF NOT EXISTS agent_registry ("
         " id INTEGER PRIMARY KEY,"
         " agent_name TEXT NOT NULL,"
-        " rel_path TEXT NOT NULL,"
+        " rel_path TEXT NOT NULL,"            # location at claim-open; frozen history after re-key
         " source_folder TEXT NOT NULL,"
         " deconflicted_from TEXT,"
         " description TEXT,"
@@ -1190,37 +1200,176 @@ def _ensure_agent_tables(conn):
         " change_reason TEXT NOT NULL,"       # why the row OPENED — never rewritten
         " close_reason TEXT)"                 # why it CLOSED
     )
-    # Partial unique indexes: uniqueness applies to CURRENT rows only, so SCD2
-    # history may hold the same name many times over.
-    conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_agent_cur_path"
-                 " ON agent_registry(rel_path) WHERE valid_to IS NULL")
-    conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_agent_cur_name"
-                 " ON agent_registry(agent_name) WHERE valid_to IS NULL")
-    # CREATE TABLE IF NOT EXISTS is a no-op on a table that already exists, so a
-    # registry created before close_reason existed keeps its old shape and every
-    # claim-closing UPDATE then fails with "no such column". Migrate explicitly.
+    # The identity spine. All roots (agent or not); the apex too.
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS roots_register ("
+        " id INTEGER PRIMARY KEY,"
+        " root_id INTEGER NOT NULL,"          # stable identity: minted once, never reused
+        " rel_path TEXT NOT NULL,"            # the maintained, current location
+        " is_apex INTEGER NOT NULL DEFAULT 0,"
+        " change_reason TEXT NOT NULL,"       # migrated | canonicalized | relinked | ...
+        " valid_from TEXT NOT NULL,"
+        " valid_to TEXT)"                     # NULL = current
+    )
+    # Partial unique among CURRENT rows: one live root_id, one live rel_path.
+    # rel_path is NOCASE — case-variant paths on this mount are the same directory.
+    conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_rr_cur_rootid"
+                 " ON roots_register(root_id) WHERE valid_to IS NULL")
+    conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_rr_cur_relpath"
+                 " ON roots_register(rel_path COLLATE NOCASE) WHERE valid_to IS NULL")
+
+    # Legacy fixups on agent_registry (pre-close_reason dbs; stale unconditional
+    # indexes). Carried from the pre-spine design.
     have = {r[1] for r in conn.execute("PRAGMA table_info(agent_registry)")}
     if "close_reason" not in have:
         conn.execute("ALTER TABLE agent_registry ADD COLUMN close_reason TEXT")
-    # Superseded by the partial idx_agent_cur_* indexes; a leftover unconditional
-    # unique index would reject legitimate SCD2 history.
     for stale in ("agent_registry_current_name", "agent_registry_current_root"):
         conn.execute("DROP INDEX IF EXISTS %s" % stale)
 
-    # A live claim with no recorded decision predates the decision table. It is
-    # still evidence of a decision a human made — under the older design, by
-    # putting `agent: true` in the project's own CLAUDE.md. Inherit it rather
-    # than treating silence as a decline, which would delete three working
-    # agents and make the user re-answer for projects already switched on.
-    # Idempotent: a project that was later switched off has an enabled=0 row,
-    # so this can never resurrect it.
+    # ── Versioned schema ladder (atomic; runs once) ────────────────────
+    version = conn.execute("PRAGMA user_version").fetchone()[0]
+    if version < 1:
+        _migrate_to_v1(conn)
+    _assert_schema_shape(conn)
+
+    # A current claim with no recorded decision predates the decision table
+    # (older `agent: true` design). Inherit it rather than read silence as a
+    # decline. Keyed on root_id post-ladder. Idempotent: a project switched off
+    # has an enabled=0 row, so this can never resurrect it.
     conn.execute(
-        "INSERT INTO agent_optin (rel_path, enabled, requested_name, description,"
-        " decided_at, decided_by)"
-        " SELECT r.rel_path, 1, r.agent_name, r.description, r.valid_from, 'inherited'"
+        "INSERT INTO agent_optin (root_id, rel_path, enabled, requested_name,"
+        " description, decided_at, decided_by)"
+        " SELECT r.root_id, r.rel_path, 1, r.agent_name, r.description, r.valid_from,"
+        " 'inherited'"
         " FROM agent_registry r"
-        " WHERE r.valid_to IS NULL"
-        "   AND NOT EXISTS (SELECT 1 FROM agent_optin o WHERE o.rel_path = r.rel_path)")
+        " WHERE r.valid_to IS NULL AND r.root_id IS NOT NULL"
+        "   AND NOT EXISTS (SELECT 1 FROM agent_optin o WHERE o.root_id = r.root_id)")
+
+
+def _migrate_to_v1(conn):
+    """Introduce the roots_register spine and re-key agent_optin/agent_registry
+    to root_id (schema user_version 0 -> 1).
+
+    agent_registry is re-keyed ADDITIVELY (ADD COLUMN root_id + backfill current
+    rows); agent_optin is rebuilt to a root_id primary key, keeping rel_path as
+    an informational (unmaintained) column so existing readers keep working.
+    Closed history rows keep root_id NULL — they are never consulted, and a
+    reused rel_path makes retro-assigning their identity impossible anyway.
+
+    Atomic: opens its own transaction, so any failure rolls the whole migration
+    back and user_version stays 0 (the next boot retries). Loud on any anomaly
+    (lost rows, an unmatched current claim) rather than silently partial.
+    """
+    if not conn.in_transaction:
+        conn.execute("BEGIN IMMEDIATE")
+
+    # 1. Mint the spine for the existing, unambiguous population: every rel_path
+    #    the walk, the live claims, or the decisions currently know about. These
+    #    roots are already here — minting their identity is a mechanical backfill,
+    #    not the fork-vs-move judgement new roots require (that stays human).
+    def _table_exists(name):
+        return conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?",
+            (name,)).fetchone() is not None
+    seen = {}  # casefold(rel_path) -> first-seen spelling
+    def _add(rp):
+        if rp is not None:
+            seen.setdefault(rp.casefold(), rp)
+    if _table_exists("roots"):
+        for row in conn.execute("SELECT rel_path FROM roots"):
+            _add(row[0])
+    for row in conn.execute("SELECT rel_path FROM agent_registry WHERE valid_to IS NULL"):
+        _add(row[0])
+    for row in conn.execute("SELECT rel_path FROM agent_optin"):
+        _add(row[0])
+    _add(".")  # the apex is always a root
+    stamp = now_iso()
+    root_id = 0
+    for key in sorted(seen):
+        root_id += 1
+        rel = seen[key]
+        conn.execute(
+            "INSERT INTO roots_register (root_id, rel_path, is_apex, change_reason,"
+            " valid_from, valid_to) VALUES (?, ?, ?, 'migrated', ?, NULL)",
+            (root_id, rel, 1 if rel == "." else 0, stamp))
+
+    # 2. Rebuild agent_optin with a root_id primary key (rel_path demoted to an
+    #    informational column). Row count must be preserved.
+    conn.execute(
+        "CREATE TABLE agent_optin_new ("
+        " root_id INTEGER PRIMARY KEY,"
+        " rel_path TEXT,"                     # location at decision time; not maintained
+        " enabled INTEGER NOT NULL,"
+        " requested_name TEXT,"
+        " description TEXT,"
+        " decided_at TEXT NOT NULL,"
+        " decided_by TEXT NOT NULL)")
+    conn.execute(
+        "INSERT INTO agent_optin_new (root_id, rel_path, enabled, requested_name,"
+        " description, decided_at, decided_by)"
+        " SELECT rr.root_id, o.rel_path, o.enabled, o.requested_name, o.description,"
+        " o.decided_at, o.decided_by"
+        " FROM agent_optin o"
+        " JOIN roots_register rr"
+        "   ON rr.rel_path = o.rel_path COLLATE NOCASE AND rr.valid_to IS NULL")
+    n_old = conn.execute("SELECT COUNT(*) FROM agent_optin").fetchone()[0]
+    n_new = conn.execute("SELECT COUNT(*) FROM agent_optin_new").fetchone()[0]
+    if n_new != n_old:
+        raise sqlite3.IntegrityError(
+            "agent_optin migration changed row count %d -> %d" % (n_old, n_new))
+    conn.execute("DROP TABLE agent_optin")
+    conn.execute("ALTER TABLE agent_optin_new RENAME TO agent_optin")
+
+    # 3. Re-key agent_registry additively: ADD root_id, backfill CURRENT rows,
+    #    swap the rel_path current-unique index for a root_id one, case-fold the
+    #    name index.
+    reg_cols = {r[1] for r in conn.execute("PRAGMA table_info(agent_registry)")}
+    if "root_id" not in reg_cols:
+        conn.execute("ALTER TABLE agent_registry ADD COLUMN root_id INTEGER")
+    conn.execute(
+        "UPDATE agent_registry"
+        " SET root_id = (SELECT rr.root_id FROM roots_register rr"
+        "  WHERE rr.rel_path = agent_registry.rel_path COLLATE NOCASE"
+        "    AND rr.valid_to IS NULL)"
+        " WHERE valid_to IS NULL")
+    missing = conn.execute(
+        "SELECT COUNT(*) FROM agent_registry"
+        " WHERE valid_to IS NULL AND root_id IS NULL").fetchone()[0]
+    if missing:
+        raise sqlite3.IntegrityError(
+            "%d current claim(s) have no root_id after migration" % missing)
+    # Keep idx_agent_cur_path (rel_path current-unique) for now: the un-rewired
+    # boot still opens claims keyed on rel_path, and current rel_paths stay 1:1
+    # until relink/move exist. WP-E drops it once the insert path sets root_id
+    # and a reused rel_path (two current rows, one path) becomes reachable.
+    conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_agent_cur_rootid"
+                 " ON agent_registry(root_id) WHERE valid_to IS NULL")
+    conn.execute("DROP INDEX IF EXISTS idx_agent_cur_name")
+    conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_agent_cur_name"
+                 " ON agent_registry(agent_name COLLATE NOCASE) WHERE valid_to IS NULL")
+
+    conn.execute("PRAGMA user_version = 1")
+    # The caller commits (build_root_inventory / generate_agents); on any raise
+    # above, the caller declines to commit and close() rolls the migration back.
+
+
+def _assert_schema_shape(conn):
+    """Fail loud (as a sqlite error the caller catches -> warn + skip agent pass)
+    if the durable schema is not the shape the current code expects."""
+    def cols(t):
+        return {r[1] for r in conn.execute("PRAGMA table_info(%s)" % t)}
+    need = {"id", "root_id", "rel_path", "is_apex", "change_reason",
+            "valid_from", "valid_to"}
+    have = cols("roots_register")
+    if not need <= have:
+        raise sqlite3.IntegrityError("roots_register missing %s" % (need - have))
+    if "root_id" not in cols("agent_registry"):
+        raise sqlite3.IntegrityError("agent_registry missing root_id")
+    if "root_id" not in cols("agent_optin"):
+        raise sqlite3.IntegrityError("agent_optin missing root_id")
+    version = conn.execute("PRAGMA user_version").fetchone()[0]
+    if version != 1:
+        raise sqlite3.IntegrityError("user_version %d != 1" % version)
 
 
 def _read_child_text(claude_md):
