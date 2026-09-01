@@ -1079,6 +1079,11 @@ def build_root_inventory(report):
                 " agent_enabled INTEGER NOT NULL DEFAULT 0,"
                 " agent_name TEXT,"
                 " agent_file TEXT,"
+                # The walk->spine link (WP-E): the root_id of the CURRENT
+                # roots_register row whose rel_path matches this walked root
+                # (COLLATE NOCASE, a live dir), or NULL when unlinked. Filled below
+                # once the spine has been ensured; read by the /roots command.
+                " canonical_id INTEGER,"
                 " generated_at TEXT NOT NULL)"
             )
             conn.execute("CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT)")
@@ -1101,6 +1106,18 @@ def build_root_inventory(report):
             # pass re-checks these tables and skips itself if they are unusable.
             try:
                 _ensure_agent_tables(conn)
+                # Walk->spine link: set roots.canonical_id to the matched CURRENT
+                # spine root_id for each walked root (COLLATE NOCASE). A walked root
+                # is by construction a live dir, so a match is a genuine link;
+                # unlinked roots (no current spine row at this rel_path) stay NULL.
+                # Orphaned spine rows (current, rel_path NOT walked) are computed by
+                # the /roots command from roots_register vs roots — nothing to do
+                # here beyond leaving their walked counterpart, if any, NULL.
+                conn.execute(
+                    "UPDATE roots SET canonical_id = (SELECT rr.root_id"
+                    " FROM roots_register rr"
+                    " WHERE rr.rel_path = roots.rel_path COLLATE NOCASE"
+                    "   AND rr.valid_to IS NULL)")
                 # Persist the durable-table work — its trailing backfill INSERT
                 # (inheriting an agent_optin row for a pre-optin live claim) is
                 # DML, so without an explicit commit it would be discarded by the
@@ -1158,6 +1175,15 @@ def _interactive():
 
 def _agent_ownership():
     return _load_module(CODEX / "reactive" / "agent-ownership" / "agent_ownership.py")
+
+
+def _roots_register():
+    """The shared identity/claim mutation module — the SOLE writer of
+    roots_register/agent_registry/agent_optin rows. Boot's detect+project passes
+    route every identity/claim write through it (mint/accept/decline/open_claim/
+    close_claim/relink/deconflict); no INSERT/UPDATE of those tables lives here
+    outside the one-time schema bootstrap in _ensure_agent_tables/_migrate_to_v1."""
+    return _load_module(CODEX / "reactive" / "roots-register" / "roots_register.py")
 
 
 def _ensure_agent_tables(conn):
@@ -1225,6 +1251,12 @@ def _ensure_agent_tables(conn):
         conn.execute("ALTER TABLE agent_registry ADD COLUMN close_reason TEXT")
     for stale in ("agent_registry_current_name", "agent_registry_current_root"):
         conn.execute("DROP INDEX IF EXISTS %s" % stale)
+    # Drop the rel_path current-unique index (WP-E). Now that the insert path sets
+    # root_id and identity keys on it, a reused rel_path after a move legitimately
+    # yields two current rows sharing a frozen (claim-time) rel_path — which that
+    # index would reject. Idempotent, and covers both a fresh db (never had it) and
+    # a legacy/already-v1 db that carried it (the v1 ladder deliberately kept it).
+    conn.execute("DROP INDEX IF EXISTS idx_agent_cur_path")
 
     # ── Versioned schema ladder (atomic; runs once) ────────────────────
     version = conn.execute("PRAGMA user_version").fetchone()[0]
@@ -1339,10 +1371,10 @@ def _migrate_to_v1(conn):
     if missing:
         raise sqlite3.IntegrityError(
             "%d current claim(s) have no root_id after migration" % missing)
-    # Keep idx_agent_cur_path (rel_path current-unique) for now: the un-rewired
-    # boot still opens claims keyed on rel_path, and current rel_paths stay 1:1
-    # until relink/move exist. WP-E drops it once the insert path sets root_id
-    # and a reused rel_path (two current rows, one path) becomes reachable.
+    # The rel_path current-unique index (idx_agent_cur_path) is NOT recreated: WP-E
+    # keys the insert path on root_id, so a reused rel_path after a move can hold
+    # two current rows sharing a frozen rel_path. _ensure_agent_tables drops it
+    # every boot (idempotent) to retire it from any legacy/already-v1 db too.
     conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_agent_cur_rootid"
                  " ON agent_registry(root_id) WHERE valid_to IS NULL")
     conn.execute("DROP INDEX IF EXISTS idx_agent_cur_name")
@@ -1466,32 +1498,39 @@ def _root_is_gone(rel):
     return True, ""
 
 
-def _free_name(candidate, taken, reserved):
-    """First unclaimed variant of `candidate`. Case-insensitive against both."""
-    low = {t.lower() for t in taken} | {r.lower() for r in reserved}
-    if candidate and candidate.lower() not in low:
-        return candidate, None
-    base = candidate or "agent"
-    n = 2
-    while f"{base}-{n}".lower() in low:
-        n += 1
-    return f"{base}-{n}", candidate
+# De-confliction lives in the shared mutation module now (roots_register.deconflict,
+# grandfathers-win) — cboot's _free_name was its second copy and has been removed.
 
 
 # ── Opt-in decisions (interactive) ───────────────────────────────────
 
 def decide_agent_optin(report, rows):
-    """Ask, once, about every root we have never asked about.
+    """Detect first-touch roots and, at a terminal, decide them — through the module.
 
-    A root with a row in `agent_optin` is never asked again — the decision is
-    durable. Outside a terminal nothing is asked and nothing is recorded; the
-    undecided roots are reported so a human can run cboot from a terminal.
+    A root is UNDECIDED when it has no `agent_optin` decision keyed on its
+    identity: either it is UNLINKED (no current `roots_register` spine row at its
+    rel_path — a dir created after the day-one mint) or LINKED-but-never-asked (the
+    day-one mint gave it a `root_id` but no decision). Both are surfaced.
+
+    A root with a decision is never asked again — the decision is durable and keyed
+    on `root_id`, so it survives a move. Outside a terminal nothing is asked and
+    nothing is written; the undecided roots are reported so a human can run cboot
+    from a terminal. At a terminal the human opts in or declines, and the write
+    goes THROUGH the shared mutation module — `mint` canonicalizes an unlinked
+    root's identity, then `accept`/`decline` records the decision. No raw
+    agent_optin/roots_register write lives here.
+
+    Fork-vs-move (D4): when an unlinked root is being decided and an ORPHANED
+    current spine row exists (its dir has vanished), the human is offered relink
+    (this is that project moved — keep its `root_id` and transcripts) vs new (mint
+    a fresh identity). Non-TTY leaves it unlinked and reports; it never guesses.
     """
     try:
         import sqlite3
     except ImportError:
         return
     ao = _agent_ownership()
+    rr = _roots_register()
     sqlite_factory = _load_module(CODEX / "reactive" / "sqlite" / "sqlite.py")
     db_path = STATE / "roots.db"
 
@@ -1506,8 +1545,21 @@ def decide_agent_optin(report, rows):
         return
     try:
         _ensure_agent_tables(conn)
-        decided = {r[0] for r in conn.execute("SELECT rel_path FROM agent_optin")}
-        undecided = [r for r in candidates if r["rel_path"] not in decided]
+        # Identity spine (current) keyed both ways, and the set of decided
+        # identities. A candidate is decided iff it is linked AND its root_id
+        # carries a decision.
+        spine_by_rel = {row["rel_path"].casefold(): row["root_id"] for row in
+                        conn.execute("SELECT root_id, rel_path FROM roots_register"
+                                     " WHERE valid_to IS NULL")}
+        decided_ids = {row[0] for row in
+                       conn.execute("SELECT root_id FROM agent_optin")}
+
+        def _rid(rel):
+            return spine_by_rel.get(rel.casefold())
+
+        undecided = [r for r in candidates
+                     if _rid(r["rel_path"]) is None
+                     or _rid(r["rel_path"]) not in decided_ids]
         if not undecided:
             return
 
@@ -1520,30 +1572,83 @@ def decide_agent_optin(report, rows):
                 f"from a terminal to decide")
             return
 
-        live = {r["rel_path"] for r in rows}
-        # `taken` is base-space (pre-suffix). Registry agent_name is stored
-        # suffixed, so strip the -pj namespace suffix back off for comparison.
+        live = {r["rel_path"].casefold() for r in rows}
+        # Orphaned current spine rows: an identity whose rel_path is not in this
+        # walk and whose dir is demonstrably gone — a possible move destination for
+        # an unlinked newcomer (D4). Conservative: _root_is_gone gates it, so a
+        # merely-skipped root is never offered as a move source.
+        orphans = []
+        for row in conn.execute("SELECT root_id, rel_path, is_apex FROM roots_register"
+                                " WHERE valid_to IS NULL AND is_apex = 0"):
+            if row["rel_path"].casefold() in live:
+                continue
+            gone, _why = _root_is_gone(row["rel_path"])
+            if gone:
+                orphans.append((row["root_id"], row["rel_path"]))
+
+        # `taken` is base-space (pre-suffix): the default @name suggestion avoids
+        # names already claimed or reserved for a still-live decision. The
+        # authoritative de-confliction happens in generate_agents; this is UX only.
         _sfx = ao.SUFFIX
         taken = {(n[:-len(_sfx)] if n.endswith(_sfx) else n) for (n,) in
                  conn.execute("SELECT agent_name FROM agent_registry"
                               " WHERE valid_to IS NULL")}
-        # Only decisions for paths that still exist reserve a name. A renamed or
-        # deleted project used to hold its @name forever through a stale row that
-        # nothing ever cleaned up.
-        taken |= {r[0] for r in conn.execute(
-            "SELECT requested_name, rel_path FROM agent_optin"
-            " WHERE enabled = 1 AND requested_name IS NOT NULL") if r[1] in live}
+        taken |= {row["requested_name"] for row in conn.execute(
+            "SELECT o.requested_name AS requested_name, rr.rel_path AS rel_path"
+            " FROM agent_optin o JOIN roots_register rr"
+            "   ON rr.root_id = o.root_id AND rr.valid_to IS NULL"
+            " WHERE o.enabled = 1 AND o.requested_name IS NOT NULL")
+            if row["rel_path"].casefold() in live}
 
         print()
         print(f"  {len(undecided)} project(s) not yet decided. "
               f"Enter = the default in [brackets]; Ctrl-C stops (nothing recorded).")
-        stamp = now_iso()
         recorded = 0
         for r in undecided:
+            rel = r["rel_path"]
             folder = Path(r["abs_path"]).name
             status, text = _read_child_text(Path(r["abs_path"]) / "CLAUDE.md")
             print()
-            print(f"  ── {r['rel_path']}")
+            print(f"  ── {rel}")
+
+            # Resolve this root's identity. A linked root already has a root_id
+            # (day-one mint or a prior boot); an unlinked one is canonicalized here
+            # — unless it is the destination of a move, in which case relink keeps
+            # the old identity and its transcripts.
+            rid = _rid(rel)
+            already_decided = rid is not None and rid in decided_ids
+            if rid is None:
+                choice = None
+                if orphans:
+                    print(f"     No identity yet. Orphaned (moved-away?) projects:")
+                    for i, (orid, orel) in enumerate(orphans, 1):
+                        print(f"       {i}. {orel}  (root_id {orid})")
+                    try:
+                        pick = input("     Is this one of them moved here? "
+                                     "[number / N=new project] ").strip()
+                    except (EOFError, KeyboardInterrupt):
+                        print()
+                        report.warn("Agent opt-in: interrupted",
+                                    f"{len(undecided) - recorded} project(s) still undecided")
+                        break
+                    if pick.isdigit() and 1 <= int(pick) <= len(orphans):
+                        choice = orphans.pop(int(pick) - 1)
+                if choice is not None:
+                    orid, _orel = choice
+                    rr.relink(conn, orid, rel)
+                    conn.commit()
+                    rid = orid
+                    spine_by_rel[rel.casefold()] = rid
+                    already_decided = rid in decided_ids
+                    print(f"     -> relinked to root_id {rid} (identity + transcripts kept)")
+                    if already_decided:
+                        recorded += 1
+                        continue        # the decision moved with the identity
+                else:
+                    rid = rr.mint(conn, rel)
+                    conn.commit()
+                    spine_by_rel[rel.casefold()] = rid
+
             try:
                 ans = input(f"     Address it as an @name? [y/N] ").strip().lower()
             except (EOFError, KeyboardInterrupt):
@@ -1552,16 +1657,14 @@ def decide_agent_optin(report, rows):
                             f"{len(undecided) - recorded} project(s) still undecided")
                 break
             if ans not in ("y", "yes"):
-                conn.execute(
-                    "INSERT INTO agent_optin (rel_path, enabled, requested_name,"
-                    " description, decided_at, decided_by)"
-                    " VALUES (?, 0, NULL, NULL, ?, 'prompt')", (r["rel_path"], stamp))
+                rr.decline(conn, rid)
                 conn.commit()
+                decided_ids.add(rid)
                 recorded += 1
                 continue
 
             # De-conflict in base space; the -pj suffix is a display/emit concern.
-            default_base, _ = _free_name(ao.derive_agent_name(folder), taken,
+            default_base = rr.deconflict(ao.derive_agent_name(folder), taken,
                                          ao.RESERVED_NAMES)
             name = None
             while name is None:
@@ -1598,12 +1701,9 @@ def decide_agent_optin(report, rows):
                             f"{len(undecided) - recorded} project(s) still undecided")
                 break
 
-            conn.execute(
-                "INSERT INTO agent_optin (rel_path, enabled, requested_name,"
-                " description, decided_at, decided_by)"
-                " VALUES (?, 1, ?, ?, ?, 'prompt')",
-                (r["rel_path"], name, desc, stamp))
+            rr.accept(conn, rid, requested_name=name, description=desc)
             conn.commit()
+            decided_ids.add(rid)
             taken.add(name)
             recorded += 1
             print(f"     -> @{ao.suffixed(name)}")
@@ -1791,15 +1891,49 @@ def generate_agents(report, rows):
       try:
         _ensure_agent_tables(conn)
 
+        rr = _roots_register()
+
         by_path = {r["rel_path"]: r for r in rows if not r["is_apex"]}
         # Roots the walk found and deliberately excluded. Present on disk, not
         # eligible for a row — and never a reason to close a claim.
         excluded = dict(getattr(rows, "excluded", {}) or {})
-        optin = {r["rel_path"]: r for r in conn.execute(
-            "SELECT rel_path, enabled, requested_name, description FROM agent_optin")}
-        current = {r["rel_path"]: r for r in conn.execute(
-            "SELECT id, agent_name, rel_path, description, agent_file"
-            " FROM agent_registry WHERE valid_to IS NULL")}
+
+        # The identity spine (CURRENT): the walked rel_path <-> root_id link, used
+        # to key everything on identity rather than location, so a move is
+        # transparent to projection.
+        rel_rootid = {}   # rel_path.casefold() -> root_id  (current spine)
+        for row in conn.execute("SELECT root_id, rel_path FROM roots_register"
+                                " WHERE valid_to IS NULL"):
+            rel_rootid[row["rel_path"].casefold()] = row["root_id"]
+
+        # Every rel_path an identity has EVER held (current + closed spine rows).
+        # The refresh path uses it to tell a MOVED file (its marker names a rel this
+        # identity used to sit at) from a HUMAN-EDITED one (its marker names a rel
+        # this identity never had, or is gone): the former is ours to re-project
+        # with the current marker, the latter is left untouched.
+        spine_history = {}
+        for row in conn.execute("SELECT root_id, rel_path FROM roots_register"):
+            spine_history.setdefault(row["root_id"], set()).add(
+                row["rel_path"].casefold())
+
+        # Decisions keyed on identity. `optin[root_id]` is the durable answer.
+        optin = {row["root_id"]: row for row in conn.execute(
+            "SELECT root_id, enabled, requested_name, description, decided_by"
+            " FROM agent_optin")}
+        # Current claims keyed on identity, each carrying the CURRENT spine rel_path
+        # (COALESCE onto the claim's own frozen rel_path if the identity has no
+        # current spine row, mirroring claims_for, so an orphaned identity is never
+        # silently dropped from the close pass).
+        current = {}
+        for row in conn.execute(
+            "SELECT ar.id, ar.agent_name, ar.agent_file, ar.root_id,"
+            " COALESCE(rr.rel_path, ar.rel_path) AS cur_rel"
+            " FROM agent_registry ar"
+            " LEFT JOIN roots_register rr"
+            "   ON rr.root_id = ar.root_id AND rr.valid_to IS NULL"
+            " WHERE ar.valid_to IS NULL"):
+            if row["root_id"] is not None:
+                current[row["root_id"]] = row
 
         stamp = now_iso()
         AGENTS_DIR.mkdir(parents=True, exist_ok=True)
@@ -1813,8 +1947,9 @@ def generate_agents(report, rows):
 
         wrote, closed, skipped, diverged = 0, 0, 0, []
 
-        # ── Close claims whose root is gone, opted out, or renamed away ──
-        for rel, row in current.items():
+        # ── Close claims whose root is gone or was opted out (via the module) ──
+        for root_id, row in current.items():
+            rel = row["cur_rel"]
             reason = None
             if rel not in by_path:
                 # ABSENCE FROM THE WALK IS NOT EVIDENCE OF DELETION, and treating
@@ -1842,7 +1977,7 @@ def generate_agents(report, rows):
                     skipped += 1
                     continue
                 reason = "root-removed"
-            elif not optin.get(rel, {"enabled": 0})["enabled"]:
+            elif not optin.get(root_id, {"enabled": 0})["enabled"]:
                 reason = "opted-out"
             if reason is None:
                 continue
@@ -1869,8 +2004,10 @@ def generate_agents(report, rows):
                         pass
                     except OSError as e:
                         report.warn(f"Agents: could not remove {target.name}", str(e))
-            conn.execute("UPDATE agent_registry SET valid_to = ?, close_reason = ?"
-                         " WHERE id = ?", (stamp, reason, row["id"]))
+            # The SOLE writer records the close: 'opted-out' also flips the durable
+            # decision off, 'root-removed' leaves it standing (a vanished project is
+            # not un-decided). No raw agent_registry UPDATE lives here any more.
+            rr.close_claim(conn, root_id, reason)
             conn.commit()
             # The claim is gone, so the file it named is no longer ours. Drop it
             # from the snapshot: otherwise a file left in place because it had
@@ -1887,11 +2024,20 @@ def generate_agents(report, rows):
         # overwritten — and never repaired, since its marker would then name the
         # other root and the diverged check refuses to rewrite it forever.
         names_taken = {r["agent_name"] for r in current.values()}
-        enabled = [(rel, r) for rel, r in sorted(by_path.items())
-                   if optin.get(rel, {"enabled": 0})["enabled"]]
+        # An enabled walked root: one whose CURRENT identity carries an enabled
+        # decision. An UNLINKED walked root (no current spine row — created after
+        # the day-one mint, not yet canonicalized) has no identity to carry a
+        # decision, so it is not projected until first-touch mints it.
+        enabled = []
+        for rel, r in sorted(by_path.items()):
+            rid = rel_rootid.get(rel.casefold())
+            if rid is None:
+                continue
+            if optin.get(rid, {"enabled": 0})["enabled"]:
+                enabled.append((rel, rid, r))
 
-        for rel, root_row in enabled:
-            decision = optin[rel]
+        for rel, root_id, root_row in enabled:
+            decision = optin[root_id]
             abs_path = Path(root_row["abs_path"])
             status, text = _read_child_text(abs_path / "CLAUDE.md")
             if status == "unreadable":
@@ -1902,7 +2048,7 @@ def generate_agents(report, rows):
                 skipped += 1
                 continue
 
-            held = current.get(rel)
+            held = current.get(root_id)
             # Clean, human-readable name for prose ("You are the drawio project
             # agent"). The invocable @name is this plus the -pj namespace suffix.
             base = ao.derive_agent_name(
@@ -1916,7 +2062,7 @@ def generate_agents(report, rows):
                     # derive_agent_name emptied out — a folder (or a hand-written
                     # requested_name) with no [A-Za-z0-9] content (e.g. a purely
                     # non-Latin or all-punctuation name). Skip rather than fall
-                    # through to _free_name, whose "agent" fallback would hand back
+                    # through to deconflict, whose "agent" fallback would hand back
                     # a bare `agent-2`, OUTSIDE the -pj namespace the ownership
                     # model relies on to stay disjoint from hand-authored agents.
                     report.warn(f"Agents: {rel} has no addressable @name",
@@ -1943,7 +2089,9 @@ def generate_agents(report, rows):
                 for other in AGENTS_DIR.glob("**/*.[mM][dD]"):
                     if not ao.owns(other, claims):
                         blocked.add(other.stem)
-                name, deconflicted_from = _free_name(want, blocked, ao.RESERVED_NAMES)
+                # De-confliction is the module's — grandfathers win, case-folded.
+                name = rr.deconflict(want, blocked, ao.RESERVED_NAMES)
+                deconflicted_from = want if name != want else None
                 if not name:
                     report.warn(f"Agents: {rel} has no usable @name", "skipped")
                     skipped += 1
@@ -1960,9 +2108,7 @@ def generate_agents(report, rows):
                 # reopens a sanitized one instead of wedging.
                 report.warn(f"Agents: {rel} held @name is malformed — closing the "
                             f"corrupt claim", agent_rel)
-                conn.execute("UPDATE agent_registry SET valid_to = ?,"
-                             " close_reason = 'invalid-name' WHERE id = ?",
-                             (stamp, held["id"]))
+                rr.close_claim(conn, root_id, "invalid-name")
                 conn.commit()
                 claims.pop(ao._key(target), None)
                 skipped += 1
@@ -1972,9 +2118,12 @@ def generate_agents(report, rows):
             # Prepend the role uniformly at emit time so it holds even over a
             # custom opt-in description; the stored agent_optin.description stays
             # clean. Spells "project agent" — the -pj suffix never reaches prose.
+            # Description is DERIVED every boot and projected into the file only —
+            # it is no longer versioned in agent_registry (de-durabled).
             description = f"Project agent for {rel} — {clean_desc}"
             codex_dir = (ROOT / ".codex").as_posix()
-            # The marker is interpolated, never substituted in afterwards: a
+            # The marker names the CURRENT spine rel_path (== rel, the walked
+            # location) and is interpolated, never substituted in afterwards: a
             # placeholder pass would also rewrite a description that happened to
             # contain the placeholder text, producing unparseable frontmatter.
             content = _agent_brief(name, base, rel, abs_path.as_posix(), codex_dir,
@@ -1982,52 +2131,54 @@ def generate_agents(report, rows):
 
             if held:
                 # Ours by the registry. Whether we may REWRITE it is a separate
-                # question: if the marker is gone or altered, a human has been in
-                # the file — warn and leave it, never overwrite.
+                # question. The marker names a rel_path; three cases:
+                #   * it names the CURRENT rel  -> up to date; idempotence-check it.
+                #   * it names a PAST rel of this same identity (a move happened,
+                #     e.g. via relink) -> ours, refresh it with the current marker.
+                #   * it names neither (gone, or another root) -> a human has been
+                #     in the file; warn and leave it, never overwrite.
                 if target.exists():
-                    if not ao.marker_matches(target, rel):
-                        diverged.append((agent_rel, "marker missing or altered — not overwritten"))
-                        continue
-                    # Idempotence: an unchanged file is not rewritten, so two
-                    # consecutive boots leave agent-file mtimes untouched.
-                    existing = target.read_text(encoding="utf-8", errors="replace")
-                    if _same_but_for_stamp(existing, content):
-                        continue
+                    if ao.marker_matches(target, rel):
+                        # Idempotence: an unchanged file is not rewritten, so two
+                        # consecutive boots leave agent-file mtimes untouched.
+                        existing = target.read_text(encoding="utf-8", errors="replace")
+                        if _same_but_for_stamp(existing, content):
+                            continue
+                    else:
+                        marker_rel = ao.read_marker(target)
+                        moved = (marker_rel is not None and marker_rel.casefold()
+                                 in spine_history.get(root_id, set()))
+                        if not moved:
+                            diverged.append((agent_rel, "marker missing or altered — not overwritten"))
+                            continue
+                        # else: ours at a stale (past) rel — fall through to refresh.
+                # A re-projection: the owned file was deleted, moved, or its
+                # (derived) description drifted. Rewrite it in place; NO history row
+                # opens — description is no longer a durable, versioned attribute.
                 if not _write_agent_file(target, content, report, owned=True):
                     continue
-                if held["description"] != description:
-                    conn.execute("UPDATE agent_registry SET valid_to = ?,"
-                                 " close_reason = 'description-changed' WHERE id = ?",
-                                 (stamp, held["id"]))
-                    conn.execute(
-                        "INSERT INTO agent_registry (agent_name, rel_path, source_folder,"
-                        " deconflicted_from, description, agent_file, valid_from,"
-                        " change_reason) VALUES (?,?,?,NULL,?,?,?,'description-changed')",
-                        (name, rel, abs_path.name, description, agent_rel, stamp))
-                    conn.commit()
                 wrote += 1
                 continue
 
-            # New claim. The registry row is committed BEFORE the file lands, so
-            # a crash in between leaves a claim with no file — which the next boot
-            # simply writes. The reverse order would leave a file nobody claims,
-            # permanently demoted to the foreign bucket and never swept.
+            # New claim. The SOLE writer opens it (registry claim + enabled opt-in)
+            # BEFORE the file lands, so a crash in between leaves a claim with no
+            # file — which the next boot simply re-projects. The reverse order would
+            # leave a file nobody claims, permanently demoted to the foreign bucket
+            # and never swept. The human's decision fields are passed through so the
+            # upsert re-affirms (never clobbers) the answer already recorded.
             try:
-                conn.execute(
-                    "INSERT INTO agent_registry (agent_name, rel_path, source_folder,"
-                    " deconflicted_from, description, agent_file, valid_from,"
-                    " change_reason) VALUES (?,?,?,?,?,?,?,'opted-in')",
-                    (name, rel, abs_path.name, deconflicted_from, description,
-                     agent_rel, stamp))
+                rr.open_claim(conn, root_id, name, abs_path.name, agent_rel,
+                              deconflicted_from=deconflicted_from,
+                              requested_name=decision["requested_name"],
+                              description=decision["description"],
+                              decided_by=decision["decided_by"])
                 conn.commit()
-            except sqlite3.Error as e:
+            except (sqlite3.Error, ValueError) as e:
                 report.warn(f"Agents: registry insert failed for {rel}", str(e))
                 skipped += 1
                 continue
             if not _write_agent_file(target, content, report, owned=False):
-                conn.execute("UPDATE agent_registry SET valid_to = ?,"
-                             " close_reason = 'write-failed' WHERE rel_path = ?"
-                             " AND valid_to IS NULL", (stamp, rel))
+                rr.close_claim(conn, root_id, "write-failed")
                 conn.commit()
                 skipped += 1
                 continue
@@ -2056,9 +2207,16 @@ def generate_agents(report, rows):
                     pass
 
         # ── Mirror onto the rebuilt roots table (denormalised, never authority) ──
+        # Keyed on the CURRENT spine rel_path (the roots table's rel_path is the
+        # walked location), falling back to the claim's frozen rel_path when the
+        # identity has no current spine row.
         live = {r["rel_path"]: r for r in conn.execute(
-            "SELECT agent_name, rel_path, agent_file FROM agent_registry"
-            " WHERE valid_to IS NULL")}
+            "SELECT ar.agent_name AS agent_name,"
+            " COALESCE(rr.rel_path, ar.rel_path) AS rel_path,"
+            " ar.agent_file AS agent_file FROM agent_registry ar"
+            " LEFT JOIN roots_register rr"
+            "   ON rr.root_id = ar.root_id AND rr.valid_to IS NULL"
+            " WHERE ar.valid_to IS NULL")}
         for rel, r in live.items():
             # Advertise only what actually exists on disk — a claim whose write
             # failed must not appear in the mirror as an available @name.

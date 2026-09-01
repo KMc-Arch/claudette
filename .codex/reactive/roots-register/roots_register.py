@@ -3,11 +3,14 @@
 Every durable identity/claim mutation in the root-identity system passes through
 this module. `roots_register` (the identity spine), `agent_registry` (the SCD2
 @name claim ledger), and `agent_optin` (the decision) are written HERE and
-nowhere else. The decision is a matched pair: `open_claim` records an ENABLED
-opt-in (and opens the @name claim), `decline` records a DISABLED one (decision
-only, no claim). Boot's first-touch prompt, the `/roots` reconfigure command, and
-`/move-project` all CALL these functions; none of them writes those tables
-directly. Two divergent copies of claim-mutation is exactly the bug the shared
+nowhere else. The decision writers are a matched pair: `accept` records an
+ENABLED opt-in decision and `decline` a DISABLED one — both write ONLY the
+durable decision, never a claim. `open_claim` records an ENABLED opt-in AND opens
+the @name claim: it is what boot's projection pass calls once a decision already
+stands, after de-confliction has chosen the @name. Boot's first-touch prompt
+records the decision (`accept`/`decline`); the projection pass opens the claim
+(`open_claim`); the `/roots` reconfigure command and `/move-project` also CALL
+these functions; none of them writes those tables directly. Two divergent copies of claim-mutation is exactly the bug the shared
 `agent_ownership` and `transcript_slug` modules already exist to make
 impossible — this is that rule a third time, for the writes.
 
@@ -209,6 +212,37 @@ def open_claim(conn, root_id, agent_name, source_folder, agent_file,
         (root_id, rel_path,
          agent_name if requested_name is None else requested_name,
          description, stamp, decided_by))
+
+
+def accept(conn, root_id, *, requested_name=None, description=None,
+           decided_by="prompt"):
+    """Record an ACCEPT decision for `root_id`: agent_optin enabled=1, no claim.
+
+    The enabled complement of `decline`, and the decision half of `open_claim`
+    without the @name claim. Boot's first-touch opt-in calls this to record the
+    human's YES; the projection pass (`generate_agents`) later derives + de-
+    conflicts the @name and opens the claim via `open_claim`. Splitting the
+    decision from the claim is what keeps de-confliction (which needs the whole
+    live agents directory) in the projection pass rather than the prompt — a claim
+    pre-opened here would make every enabled root read as already-claimed.
+
+    The `agent_optin` row for `root_id` is upserted to enabled=1, freezing the
+    root's CURRENT spine `rel_path` as the decision-time location. Opens a guarded
+    transaction and leaves the commit to the caller, like every writer here.
+    """
+    _begin(conn)
+    rel_path = _spine_rel_path(conn, root_id)
+    stamp = _now_iso()
+    conn.execute(
+        "INSERT INTO agent_optin (root_id, rel_path, enabled, requested_name,"
+        " description, decided_at, decided_by)"
+        " VALUES (?, ?, 1, ?, ?, ?, ?)"
+        " ON CONFLICT(root_id) DO UPDATE SET"
+        " enabled = 1, rel_path = excluded.rel_path,"
+        " requested_name = excluded.requested_name,"
+        " description = excluded.description,"
+        " decided_at = excluded.decided_at, decided_by = excluded.decided_by",
+        (root_id, rel_path, requested_name, description, stamp, decided_by))
 
 
 def decline(conn, root_id, *, requested_name=None, description=None,

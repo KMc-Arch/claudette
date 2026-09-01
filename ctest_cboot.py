@@ -83,6 +83,7 @@ COVERED = {
     "rename_claim",
     "relink",
     "deconflict",
+    "accept",
     "decline",
 }
 
@@ -835,6 +836,107 @@ def _():
         eq(target.read_text(), "REWRITTEN\n", "owned rewrite lands")
 
 
+@test("AG-37", "generate_agents")
+def _():
+    """A claimed agent file deleted by hand is RE-PROJECTED on the next boot.
+
+    Projection is idempotent but not a one-shot: the durable claim/decision are
+    the authority, and the .md file is a projection of them. A human (or a purge,
+    or a crash) removing the file must not silently un-address a live project — the
+    next generate_agents writes it back from the claim.
+    """
+    with scratch_apex([("drawio", "A tool.\n")]) as apex:
+        ag_optin(apex, [("drawio", 1, "drawio", "A tool.")])
+        ag_boot(apex)
+        f = apex / ".claude" / "agents" / "drawio-pj.md"
+        truthy(f.exists(), "setup: the project has an agent file")
+        f.unlink()                                   # a human deletes it by hand
+        ag_boot(apex)                                # next boot must re-project it
+        truthy(f.exists(), "the deleted owned file is re-projected from the claim")
+        truthy('<!-- cboot:agent root="drawio"' in f.read_text(),
+               "the re-projected file carries the current marker")
+        conn = _sqlite_factory().connect(str(apex / ".state" / "roots.db"))
+        n = conn.execute("SELECT COUNT(*) FROM agent_registry"
+                         " WHERE valid_to IS NULL").fetchone()[0]
+        conn.close()
+        eq(n, 1, "and no new claim opened — the same one was re-projected")
+
+
+@test("AG-38", "generate_agents")
+def _():
+    """A decision flipped disabled THROUGH THE MODULE sweeps the projected file.
+
+    The complement of AG-37: turning the durable answer off (via the sole writer's
+    `decline`, no raw UPDATE) makes the next projection close the claim and remove
+    the file. Proves the projection tracks the decision in both directions.
+    """
+    with scratch_apex([("drawio", "A tool.\n")]) as apex:
+        ag_optin(apex, [("drawio", 1, "drawio", "A tool.")])
+        ag_boot(apex)
+        f = apex / ".claude" / "agents" / "drawio-pj.md"
+        truthy(f.exists(), "setup: the project has an agent file")
+
+        rr = _load_roots_register()
+        conn = _sqlite_factory().connect(str(apex / ".state" / "roots.db"))
+        rid = conn.execute("SELECT root_id FROM roots_register"
+                           " WHERE rel_path='drawio' AND valid_to IS NULL").fetchone()[0]
+        rr.decline(conn, rid)                        # disable via the module
+        conn.commit()
+        conn.close()
+
+        ag_boot(apex)
+        truthy(not f.exists(), "the projected file is swept when the decision goes off")
+        conn = _sqlite_factory().connect(str(apex / ".state" / "roots.db"))
+        row = conn.execute("SELECT valid_to, close_reason FROM agent_registry"
+                           " WHERE root_id = ?", (rid,)).fetchone()
+        conn.close()
+        truthy(row["valid_to"] is not None and row["close_reason"] == "opted-out",
+               "the claim is closed opted-out: %r" % (dict(row),))
+
+
+@test("AG-39", "generate_agents")
+def _():
+    """A moved project's agent file is RE-PROJECTED with the new rel_path.
+
+    After a relink the file's marker still names the identity's PRIOR rel_path.
+    Projection must tell that apart from a human edit: a marker naming a rel this
+    same identity used to hold is ours to refresh (marker + prose follow the move),
+    whereas a marker naming a rel this identity never had stays diverged (AG-05).
+    """
+    ao = cboot._agent_ownership()
+    with scratch_apex([("newhome", "Home.\n")]) as apex:
+        db = apex / ".state" / "roots.db"
+        rr = _load_roots_register()
+        conn = _sqlite_factory().connect(str(db))
+        cboot._ensure_agent_tables(conn)
+        # An identity minted at 'oldhome', claimed, then relinked to 'newhome':
+        # its spine history holds both, its current spine is 'newhome'.
+        rid = rr.mint(conn, "oldhome")
+        rr.open_claim(conn, rid, "home-pj", "oldhome", ".claude/agents/home-pj.md")
+        h = Path(tempfile.mkdtemp(prefix="ctest-ag39-home-"))
+        try:
+            rr.relink(conn, rid, "newhome", home=h)
+        finally:
+            _shutil.rmtree(h, ignore_errors=True)
+        conn.commit()
+        conn.close()
+        # Plant the agent file exactly as the day-one boot (at 'oldhome') left it:
+        # a valid cboot marker naming the OLD rel_path.
+        f = apex / ".claude" / "agents" / "home-pj.md"
+        f.write_text("---\nname: home-pj\n---\n\n%s\nprose about oldhome\n"
+                     % ao.render_marker("oldhome", "2026-01-01T00:00:00Z"))
+
+        rep = ag_boot(apex)
+        txt = f.read_text()
+        truthy(ao.marker_matches(f, "newhome"),
+               "the marker was refreshed to the current spine rel_path: %r"
+               % [l for l in txt.splitlines() if "cboot:agent" in l])
+        truthy("newhome" in txt and "oldhome" not in txt,
+               "the prose followed the move too")
+        truthy(not any("diverged" in w for w in rep.warnings),
+               "a move is not a divergence: %r" % (rep.warnings,))
+
+
 # ── purge side of the same rule (PG) ─────────────────────────────────
 
 @contextlib.contextmanager
@@ -1099,6 +1201,37 @@ def _():
            "both agents survive an empty inventory")
         truthy(any("still present" in w for w in rep.warnings),
                "and the skip is reported: %r" % (rep.warnings,))
+
+
+@test("MU-05", "generate_agents")
+def _():
+    """Revert re-projection of a deleted owned file -> AG-37's file stays gone.
+
+    A real mutant, not a simulation: `_write_agent_file` is wrapped so that when
+    the target is ABSENT it reports success WITHOUT writing — the reverted
+    behaviour of a projection that only rewrites a file it can already see. Under
+    it, the hand-deleted claimed file is never re-created, so AG-37's `f.exists()`
+    flips to False. That is what makes AG-37 discriminating rather than incidental.
+    """
+    with scratch_apex([("drawio", "A tool.\n")]) as apex:
+        ag_optin(apex, [("drawio", 1, "drawio", "A tool.")])
+        ag_boot(apex)
+        f = apex / ".claude" / "agents" / "drawio-pj.md"
+        f.unlink()
+        real = cboot._write_agent_file
+
+        def skip_absent(target, content, report, *, owned):
+            if not target.exists():          # the reverted behaviour: never (re)create
+                return True
+            return real(target, content, report, owned=owned)
+
+        cboot._write_agent_file = skip_absent
+        try:
+            ag_boot(apex)
+            broke = not f.exists()
+        finally:
+            cboot._write_agent_file = real
+        truthy(broke, "mutation must leave the file gone — otherwise AG-37 proves nothing")
 
 
 @test("AG-19", "build_root_inventory")
@@ -1957,7 +2090,7 @@ def _():
 def _():
     """A folder that transliterates to an empty base is skipped, never `agent-2`.
 
-    _free_name's 'agent' fallback would escape the -pj namespace; the guard now
+    deconflict's 'agent' fallback would escape the -pj namespace; the guard now
     skips such a root before it can reach that fallback.
     """
     with scratch_apex([("日本語", "J.\n")]) as apex:
@@ -2477,6 +2610,33 @@ def _():
         eq(len(rows), 1, "exactly one decision row per root_id")
         eq((rows[0]["enabled"], rows[0]["description"]), (0, "still no"),
            "the decline decision is updated in place")
+
+
+@test("RR-10", "accept")
+def _():
+    """accept records an ENABLED decision and opens NO claim — the enabled
+    complement of decline (boot's first-touch YES, before the claim is opened)."""
+    with rr_rig() as (rr, conn, apex):
+        rid = rr.mint(conn, "keeper")
+        rr.accept(conn, rid, requested_name="keep", description="addressable")
+        optin = conn.execute(
+            "SELECT rel_path, enabled, requested_name, description, decided_by"
+            " FROM agent_optin WHERE root_id = ?", (rid,)).fetchone()
+        eq((optin["enabled"], optin["rel_path"], optin["requested_name"],
+            optin["decided_by"]),
+           (1, "keeper", "keep", "prompt"),
+           "an enabled opt-in keyed on root_id, freezing the spine rel_path")
+        eq(conn.execute("SELECT COUNT(*) FROM agent_registry WHERE root_id = ?",
+                        (rid,)).fetchone()[0], 0,
+           "accept opens no agent_registry claim (the decision half only)")
+
+        # A later accept updates the same decision row in place, never a second.
+        rr.accept(conn, rid, requested_name="keep", description="still yes")
+        rows = conn.execute("SELECT enabled, description FROM agent_optin"
+                            " WHERE root_id = ?", (rid,)).fetchall()
+        eq(len(rows), 1, "exactly one decision row per root_id")
+        eq((rows[0]["enabled"], rows[0]["description"]), (1, "still yes"),
+           "the accept decision is updated in place")
 
 
 # ── runner + coverage ────────────────────────────────────────────────
