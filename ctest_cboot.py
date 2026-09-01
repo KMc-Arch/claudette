@@ -85,6 +85,18 @@ COVERED = {
     "deconflict",
     "accept",
     "decline",
+    # The `/roots` reconfigure command
+    # (.codex/explicit/roots/roots.py) — a THIN wrapper that dispatches every
+    # mutation to the roots-register module. Covered here because its drift
+    # computation and dispatch functions are the reconfigure complement of boot's
+    # first-touch prompt and must stay consistent with the writer module.
+    "compute_drift",
+    "op_disable",
+    "op_enable",
+    "op_rename",
+    "op_relink",
+    "op_canonicalize",
+    "roots_run",
 }
 
 
@@ -2280,6 +2292,7 @@ def _():
 # parameter — so a run can never touch the real store or the live registry.
 
 _RR_PY = ROOT / ".codex" / "reactive" / "roots-register" / "roots_register.py"
+_ROOTS_PY = ROOT / ".codex" / "explicit" / "roots" / "roots.py"
 
 
 def _load_roots_register():
@@ -2637,6 +2650,297 @@ def _():
         eq(len(rows), 1, "exactly one decision row per root_id")
         eq((rows[0]["enabled"], rows[0]["description"]), (1, "still yes"),
            "the accept decision is updated in place")
+
+
+# ── /roots reconfigure command (WP-F) ────────────────────────────────
+
+def _load_roots():
+    spec = importlib.util.spec_from_file_location("roots_cmd", _ROOTS_PY)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+def _durable_snapshot(db_path):
+    """A stable snapshot of the three durable tables — for 'mutated nothing'."""
+    conn = _sqlite_factory().connect(str(db_path))
+    try:
+        conn.execute("PRAGMA wal_checkpoint(FULL)")
+        snap = {}
+        for t in ("roots_register", "agent_registry", "agent_optin"):
+            snap[t] = [tuple(r) for r in conn.execute(
+                "SELECT * FROM %s ORDER BY rowid" % t)]
+        return snap
+    finally:
+        conn.close()
+
+
+@test("RS-01", "compute_drift")
+def _():
+    """A walked root with no current spine row is reported UNLINKED.
+
+    Two boots: the first day-one-mints the population it walks (user_version 0->1),
+    the second walks a child ADDED after that mint — which therefore has no spine
+    row, so build_root_inventory leaves its roots.canonical_id NULL.
+    """
+    roots = _load_roots()
+    with scratch_apex([("kept", "A kept tool.\n")]) as apex:
+        ag_boot(apex)                       # day-one mint: apex + kept get spine rows
+        fresh = apex / "fresh"
+        fresh.mkdir()
+        (fresh / "CLAUDE.md").write_text("---\nroot: true\nname: fresh\n---\n\nNew.\n")
+        ag_boot(apex)                       # 'fresh' walked, never minted -> unlinked
+        conn = _sqlite_factory().connect(str(apex / ".state" / "roots.db"))
+        try:
+            drift = roots.compute_drift(conn, apex)
+        finally:
+            conn.close()
+        rels = {u["rel_path"] for u in drift.unlinked}
+        truthy("fresh" in rels, "the after-mint child is UNLINKED (canonical_id NULL)")
+        truthy("kept" not in rels, "a canonicalized child is not unlinked")
+        truthy("." not in rels, "the apex (always minted) is not unlinked")
+
+
+@test("RS-02", "compute_drift")
+def _():
+    """A CURRENT spine row whose rel_path is absent from the last walk is ORPHANED.
+
+    After a boot populates `roots`, mint an identity for a rel_path with no walked
+    directory (as an out-of-band `mv` would leave behind): its dir is gone from the
+    walk, so /roots surfaces it as orphaned — the relink candidate.
+    """
+    roots = _load_roots()
+    rr = _load_roots_register()
+    with scratch_apex([("here", "Present.\n")]) as apex:
+        ag_boot(apex)
+        conn = _sqlite_factory().connect(str(apex / ".state" / "roots.db"))
+        try:
+            rr.mint(conn, "moved/away")     # a current spine row with no walked dir
+            conn.commit()
+            drift = roots.compute_drift(conn, apex)
+        finally:
+            conn.close()
+        orel = {o["rel_path"] for o in drift.orphaned}
+        truthy("moved/away" in orel, "an identity whose dir left the walk is ORPHANED")
+        truthy("here" not in orel, "a still-walked identity is not orphaned")
+        truthy("." not in orel, "the apex (walked) is not orphaned")
+
+
+@test("RS-03", "compute_drift")
+def _():
+    """A current claim whose on-disk file lost our marker is reported DIVERGENCE —
+    and a healthy claim is not. Report-only: the file is never touched here."""
+    roots = _load_roots()
+    with scratch_apex([("drawio", "A tool.\n")]) as apex:
+        ag_optin(apex, [("drawio", 1, "drawio", "A tool.")])
+        ag_boot(apex)                       # projects .claude/agents/drawio-pj.md
+        agent_file = apex / ".claude" / "agents" / "drawio-pj.md"
+        truthy(agent_file.exists(), "the claim projected a file")
+
+        conn = _sqlite_factory().connect(str(apex / ".state" / "roots.db"))
+        try:
+            clean = roots.compute_drift(conn, apex)
+            truthy(not clean.divergence, "a marker-matching claim is not divergent")
+
+            # A human edits the file, breaking the marker. Nothing in the DB changes.
+            agent_file.write_text("---\nname: drawio-pj\n---\n\nhand-authored now\n")
+            diverged = roots.compute_drift(conn, apex)
+        finally:
+            conn.close()
+        files = {d["agent_file"] for d in diverged.divergence}
+        truthy(".claude/agents/drawio-pj.md" in files,
+               "a claim whose file lost our marker is DIVERGENCE")
+        # Report-only: the file is left exactly as the human left it.
+        eq(agent_file.read_text(), "---\nname: drawio-pj\n---\n\nhand-authored now\n",
+           "divergence never rewrites or deletes the file")
+
+
+@test("RS-04", "op_disable")
+def _():
+    """op_disable dispatches close_claim('opted-out'): the claim is versioned out,
+    the durable opt-in decision flips off, and the un-claimed OWNED file is swept
+    while a marker-mismatched (hand-edited) file would be preserved."""
+    roots = _load_roots()
+    with rr_rig() as (rr, conn, apex):
+        (apex / ".claude" / "agents").mkdir(parents=True, exist_ok=True)
+        rid = rr.mint(conn, "drawio")
+        agent_rel = ".claude/agents/drawio-pj.md"
+        rr.open_claim(conn, rid, "drawio-pj", "drawio", agent_rel)
+        conn.commit()
+        ao = cboot._agent_ownership()
+        target = apex / agent_rel
+        target.write_text("---\nname: drawio-pj\n---\n\n%s\n\nbody\n"
+                          % ao.render_marker("drawio", "2026-01-01T00:00:00Z"))
+
+        status = roots.op_disable(conn, rid, apex=apex)
+
+        n_cur = conn.execute("SELECT COUNT(*) FROM agent_registry"
+                             " WHERE root_id = ? AND valid_to IS NULL", (rid,)).fetchone()[0]
+        eq(n_cur, 0, "the current claim is closed")
+        closed = conn.execute(
+            "SELECT close_reason FROM agent_registry WHERE root_id = ?"
+            " ORDER BY id DESC LIMIT 1", (rid,)).fetchone()["close_reason"]
+        eq(closed, "opted-out", "closed with the human-disable reason")
+        eq(conn.execute("SELECT enabled FROM agent_optin WHERE root_id = ?",
+                        (rid,)).fetchone()["enabled"], 0, "opt-in decision flipped off")
+        eq(status, "removed", "the owned agent file was swept")
+        truthy(not target.exists(), "the swept file is gone")
+
+    # A hand-edited (marker-mismatched) file is preserved, not deleted.
+    with rr_rig() as (rr, conn, apex):
+        (apex / ".claude" / "agents").mkdir(parents=True, exist_ok=True)
+        rid = rr.mint(conn, "edited")
+        agent_rel = ".claude/agents/edited-pj.md"
+        rr.open_claim(conn, rid, "edited-pj", "edited", agent_rel)
+        conn.commit()
+        target = apex / agent_rel
+        target.write_text("---\nname: edited-pj\n---\n\nhuman wrote this\n")
+        status = roots.op_disable(conn, rid, apex=apex)
+        eq(status, "preserved-hand-edited", "a hand-edited file is never deleted")
+        truthy(target.exists(), "the preserved file survives")
+
+
+@test("RS-05", "op_enable")
+def _():
+    """op_enable dispatches accept: the opt-in decision flips to enabled=1 and NO
+    claim is opened (boot's projection pass opens it). Existing decision fields are
+    preserved, not clobbered to NULL."""
+    roots = _load_roots()
+    with rr_rig() as (rr, conn, apex):
+        rid = rr.mint(conn, "declined")
+        rr.decline(conn, rid, requested_name="keepname", description="keepdesc")
+        conn.commit()
+        roots.op_enable(conn, rid)
+        row = conn.execute(
+            "SELECT enabled, requested_name, description FROM agent_optin"
+            " WHERE root_id = ?", (rid,)).fetchone()
+        eq(row["enabled"], 1, "the decision is now enabled")
+        eq((row["requested_name"], row["description"]), ("keepname", "keepdesc"),
+           "the prior requested_name/description are preserved, not NULLed")
+        eq(conn.execute("SELECT COUNT(*) FROM agent_registry WHERE root_id = ?",
+                        (rid,)).fetchone()[0], 0,
+           "op_enable opens no claim — the file is boot's job")
+
+
+@test("RS-06", "op_rename")
+def _():
+    """op_rename de-conflicts the new base and dispatches rename_claim: same
+    root_id, new suffixed @name, old claim versioned 'renamed'. A collision against
+    `taken` bumps the newcomer, grandfathers win."""
+    roots = _load_roots()
+    with rr_rig() as (rr, conn, apex):
+        rid = rr.mint(conn, "drawio")
+        rr.open_claim(conn, rid, "drawio-pj", "drawio", ".claude/agents/drawio-pj.md")
+        conn.commit()
+        name = roots.op_rename(conn, rid, "draw2", apex=apex)
+        eq(name, "draw2-pj", "the new base is suffixed and returned")
+        cur = conn.execute(
+            "SELECT agent_name, change_reason, root_id FROM agent_registry"
+            " WHERE root_id = ? AND valid_to IS NULL", (rid,)).fetchone()
+        eq((cur["agent_name"], cur["change_reason"], cur["root_id"]),
+           ("draw2-pj", "renamed", rid), "renamed in place, same identity")
+        eq(conn.execute("SELECT COUNT(*) FROM agent_registry"
+                        " WHERE root_id = ? AND valid_to IS NULL", (rid,)).fetchone()[0],
+           1, "exactly one current claim after the rename")
+        # De-confliction: renaming onto a name another live claim holds bumps to -2.
+        bumped = roots.op_rename(conn, rid, "taken", taken={"taken-pj"}, apex=apex)
+        eq(bumped, "taken-pj-2", "a colliding rename is de-conflicted (grandfather wins)")
+
+
+@test("RS-07", "op_relink")
+def _():
+    """op_relink dispatches relink: the spine is versioned under the SAME root_id,
+    the claim survives, and the transcript store follows old -> new (the re-slug)."""
+    roots = _load_roots()
+    with rr_rig() as (rr, conn, apex):
+        rid = rr.mint(conn, "old/home")
+        rr.open_claim(conn, rid, "home-pj", "home", ".claude/agents/home-pj.md")
+        conn.commit()
+        home = Path(tempfile.mkdtemp(prefix="ctest-rs07-home-")).resolve()
+        try:
+            proj = home / ".claude" / "projects"
+            proj.mkdir(parents=True)
+            slug = rr._ts().project_slug
+            old_store = proj / slug(apex / "old/home")
+            new_store = proj / slug(apex / "new/home")
+            old_store.mkdir()
+            (old_store / "s.jsonl").write_text("t\n")
+
+            roots.op_relink(conn, rid, "new/home", home=home)
+
+            cur = conn.execute(
+                "SELECT rel_path, root_id, change_reason FROM roots_register"
+                " WHERE root_id = ? AND valid_to IS NULL", (rid,)).fetchone()
+            eq((cur["rel_path"], cur["root_id"], cur["change_reason"]),
+               ("new/home", rid, "relinked"), "current spine is the new path, same id")
+            eq(conn.execute("SELECT COUNT(*) FROM roots_register WHERE root_id = ?",
+                            (rid,)).fetchone()[0], 2, "old spine row versioned, not lost")
+            truthy(conn.execute(
+                "SELECT agent_name FROM agent_registry"
+                " WHERE root_id = ? AND valid_to IS NULL", (rid,)).fetchone() is not None,
+                "the claim survives the relink")
+            truthy(not old_store.exists() and (new_store / "s.jsonl").exists(),
+                   "the transcript store followed the move (re-slug)")
+        finally:
+            _shutil.rmtree(home, ignore_errors=True)
+
+
+@test("RS-08", "op_canonicalize")
+def _():
+    """op_canonicalize dispatches mint: a fresh, never-reused root_id and a current
+    'canonicalized' spine row; a second call on the same current rel_path is
+    refused (that would be a relink, not a mint)."""
+    roots = _load_roots()
+    with rr_rig() as (rr, conn, apex):
+        rid = roots.op_canonicalize(conn, "brandnew")
+        row = conn.execute(
+            "SELECT rel_path, change_reason, valid_to, is_apex FROM roots_register"
+            " WHERE root_id = ?", (rid,)).fetchone()
+        eq((row["rel_path"], row["change_reason"], row["valid_to"], row["is_apex"]),
+           ("brandnew", "canonicalized", None, 0), "a fresh current canonicalized spine")
+        truthy(rid >= 2, "the minted id is past the apex bootstrap")
+        raised = False
+        try:
+            roots.op_canonicalize(conn, "brandnew")
+        except ValueError:
+            raised = True
+        truthy(raised, "a duplicate current rel_path is a relink, not a mint")
+
+
+@test("RS-09", "roots_run")
+def _():
+    """A NON-TTY invocation prints the drift report and mutates nothing.
+
+    run() sees no terminal (the harness process's stdin/stdout are not TTYs), so it
+    takes the report-only path: the three durable tables are byte-identical before
+    and after, and the drift shows up in stdout.
+    """
+    roots = _load_roots()
+    rr = _load_roots_register()
+    with scratch_apex([("here", "Present.\n")]) as apex:
+        ag_boot(apex)
+        db = apex / ".state" / "roots.db"
+        conn = _sqlite_factory().connect(str(db))
+        try:
+            rr.mint(conn, "moved/away")     # craft an orphan to prove the report runs
+            conn.commit()
+            conn.execute("PRAGMA wal_checkpoint(FULL)")
+        finally:
+            conn.close()
+
+        before = _durable_snapshot(db)
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            rc = roots.run(["--project-root", str(apex)])
+        after = _durable_snapshot(db)
+
+        eq(rc, 0, "non-TTY run exits 0")
+        eq(after, before, "non-TTY run mutates none of the durable tables")
+        out = buf.getvalue()
+        truthy("ORPHANED" in out and "moved/away" in out,
+               "the drift report is printed")
+        truthy("report only" in out.lower(),
+               "the non-interactive path announces itself")
 
 
 # ── runner + coverage ────────────────────────────────────────────────
