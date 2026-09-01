@@ -71,6 +71,18 @@ COVERED = {
     "_walk_candidate_roots",
     "RootRows",
     "_reached_via_symlink",
+    # The shared identity/claim mutation module
+    # (.codex/reactive/roots-register/roots_register.py) — the SOLE writer of
+    # roots_register/agent_registry/agent_optin identity rows. Covered here
+    # because boot, the /roots command, and /move-project all CALL it and must
+    # never diverge from a second copy.
+    "next_root_id",
+    "mint",
+    "open_claim",
+    "close_claim",
+    "rename_claim",
+    "relink",
+    "deconflict",
 }
 
 
@@ -2072,6 +2084,259 @@ def _():
         conn.close()
         truthy(row is not None, "the inherited agent_optin row persisted the pass")
         truthy(row is not None and row["decided_by"] == "inherited", "and is marked inherited")
+
+
+# ── roots_register: the single identity/claim writer (RR) ────────────
+#
+# Every RR test builds a throwaway temp apex, opens the post-WP-A durable schema
+# with the house factory, and drives the mutation module directly. Nothing here
+# reads or writes the live /mnt/claudette .state/roots.db, and the transcript-
+# store re-slug is exercised entirely under a temp HOME via relink's `home=`
+# parameter — so a run can never touch the real store or the live registry.
+
+_RR_PY = ROOT / ".codex" / "reactive" / "roots-register" / "roots_register.py"
+
+
+def _load_roots_register():
+    spec = importlib.util.spec_from_file_location("roots_register_mod", _RR_PY)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+@contextlib.contextmanager
+def rr_rig():
+    """A disposable apex with the migrated (user_version=1) durable schema and an
+    open house-factory connection. Yields (rr_module, conn, apex_path).
+
+    _ensure_agent_tables creates and migrates the schema and mints the apex a
+    root_id (root_id=1, rel_path='.'), exactly as a first real boot would, so the
+    first mint() a test issues gets root_id=2.
+    """
+    tmp = Path(tempfile.mkdtemp(prefix="ctest-rr-")).resolve()
+    try:
+        (tmp / ".state").mkdir(parents=True)
+        conn = _sqlite_factory().connect(str(tmp / ".state" / "roots.db"))
+        cboot._ensure_agent_tables(conn)
+        conn.commit()
+        try:
+            yield _load_roots_register(), conn, tmp
+        finally:
+            conn.close()
+    finally:
+        _shutil.rmtree(tmp, ignore_errors=True)
+
+
+@test("RR-00", "next_root_id")
+def _():
+    """The allocator is monotonic MAX+1 over ALL rows and never reuses an id."""
+    with rr_rig() as (rr, conn, apex):
+        eq(rr.next_root_id(conn), 2, "next id after the apex bootstrap (root_id=1)")
+        a, b = rr.mint(conn, "a"), rr.mint(conn, "b")
+        eq((a, b), (2, 3), "successive mints get successive ids")
+        # Retire root_id 3 entirely (version its only spine row out). A current-
+        # only MAX would now hand 3 back; MAX over ALL rows must still give 4.
+        conn.execute("UPDATE roots_register SET valid_to = '2026-01-01T00:00:00Z'"
+                     " WHERE root_id = ? AND valid_to IS NULL", (b,))
+        eq(rr.next_root_id(conn), 4, "a retired id is still counted — 3 is never reused")
+
+
+@test("RR-01", "mint")
+def _():
+    """mint allocates an unused root_id and refuses a duplicate current rel_path."""
+    with rr_rig() as (rr, conn, apex):
+        rid = rr.mint(conn, "drawio")
+        eq(rid, 2, "first mint after the apex gets root_id 2")
+        row = conn.execute(
+            "SELECT rel_path, is_apex, change_reason, valid_to FROM roots_register"
+            " WHERE root_id = ?", (rid,)).fetchone()
+        eq((row["rel_path"], row["is_apex"], row["change_reason"], row["valid_to"]),
+           ("drawio", 0, "canonicalized", None), "a current canonicalized spine row")
+        for dup in ("drawio", "DRAWIO"):
+            raised = False
+            try:
+                rr.mint(conn, dup)
+            except ValueError:
+                raised = True
+            truthy(raised,
+                   "a current rel_path (%r, NOCASE) is a relink, not a mint" % dup)
+
+
+@test("RR-02", "open_claim")
+def _():
+    """open_claim opens a current claim keyed on root_id and records the opt-in."""
+    with rr_rig() as (rr, conn, apex):
+        rid = rr.mint(conn, "drawio")
+        rr.open_claim(conn, rid, "drawio-pj", "drawio",
+                      ".claude/agents/drawio-pj.md")
+        claim = conn.execute(
+            "SELECT agent_name, rel_path, root_id, change_reason, valid_to"
+            " FROM agent_registry WHERE root_id = ? AND valid_to IS NULL",
+            (rid,)).fetchone()
+        eq((claim["agent_name"], claim["rel_path"], claim["root_id"],
+            claim["change_reason"], claim["valid_to"]),
+           ("drawio-pj", "drawio", rid, "opted-in", None),
+           "current claim freezes the spine rel_path as its claim-time location")
+        optin = conn.execute(
+            "SELECT enabled, requested_name, decided_by FROM agent_optin"
+            " WHERE root_id = ?", (rid,)).fetchone()
+        eq((optin["enabled"], optin["decided_by"]), (1, "prompt"),
+           "the opt-in decision is recorded enabled")
+
+
+@test("RR-03", "close_claim")
+def _():
+    """close_claim versions the claim (SCD2 history kept) and, on a user disable,
+    flips the opt-in decision off — the opening change_reason is never rewritten."""
+    with rr_rig() as (rr, conn, apex):
+        rid = rr.mint(conn, "drawio")
+        rr.open_claim(conn, rid, "drawio-pj", "drawio",
+                      ".claude/agents/drawio-pj.md")
+        rr.close_claim(conn, rid, "opted-out")
+        rows = conn.execute(
+            "SELECT valid_to, change_reason, close_reason FROM agent_registry"
+            " WHERE root_id = ?", (rid,)).fetchall()
+        eq(len(rows), 1, "the row is versioned in place, not deleted")
+        eq((rows[0]["change_reason"], rows[0]["close_reason"]),
+           ("opted-in", "opted-out"), "opening reason kept; close reason recorded")
+        truthy(rows[0]["valid_to"] is not None, "the claim is closed")
+        n_cur = conn.execute("SELECT COUNT(*) FROM agent_registry"
+                             " WHERE root_id = ? AND valid_to IS NULL",
+                             (rid,)).fetchone()[0]
+        eq(n_cur, 0, "no current claim after close")
+        eq(conn.execute("SELECT enabled FROM agent_optin WHERE root_id = ?",
+                        (rid,)).fetchone()[0], 0,
+           "a user disable also flips the durable opt-in decision off")
+        # A non-disable close (the project vanished) leaves the decision standing.
+        rid2 = rr.mint(conn, "other")
+        rr.open_claim(conn, rid2, "other-pj", "other",
+                      ".claude/agents/other-pj.md")
+        rr.close_claim(conn, rid2, "root-removed")
+        eq(conn.execute("SELECT enabled FROM agent_optin WHERE root_id = ?",
+                        (rid2,)).fetchone()[0], 1,
+           "root-removed is not a user disable — the decision is left standing")
+
+
+@test("RR-04", "rename_claim")
+def _():
+    """rename_claim closes the current claim and reopens under the new name, same
+    root_id, carrying the claim-time source folder forward."""
+    with rr_rig() as (rr, conn, apex):
+        rid = rr.mint(conn, "drawio")
+        rr.open_claim(conn, rid, "drawio-pj", "drawio",
+                      ".claude/agents/drawio-pj.md")
+        rr.rename_claim(conn, rid, "draw2-pj", ".claude/agents/draw2-pj.md")
+        cur = conn.execute(
+            "SELECT agent_name, source_folder, change_reason, root_id"
+            " FROM agent_registry WHERE root_id = ? AND valid_to IS NULL",
+            (rid,)).fetchone()
+        eq((cur["agent_name"], cur["source_folder"], cur["change_reason"],
+            cur["root_id"]),
+           ("draw2-pj", "drawio", "renamed", rid),
+           "new current claim: renamed, same id, source folder carried forward")
+        eq(conn.execute("SELECT COUNT(*) FROM agent_registry"
+                        " WHERE root_id = ? AND valid_to IS NULL", (rid,)).fetchone()[0],
+           1, "exactly one current claim per identity")
+        old = conn.execute(
+            "SELECT close_reason FROM agent_registry WHERE root_id = ?"
+            " AND valid_to IS NOT NULL ORDER BY id DESC LIMIT 1", (rid,)).fetchone()
+        eq(old["close_reason"], "renamed", "the prior claim closed 'renamed'")
+        eq(conn.execute("SELECT requested_name FROM agent_optin WHERE root_id = ?",
+                        (rid,)).fetchone()["requested_name"], "draw2-pj",
+           "the opt-in requested_name follows the rename")
+
+
+@test("RR-05", "relink")
+def _():
+    """relink keeps the same root_id, versions the spine, leaves the claim alive,
+    AND renames the Claude Code transcript store old -> new."""
+    with rr_rig() as (rr, conn, apex):
+        rid = rr.mint(conn, "old/home")
+        rr.open_claim(conn, rid, "home-pj", "home", ".claude/agents/home-pj.md")
+        # A fake transcript store under a temp HOME, keyed on the OLD abs path.
+        home = Path(tempfile.mkdtemp(prefix="ctest-rr-home-")).resolve()
+        proj = home / ".claude" / "projects"
+        proj.mkdir(parents=True)
+        slug = rr._ts().project_slug
+        old_store = proj / slug(apex / "old/home")
+        new_store = proj / slug(apex / "new/home")
+        old_store.mkdir()
+        (old_store / "session.jsonl").write_text("transcript\n")
+        try:
+            rr.relink(conn, rid, "new/home", home=home)
+
+            cur = conn.execute(
+                "SELECT root_id, rel_path, change_reason FROM roots_register"
+                " WHERE root_id = ? AND valid_to IS NULL", (rid,)).fetchone()
+            eq((cur["root_id"], cur["rel_path"], cur["change_reason"]),
+               (rid, "new/home", "relinked"),
+               "the current spine is the new path under the SAME root_id")
+            eq(conn.execute("SELECT COUNT(*) FROM roots_register"
+                            " WHERE root_id = ?", (rid,)).fetchone()[0], 2,
+               "the old spine row is versioned, not overwritten")
+            alive = conn.execute(
+                "SELECT agent_name FROM agent_registry"
+                " WHERE root_id = ? AND valid_to IS NULL", (rid,)).fetchone()
+            truthy(alive is not None and alive["agent_name"] == "home-pj",
+                   "the agent claim survives the move untouched")
+
+            truthy(not old_store.exists(), "the old transcript store is gone")
+            truthy((new_store / "session.jsonl").read_text() == "transcript\n",
+                   "the transcript store followed the move old -> new")
+        finally:
+            _shutil.rmtree(home, ignore_errors=True)
+
+
+@test("RR-06", "deconflict")
+def _():
+    """deconflict: grandfathers win — the incumbent keeps its name and the
+    newcomer takes -2; comparison is case-folded; reserved names are avoided."""
+    with rr_rig() as (rr, conn, apex):
+        R = rr.reserved_names()
+        eq(rr.deconflict("drawio-pj", set(), R), "drawio-pj",
+           "a free name is returned unchanged (the grandfather keeps it)")
+        eq(rr.deconflict("drawio-pj", {"drawio-pj"}, R), "drawio-pj-2",
+           "a newcomer colliding with an incumbent takes -2")
+        eq(rr.deconflict("Foo-pj", {"foo-pj"}, R), "Foo-pj-2",
+           "collision is case-folded (the mount is case-insensitive)")
+        eq(rr.deconflict("drawio-pj", {"drawio-pj", "drawio-pj-2"}, R), "drawio-pj-3",
+           "the suffix walks up until a free slot")
+        truthy(rr.deconflict("claude", set(), R) != "claude",
+               "a reserved name is never handed out")
+
+
+@test("RR-07", "relink")
+def _():
+    """Mutation proof: a relink that MINTED a fresh id (the reverted fix) orphans
+    the live claim — which is exactly what RR-05's same-root_id assertion catches.
+
+    RR-05 asserts relink preserves root_id. This reverts that one write in place —
+    the new spine row is opened under next_root_id(conn) instead of the SAME id —
+    and shows the claim, still keyed on the original identity, no longer joins to
+    any current spine. So RR-05's preservation check is discriminating, not
+    incidental.
+    """
+    with rr_rig() as (rr, conn, apex):
+        rid = rr.mint(conn, "old/home")
+        rr.open_claim(conn, rid, "home-pj", "home", ".claude/agents/home-pj.md")
+        stamp = "2026-01-01T00:00:00Z"
+        # The MUTANT relink: close the old spine, reopen under a FRESH minted id.
+        spine = rr._current_spine(conn, rid)
+        conn.execute("UPDATE roots_register SET valid_to = ? WHERE id = ?",
+                     (stamp, spine["id"]))
+        conn.execute(
+            "INSERT INTO roots_register (root_id, rel_path, is_apex, change_reason,"
+            " valid_from, valid_to) VALUES (?, 'new/home', 0, 'relinked', ?, NULL)",
+            (rr.next_root_id(conn), stamp))
+        # The claim still points at the original identity, which now has no current
+        # spine, so the ownership join goes empty.
+        joined = conn.execute(
+            "SELECT ar.agent_name FROM agent_registry ar"
+            " JOIN roots_register rr ON rr.root_id = ar.root_id AND rr.valid_to IS NULL"
+            " WHERE ar.valid_to IS NULL AND ar.root_id = ?", (rid,)).fetchone()
+        truthy(joined is None,
+               "minting a fresh id orphans the live claim — the failure RR-05's "
+               "same-root_id assertion is built to catch")
 
 
 # ── runner + coverage ────────────────────────────────────────────────
