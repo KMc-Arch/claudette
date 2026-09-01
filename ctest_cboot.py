@@ -436,9 +436,15 @@ def _():
     m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
     conn = m.connect(str(db))
     cols = {r[1] for r in conn.execute("PRAGMA table_info(roots)")}
-    eq(cols, {"id", "name", "abs_path", "rel_path", "parent_path", "depth",
+    # Superset, not equality: the live db may be pre-migration (no canonical_id)
+    # or post-migration (roots is rebuilt each boot WITH the walk->spine link
+    # column canonical_id). Assert only the stable minimum is PRESENT; do not
+    # reject the extra canonical_id column a migrated boot adds.
+    stable = {"id", "name", "abs_path", "rel_path", "parent_path", "depth",
               "is_apex", "contains_roots", "agent_enabled", "agent_name",
-              "agent_file", "generated_at"}, "roots schema")
+              "agent_file", "generated_at"}
+    truthy(stable <= cols,
+           "roots schema missing %s (have %s)" % (sorted(stable - cols), sorted(cols)))
     apex = list(conn.execute("SELECT rel_path,depth,parent_path FROM roots WHERE is_apex=1"))
     eq(len(apex), 1, "exactly one apex row")
     eq(tuple(apex[0]), (".", 0, None), "apex row shape")
