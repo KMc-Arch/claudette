@@ -255,13 +255,14 @@ def marker_is_current_or_past_rel(path, current_rel, root_id, hist):
     re-projected). The MOVE-AWARE superset of `marker_matches`.
 
     A relink versions the spine but leaves the agent file's marker naming the PRIOR
-    rel_path until the next materialize. Four callers must agree that such a file is
-    still ours-and-current-enough to act on — cboot's close-pass (sweep it on
-    opt-out) and held-refresh (rewrite it in place), `/roots` `_sweep_owned_file`
-    (sweep it on disable/rename) and `compute_drift` (do NOT flag it diverged), and
-    purge (treat it as ours, not hand-authored). Splitting that judgement across the
-    callers is how bare `marker_matches` STRANDED a moved file in three of them; this
-    is the single judgement they now share.
+    rel_path until the next materialize. Five call sites must agree that such a file
+    is still ours-and-current-enough — four ACT on the judgement: cboot's close-pass
+    (sweep it on opt-out) and held-refresh (rewrite it in place), `/roots`
+    `_sweep_owned_file` (sweep it on disable/rename), and purge (treat it as ours,
+    not hand-authored); `compute_drift` alone is report-only (do NOT flag it
+    diverged). Splitting that judgement across the callers is how bare
+    `marker_matches` STRANDED a moved file in three of them; this is the single
+    judgement they now share.
 
     `hist` is `{root_id: {casefolded rel_path, ...}}` (see `spine_history` /
     `read_spine_history`). The past-rel arm is gated on THIS `root_id`'s own history,

@@ -51,9 +51,11 @@ cache from the last boot, the identity spine, the claims):
   last walk (COLLATE NOCASE): the directory the identity points at is gone — a
   candidate for **relink** if it moved.
 - **divergence** — CURRENT `agent_registry` claims whose on-disk agent file no
-  longer carries our marker (`agent_ownership.marker_matches`). **Report-only,
-  always** — a diverged file is never rewritten or deleted, because a human has
-  been in it.
+  longer carries our marker for its current rel — or for a *past* rel of that same
+  identity (`agent_ownership.marker_is_current_or_past_rel`, the move-aware test, so
+  a relinked-but-unprojected file is recognised as ours and NOT flagged).
+  **Report-only, always** — a diverged file is never rewritten or deleted, because a
+  human has been in it.
 
 ## Reconfigure operations
 

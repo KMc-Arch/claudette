@@ -66,6 +66,7 @@ COVERED = {
     "_purge_agents_dir",
     "_ensure_agent_tables",
     "marker_matches",
+    "marker_is_current_or_past_rel",
     "_root_is_gone",
     "_classify_root",
     "_select_roots",
@@ -3723,6 +3724,76 @@ def _():
         edited = roots.compute_drift(conn, apex)
         truthy(agent_rel in {d["agent_file"] for d in edited.divergence},
                "a marker naming a rel this identity never held IS divergence")
+
+
+@test("RS-13", "marker_is_current_or_past_rel")
+def _():
+    """HIGH-A: the move-aware recogniser's past-rel arm is gated on THIS identity's
+    OWN history — a marker explained ONLY by a FOREIGN identity's history is a human
+    edit, never a move of ours.
+
+    Two identities. Rel `beta-past` belongs ONLY to B's spine history (B minted
+    there, then relinked away, so it is B's CLOSED rel); A never sat there. A holds a
+    current claim at `alpha`, and its on-disk file's marker names `beta-past`. The
+    `root_id` gate (`marker_rel in hist[A_root_id]`) rules A's file NOT
+    ours-and-current — so `compute_drift` lists it as DIVERGENCE and `op_disable`
+    PRESERVES it (a real DELETE caller), never sweeping a file only some FOREIGN
+    identity's history could explain.
+
+    Widening the past arm to the UNION of ALL identities' history (dropping the
+    `root_id` gate) makes A's marker match B's `beta-past`: the unit check flips True,
+    drift stops flagging the file, and op_disable DELETES it -> RED on all three
+    assertions. This is the OPPOSITE direction from RS-11/RS-12/PG-11/AG-42 (which
+    go red only under bare `marker_matches`): A's marker never names A's current rel,
+    so those tests' mutation leaves this one GREEN, and this one's mutation leaves
+    them GREEN — the asymmetry that pins the gate from both sides.
+    """
+    roots = _load_roots()
+    ao = cboot._agent_ownership()
+    with rr_rig() as (rr, conn, apex):
+        (apex / ".claude" / "agents").mkdir(parents=True, exist_ok=True)
+
+        # B holds `beta-past` in its history ONLY: mint there, then relink away so the
+        # rel is B's CLOSED (past) spine row — and never A's, current or past.
+        rid_b = rr.mint(conn, "beta-past")
+        h = Path(tempfile.mkdtemp(prefix="ctest-rs13-home-"))
+        try:
+            rr.relink(conn, rid_b, "beta-now", home=h)
+        finally:
+            _shutil.rmtree(h, ignore_errors=True)
+        conn.commit()
+
+        # A holds a current claim at `alpha`; its file's marker names B's `beta-past`.
+        rid_a = rr.mint(conn, "alpha")
+        agent_rel = ".claude/agents/alpha-pj.md"
+        rr.open_claim(conn, rid_a, "alpha-pj", "alpha", agent_rel)
+        conn.commit()
+        target = apex / agent_rel
+        target.write_text("---\nname: alpha-pj\n---\n\n%s\n\nbody\n"
+                          % ao.render_marker("beta-past", "2026-01-01T00:00:00Z"))
+
+        hist = ao.spine_history(conn)
+        truthy("beta-past".casefold() in hist.get(rid_b, set()),
+               "setup: beta-past IS in B's spine history")
+        truthy("beta-past".casefold() not in hist.get(rid_a, set()),
+               "setup: beta-past is NOT in A's spine history")
+
+        # Unit: the same-identity gate rejects a rel only a FOREIGN identity ever held.
+        truthy(not ao.marker_is_current_or_past_rel(target, "alpha", rid_a, hist),
+               "A's file is NOT ours-and-current — its marker names another identity's rel")
+
+        # Report caller: compute_drift flags A's file as DIVERGENCE (must run BEFORE the
+        # disable closes A's claim, so it still appears in the current-claims loop).
+        drift = roots.compute_drift(conn, apex)
+        truthy(agent_rel in {d["agent_file"] for d in drift.divergence},
+               "compute_drift flags A's foreign-history-marker file as divergence: %r"
+               % (drift.divergence,))
+
+        # Delete caller: op_disable PRESERVES A's file, never sweeps it.
+        status = roots.op_disable(conn, rid_a, apex=apex)
+        eq(status, "preserved-hand-edited",
+           "op_disable preserves A's file (marker explained only by a foreign history)")
+        truthy(target.exists(), "the preserved file survives the disable")
 
 
 # ── runner + coverage ────────────────────────────────────────────────
