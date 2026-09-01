@@ -133,8 +133,8 @@ def _key(path):
     comparison would call cboot's own file foreign — purge would then mislabel it
     "hand-authored" forever and the project's re-claim would bump to `-2`. The
     result is only ever a dict/comparison key, never a path to open, so folding is
-    safe; neighbours (_free_name, the de-confliction glob) already fold for the
-    same reason.
+    safe; its folding neighbour `roots_register.deconflict` (the relocated
+    de-confliction rule) and the de-confliction glob fold for the same reason.
     """
     p = Path(path)
     if not p.is_absolute():
@@ -270,6 +270,22 @@ def suffixed(base):
     turned into a bare `-pj`.
     """
     return f"{base}{SUFFIX}" if base else base
+
+
+def desuffix(name):
+    """Recover the base from a suffixed @name: strip exactly ONE trailing SUFFIX.
+
+    The inverse of `suffixed` for the ordinary case, and the guard that keeps
+    `agent_optin.requested_name` a BASE name so re-projecting it never doubles the
+    suffix (`x` -> `x-pj`, not `x-pj-pj`). It is NOT idempotent, and deliberately
+    so: a literal `*-pj` FOLDER derives base `draw2-pj`, whose agent name is
+    `draw2-pj-pj`, whose base is `draw2-pj` again — stripping exactly one suffix
+    preserves the intended disjoint-namespace double. A name that does not end in
+    the suffix (or that is nothing but the suffix) is returned unchanged.
+    """
+    if name and len(name) > len(SUFFIX) and name.endswith(SUFFIX):
+        return name[:-len(SUFFIX)]
+    return name
 
 
 def yaml_scalar(value):

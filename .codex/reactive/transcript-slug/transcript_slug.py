@@ -1,16 +1,18 @@
 """Claude Code transcript-store slug — ONE implementation.
 
 Claude Code stores a project's session transcripts under
-`~/.claude/projects/<slug>/`, where <slug> is the project's resolved absolute
-path with every non-alphanumeric character replaced by '-'. Verified against
-the real store: `/mnt/claudette/~majel` -> `-mnt-claudette--majel`,
-`.steward` -> `--steward`.
+`~/.claude/projects/<slug>/`, where <slug> is the project's RESOLVED ABSOLUTE
+path with every non-alphanumeric character replaced by '-'. Verified against the
+real store: `/mnt/claudette/~majel` -> `-mnt-claudette--majel` (the leading slash,
+the `/` separators, and the `~` all fold to `-`). The slug is always keyed on the
+whole resolved path — there is no short form, so a bare `.steward` becomes
+`-mnt-claudette--steward`, not `--steward`.
 
-Three callers need this identical derivation: purge (to find a project's
-transcript store), the `/roots` relink (to rename the store when a root moves
-out of band), and `/move-project` (to migrate it on an in-session move). A
-second copy is the purge/cboot divergence bug a third time, so the rule lives
-here and every caller loads it.
+Callers need this identical derivation: purge (to find a project's transcript
+store) and the `/roots` relink (to rename the store when a root moves out of
+band); `/move-project` will need it too, once it lands on this branch, to migrate
+the store on an in-session move. A second copy is the purge/cboot divergence bug a
+third time, so the rule lives here and every caller loads it.
 
 `.resolve()` is deliberate: it matches how Claude Code itself keys the store
 (the resolved absolute path). That is an external key to match, not a

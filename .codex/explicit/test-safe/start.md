@@ -41,7 +41,7 @@ Print results as they complete. Passing tests without sub-conditions get one lin
        [PASS] Negative: no leakage to default external location for this project
 
 ═══════════════════════════════════════
-  RESULTS: 74/77 passed, 1 failed, 1 warn, 1 skip
+  RESULTS: 75/78 passed, 1 failed, 1 warn, 1 skip
 ═══════════════════════════════════════
 ```
 

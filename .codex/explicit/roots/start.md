@@ -8,10 +8,11 @@ reads:
   - "^/.codex/reactive/roots-register/"     # the SOLE writer module — every mutation dispatches here
   - "^/.codex/reactive/agent-ownership/"    # marker_matches / name derivation / reserved names
   - "^/.codex/reactive/transcript-slug/"    # relink re-slugs the transcript store (via the writer)
+  - "^/.codex/reactive/sqlite/"             # the house connection factory (roots.py loads it directly)
 writes:
   - "^/.state/roots.db"                     # identity/claim rows — ONLY through roots-register
   - "^/.claude/agents/"                     # sweeps an agent file a disable/rename just un-claimed
-  - "~/.claude/projects/<slug>/"            # relink renames the transcript store (outside ^, via Bash)
+  - "~/.claude/projects/<slug>/"            # relink renames the transcript store (outside ^, via os.rename in the module)
 ---
 
 # roots
@@ -34,9 +35,10 @@ A **thin wrapper** over the shared writer module
 `roots_register` / `agent_registry` / `agent_optin` identity rows. `/roots`
 carries **no identity/claim write SQL of its own**; every mutation dispatches to a
 module function (`mint` / `accept` / `close_claim` / `rename_claim` / `relink` /
-`deconflict`). Boot and `/move-project` call the same module — three copies of
-claim-mutation is exactly the divergence bug the shared module prevents.
-(`/move-project` imports the module's `relink()` **directly**, not this command.)
+`deconflict`). Boot calls the same module, and `/move-project` will once it lands
+on this branch — three copies of claim-mutation is exactly the divergence bug the
+shared module prevents. (`/move-project` will import the module's `relink()`
+**directly**, not this command.)
 
 ## Drift surface (read-only, computed from the tables — never a re-walk)
 

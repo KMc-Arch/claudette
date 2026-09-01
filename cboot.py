@@ -1309,10 +1309,16 @@ def _migrate_to_v1(conn):
     #    which spelling survives is a human decision, never a silent auto-merge.
     #    Detected before any write, so nothing has to be rolled back.
     def _nocase_dupes(rel_paths):
+        # Group by NOCASE key, keeping ALL rows (a list, not a set of distinct
+        # spellings). Flag by ROW COUNT, not distinct-spelling count: two
+        # BYTE-IDENTICAL current claims at one rel_path also collapse to a single
+        # root_id and wedge the re-key on idx_agent_cur_rootid, but a set() would
+        # dedupe them to one element and wave them through. Counting rows catches
+        # the case-variant duplicate AND the byte-identical duplicate.
         groups = {}
         for rp in rel_paths:
             if rp is not None:
-                groups.setdefault(_nocase_key(rp), set()).add(rp)
+                groups.setdefault(_nocase_key(rp), []).append(rp)
         return [v for v in groups.values() if len(v) > 1]
     for table, rel_paths in (
         ("agent_optin",
@@ -1323,12 +1329,19 @@ def _migrate_to_v1(conn):
     ):
         dupes = _nocase_dupes(rel_paths)
         if dupes:
-            pairs = "; ".join(" and ".join(sorted(v)) for v in dupes)
+            # Name each collision: distinct case-variant spellings joined with
+            # "and"; a byte-identical duplicate as "path (xN, byte-identical)" so
+            # the count is visible even though the spelling is one.
+            pairs = "; ".join(
+                (" and ".join(sorted(set(v))) if len(set(v)) > 1
+                 else "%s (x%d, byte-identical)" % (sorted(v)[0], len(v)))
+                for v in dupes)
             raise sqlite3.IntegrityError(
-                "cannot migrate roots.db: %s carries case-variant paths that are the "
-                "same directory on this case-insensitive mount (%s). Resolve the "
-                "duplicate — decide which spelling survives and remove the other row "
-                "from %s — before migrating." % (table, pairs, table))
+                "cannot migrate roots.db: %s carries duplicate paths — case-variant "
+                "(the same directory on this case-insensitive mount) or byte-identical "
+                "— that collapse to one identity (%s). Resolve the duplicate — decide "
+                "which row survives and remove the other from %s — before migrating."
+                % (table, pairs, table))
 
     # 1. Mint the spine for the existing, unambiguous population: every rel_path
     #    the walk, the live claims, or the decisions currently know about. These
@@ -1428,14 +1441,26 @@ def _migrate_to_v1(conn):
     #    there is never again a claim without one. Keyed on root_id (just backfilled
     #    above). A project switched off has an enabled=0 row, so this can never
     #    resurrect it.
-    conn.execute(
-        "INSERT INTO agent_optin (root_id, rel_path, enabled, requested_name,"
-        " description, decided_at, decided_by)"
-        " SELECT r.root_id, r.rel_path, 1, r.agent_name, r.description, r.valid_from,"
-        " 'inherited'"
+    # requested_name is the BASE, never the suffixed historical @name: a legacy
+    # claim's agent_name carries the -pj suffix (`x-pj`), so store `desuffix(...)`
+    # (`x`). Storing the suffixed name would make a later re-projection derive
+    # `x-pj` and re-suffix it to `x-pj-pj`. Done in Python (not one SELECT-INSERT)
+    # so the single naming rule in agent_ownership is applied, never re-encoded in
+    # SQL.
+    _ao = _agent_ownership()
+    inherit_rows = conn.execute(
+        "SELECT r.root_id, r.rel_path, r.agent_name, r.description, r.valid_from"
         " FROM agent_registry r"
         " WHERE r.valid_to IS NULL AND r.root_id IS NOT NULL"
-        "   AND NOT EXISTS (SELECT 1 FROM agent_optin o WHERE o.root_id = r.root_id)")
+        "   AND NOT EXISTS (SELECT 1 FROM agent_optin o WHERE o.root_id = r.root_id)"
+    ).fetchall()
+    for r in inherit_rows:
+        conn.execute(
+            "INSERT INTO agent_optin (root_id, rel_path, enabled, requested_name,"
+            " description, decided_at, decided_by)"
+            " VALUES (?, ?, 1, ?, ?, ?, 'inherited')",
+            (r["root_id"], r["rel_path"], _ao.desuffix(r["agent_name"]),
+             r["description"], r["valid_from"]))
 
     conn.execute("PRAGMA user_version = 1")
     # The caller commits (build_root_inventory / generate_agents); on any raise

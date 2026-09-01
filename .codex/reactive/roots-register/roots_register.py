@@ -3,14 +3,19 @@
 Every durable identity/claim mutation in the root-identity system passes through
 this module. `roots_register` (the identity spine), `agent_registry` (the SCD2
 @name claim ledger), and `agent_optin` (the decision) are written HERE and
-nowhere else. The decision writers are a matched pair: `accept` records an
+nowhere else — with ONE bounded carve-out: the one-time schema bootstrap in
+`cboot._migrate_to_v1` populates these tables directly while it MINTS the spine and
+re-keys the legacy rows (the module cannot write a spine that does not exist yet).
+That runs once per db (guarded by `PRAGMA user_version`); every mutation after it
+goes through the functions below. The decision writers are a matched pair: `accept` records an
 ENABLED opt-in decision and `decline` a DISABLED one — both write ONLY the
 durable decision, never a claim. `open_claim` records an ENABLED opt-in AND opens
 the @name claim: it is what boot's projection pass calls once a decision already
 stands, after de-confliction has chosen the @name. Boot's first-touch prompt
 records the decision (`accept`/`decline`); the projection pass opens the claim
-(`open_claim`); the `/roots` reconfigure command and `/move-project` also CALL
-these functions; none of them writes those tables directly. Two divergent copies of claim-mutation is exactly the bug the shared
+(`open_claim`); the `/roots` reconfigure command CALLS these functions too (and
+`/move-project` WILL, once it lands on this branch); none of them writes those
+tables directly. Two divergent copies of claim-mutation is exactly the bug the shared
 `agent_ownership` and `transcript_slug` modules already exist to make
 impossible — this is that rule a third time, for the writes.
 
@@ -90,6 +95,16 @@ def derive_agent_name(folder_basename):
 def suffixed(base):
     """Delegate to agent_ownership.suffixed (append the -pj namespace suffix)."""
     return _ao().suffixed(base)
+
+
+def desuffix(name):
+    """Delegate to agent_ownership.desuffix (recover the base from a suffixed @name).
+
+    The convention this module enforces: `agent_optin.requested_name` is ALWAYS the
+    BASE (unsuffixed) name. A writer handed a suffixed @name passes it through here
+    before storing it as `requested_name`, so re-projection never doubles the
+    suffix to `x-pj-pj`."""
+    return _ao().desuffix(name)
 
 
 def reserved_names():
@@ -186,9 +201,12 @@ def open_claim(conn, root_id, agent_name, source_folder, agent_file,
 
     The positional signature is the contract; the keyword-only extras honour the
     documented override points ("decided_by='prompt' unless caller overrides")
-    without disturbing it. `requested_name` defaults to `agent_name`, and
-    `description` (nullable) is written to both rows so the NOT-NULL columns are
-    satisfied without asserting a value the caller did not give.
+    without disturbing it. `requested_name` is the BASE (unsuffixed) @name and
+    defaults to `desuffix(agent_name)` when the caller does not give one — so the
+    stored decision never carries the -pj suffix and re-projection cannot double it.
+    `description` is nullable in both `agent_registry` and `agent_optin`; it is
+    passed straight through and left NULL when the caller gives none, never
+    back-filled with a value the caller did not supply.
     """
     _begin(conn)
     rel_path = _spine_rel_path(conn, root_id)
@@ -210,7 +228,7 @@ def open_claim(conn, root_id, agent_name, source_folder, agent_file,
         " description = excluded.description,"
         " decided_at = excluded.decided_at, decided_by = excluded.decided_by",
         (root_id, rel_path,
-         agent_name if requested_name is None else requested_name,
+         desuffix(agent_name) if requested_name is None else requested_name,
          description, stamp, decided_by))
 
 
@@ -292,7 +310,7 @@ def close_claim(conn, root_id, close_reason):
 
 
 def rename_claim(conn, root_id, new_agent_name, new_agent_file,
-                 deconflicted_from=None):
+                 deconflicted_from=None, *, requested_name=None):
     """Rename a live claim: close the current one and open a new one, same id.
 
     The current claim is closed (close_reason='renamed', which is NOT a disable,
@@ -301,6 +319,12 @@ def rename_claim(conn, root_id, new_agent_name, new_agent_file,
     description carry forward from the row being closed. Grandfather/reserved
     re-checking is the caller's job — it derives `new_agent_name` via `deconflict`
     and passes the resulting `deconflicted_from`.
+
+    `requested_name` is the BASE the human asked for and is what `agent_optin`
+    stores. A caller that already holds the base (e.g. `/roots` op_rename, before
+    it suffixes and de-conflicts) passes it directly; otherwise it defaults to
+    `desuffix(new_agent_name)`, recovering the base from the suffixed @name so the
+    decision never records `x-pj` and re-projection cannot double it to `x-pj-pj`.
     """
     _begin(conn)
     held = conn.execute(
@@ -308,10 +332,11 @@ def rename_claim(conn, root_id, new_agent_name, new_agent_file,
         " WHERE root_id = ? AND valid_to IS NULL", (root_id,)).fetchone()
     if held is None:
         raise ValueError("no current claim for root_id %r to rename" % (root_id,))
+    base = desuffix(new_agent_name) if requested_name is None else requested_name
     close_claim(conn, root_id, "renamed")
     open_claim(conn, root_id, new_agent_name, held["source_folder"],
                new_agent_file, deconflicted_from=deconflicted_from,
-               change_reason="renamed", requested_name=new_agent_name,
+               change_reason="renamed", requested_name=base,
                description=held["description"])
 
 
@@ -367,6 +392,15 @@ def relink(conn, root_id, new_rel_path, *, home=None):
             "the existing store, then relink." % (root_id, new_rel_path, new_store))
 
     stamp = _now_iso()
+    # Wrap relink's OWN spine writes in a SAVEPOINT so a later failure can undo
+    # exactly them — never a caller's composed prior writes. A plain
+    # `conn.rollback()` discards the WHOLE outer transaction, which breaks the
+    # module's contract ("the CALLER owns the outer transaction; the caller
+    # commits"): a caller that minted projB and then relinked projA in one
+    # transaction would silently lose the mint. ROLLBACK TO SAVEPOINT is the
+    # surgical undo the contract requires; standalone callers (op_relink, boot) are
+    # unaffected — their transaction holds only relink's writes anyway.
+    conn.execute("SAVEPOINT rr_relink")
     conn.execute("UPDATE roots_register SET valid_to = ? WHERE id = ?",
                  (stamp, spine["id"]))
     conn.execute(
@@ -381,12 +415,18 @@ def relink(conn, root_id, new_rel_path, *, home=None):
         except OSError as e:
             # A rename that fails after the DB writes (a race, a permission error)
             # must not strand the identity at the new path with its transcripts
-            # left behind. Roll the DB half back and surface a catchable error.
-            conn.rollback()
+            # left behind. Undo relink's OWN spine writes via the savepoint (never
+            # the caller's) and surface a catchable error.
+            conn.execute("ROLLBACK TO SAVEPOINT rr_relink")
+            conn.execute("RELEASE SAVEPOINT rr_relink")
             raise ValueError(
                 "relink of root_id %r to %r could not move its transcript store "
                 "(%s -> %s): %s — the move was rolled back." %
                 (root_id, new_rel_path, old_store, new_store, e)) from e
+        else:
+            conn.execute("RELEASE SAVEPOINT rr_relink")
+    else:
+        conn.execute("RELEASE SAVEPOINT rr_relink")
 
 
 def _apex_root(conn):

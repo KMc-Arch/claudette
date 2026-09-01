@@ -11,11 +11,11 @@ reached.
 It is a THIN wrapper. It carries NO identity/claim write SQL of its own — every
 mutation dispatches to a function in the shared writer module
 (`^/.codex/reactive/roots-register/roots_register.py`), the SOLE writer of
-`roots_register`/`agent_registry`/`agent_optin` identity rows. Boot and
-`/move-project` call that same module; three copies of claim-mutation is exactly
-the divergence bug the shared module exists to prevent. `/move-project` imports
-the module's `relink()` DIRECTLY — never this command — so nothing here needs to
-be exported for it.
+`roots_register`/`agent_registry`/`agent_optin` identity rows. Boot calls that
+same module, and `/move-project` will once it lands on this branch; three copies of
+claim-mutation is exactly the divergence bug the shared module exists to prevent.
+`/move-project` will import the module's `relink()` DIRECTLY — never this command —
+so nothing here needs to be exported for it.
 
 Apex-only: `.claude/agents/` (and thus the whole addressable-agent inventory) is
 never propagated to a child, so a child `/roots` would have nothing to reconfigure.
@@ -351,8 +351,12 @@ def op_rename(conn, root_id, new_base, *, taken=None, apex=None,
     name = rr.deconflict(want, taken, ao.RESERVED_NAMES)
     deconflicted_from = want if name != want else None
     agent_file = f"{agents_rel}/{name}.md"
+    # `base` is the clean, unsuffixed name the human asked for — the value
+    # agent_optin.requested_name must store (never the suffixed/de-conflicted
+    # @name), so a later re-projection derives `base` again rather than doubling
+    # the -pj suffix.
     rr.rename_claim(conn, root_id, name, agent_file,
-                    deconflicted_from=deconflicted_from)
+                    deconflicted_from=deconflicted_from, requested_name=base)
     conn.commit()
     if old is not None and old["agent_file"] != agent_file:
         _sweep_owned_file(apex, old["agent_file"], old["cur_rel"])
