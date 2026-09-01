@@ -17,6 +17,14 @@ third time, so the rule lives here and every caller loads it.
 `.resolve()` is deliberate: it matches how Claude Code itself keys the store
 (the resolved absolute path). That is an external key to match, not a
 containment decision, so it does not follow the as-referenced rule.
+
+NON-GOAL — ONE path system only (RUL-028). This derives one slug in one path
+system, and Claudette's platform is the WSL claude-context store, which
+project_slug() matches. Cross-platform project migration -- the WSL distro
+(/mnt/claudette -> -mnt-... slugs) <-> native Windows (D:\\claudette -> D--...
+slugs) -- is OUT OF SCOPE and must NOT be reconciled here: the two stores are
+deliberately distinct. An out-of-band cross-platform move fails safe (unlinked
+on the destination, orphaned on the source, both reported by /roots).
 """
 
 import re

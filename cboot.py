@@ -1107,12 +1107,14 @@ def build_root_inventory(report):
             try:
                 _ensure_agent_tables(conn)
                 # Walk->spine link: set roots.canonical_id to the matched CURRENT
-                # spine root_id for each walked root (COLLATE NOCASE). A walked root
-                # is by construction a live dir, so a match is a genuine link;
-                # unlinked roots (no current spine row at this rel_path) stay NULL.
-                # Orphaned spine rows (current, rel_path NOT walked) are computed by
-                # the /roots command from roots_register vs roots — nothing to do
-                # here beyond leaving their walked counterpart, if any, NULL.
+                # spine root_id for each walked root (COLLATE NOCASE). A PURE
+                # rel_path match, no dir-liveness guard: a dir RECREATED at a
+                # rel_path whose spine row is still current re-links to that SAME
+                # root_id -- reuse of a rel_path is reuse of identity, BY DESIGN
+                # (RUL-029; do NOT add an "is this the same dir" guard here). Unlinked
+                # roots (no current spine row at this rel_path) stay NULL. Orphaned
+                # spine rows (current, rel_path NOT walked) are computed by the
+                # /roots command from roots_register vs roots.
                 conn.execute(
                     "UPDATE roots SET canonical_id = (SELECT rr.root_id"
                     " FROM roots_register rr"
