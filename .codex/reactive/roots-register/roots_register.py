@@ -325,11 +325,19 @@ def relink(conn, root_id, new_rel_path, *, home=None):
     untouched — its root_id is stable, so a live project's agent survives the
     move. THEN the Claude Code transcript store is re-slugged to follow.
 
-    Order is load-bearing: the DB writes happen FIRST, the filesystem rename
-    SECOND. If the rename raises it propagates, so the caller's uncommitted
-    transaction rolls back and the DB never records a move whose store did not
-    follow. The rename is a COLD `os.rename` (this mount ghosts hot-tree renames)
-    and is skipped silently when the old store directory does not exist.
+    A DESTINATION-store collision is refused, not clobbered. If a store already
+    exists at the new slug (the user opened Claude in the new location before
+    relinking), `os.rename` cannot merge the two and silently overwriting one would
+    destroy real session history — so this raises a clear, catchable `ValueError`
+    with the DB half untouched (the check runs BEFORE any write). Callers report it
+    and carry on (`/roots` `_do_relink`, boot's first-touch relink), never crash.
+
+    Order is otherwise load-bearing: the DB writes happen FIRST, the filesystem
+    rename SECOND. Should the rename still fail (a race that created the
+    destination after the pre-check, a permission error), the DB half is rolled
+    back and a `ValueError` raised, so the identity is never left moved while its
+    transcripts stayed put. The rename is a COLD `os.rename` (this mount ghosts
+    hot-tree renames) and is skipped silently when the old store does not exist.
 
     `home` overrides `Path.home()` (the store lives under `~/.claude/projects/`),
     for hermetic testing. The apex directory is derived from the connection's own
@@ -341,6 +349,23 @@ def relink(conn, root_id, new_rel_path, *, home=None):
         raise ValueError(
             "no current roots_register row for root_id %r to relink" % (root_id,))
     old_rel_path = spine["rel_path"]
+
+    # Resolve both transcript stores up front and REFUSE a destination collision
+    # BEFORE any DB write, so a pre-existing store is never clobbered and the DB is
+    # never left with identity moved but transcripts un-moved.
+    apex = _apex_root(conn)
+    home_dir = Path(home) if home is not None else Path.home()
+    projects = home_dir / ".claude" / "projects"
+    slug = _ts().project_slug
+    old_store = projects / slug(apex / old_rel_path)
+    new_store = projects / slug(apex / new_rel_path)
+    move_store = old_store != new_store and old_store.exists()
+    if move_store and new_store.exists():
+        raise ValueError(
+            "cannot relink root_id %r onto %r: a transcript store already exists at "
+            "the destination (%s). os.rename cannot merge two stores; move or remove "
+            "the existing store, then relink." % (root_id, new_rel_path, new_store))
+
     stamp = _now_iso()
     conn.execute("UPDATE roots_register SET valid_to = ? WHERE id = ?",
                  (stamp, spine["id"]))
@@ -350,14 +375,18 @@ def relink(conn, root_id, new_rel_path, *, home=None):
         (root_id, new_rel_path, spine["is_apex"], stamp))
 
     # Re-slug the transcript store: DB first (above), FS second (here).
-    apex = _apex_root(conn)
-    home_dir = Path(home) if home is not None else Path.home()
-    projects = home_dir / ".claude" / "projects"
-    slug = _ts().project_slug
-    old_store = projects / slug(apex / old_rel_path)
-    new_store = projects / slug(apex / new_rel_path)
-    if old_store != new_store and old_store.exists():
-        os.rename(old_store, new_store)
+    if move_store:
+        try:
+            os.rename(old_store, new_store)
+        except OSError as e:
+            # A rename that fails after the DB writes (a race, a permission error)
+            # must not strand the identity at the new path with its transcripts
+            # left behind. Roll the DB half back and surface a catchable error.
+            conn.rollback()
+            raise ValueError(
+                "relink of root_id %r to %r could not move its transcript store "
+                "(%s -> %s): %s — the move was rolled back." %
+                (root_id, new_rel_path, old_store, new_store, e)) from e
 
 
 def _apex_root(conn):

@@ -495,7 +495,15 @@ def _do_relink(conn, apex, drift):
         dst = raw.strip()
     try:
         op_relink(conn, src["root_id"], dst)
-    except (ValueError, sqlite3.Error) as e:
+    except (ValueError, OSError, sqlite3.Error) as e:
+        # A destination-store collision surfaces as ValueError; a stray filesystem
+        # error as OSError. Either way, report it and leave the DB untouched — the
+        # writer refused (or rolled back) before committing, so a rollback here
+        # only clears any empty transaction it opened.
+        try:
+            conn.rollback()
+        except sqlite3.Error:
+            pass
         print(f"     ! relink failed: {e}")
         return
     print(f"     -> root_id {src['root_id']} relinked to {dst} "

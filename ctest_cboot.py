@@ -955,6 +955,170 @@ def _():
                "a move is not a divergence: %r" % (rep.warnings,))
 
 
+@test("AG-40", "_ensure_agent_tables")
+def _():
+    """A NOCASE-duplicate rel_path fails the migration LOUD ONCE, and a failed
+    migration keeps the old rel_path guard (MEDIUM-1).
+
+    Two ASCII case-variant paths (`Testing`/`testing`) are the same directory on
+    this case-insensitive mount, so they would collapse to one root_id and the
+    re-key would raise on the PK/unique index — rolling back so user_version stays 0
+    and RETRYING identically every boot forever (a permanent wedge). The migration
+    now detects them first and raises a clear, actionable error naming the paths;
+    the DROP of `idx_agent_cur_path` lives inside the ladder (after the re-key), so
+    a failed migration does not also lose the old guard.
+    """
+    with scratch_apex() as apex:
+        db = apex / ".state" / "roots.db"
+        conn = sqlite3.connect(db)
+        # Legacy (user_version stays 0) shape WITH the old rel_path current-unique
+        # index, so we can prove a failed migration does not strip it.
+        conn.execute(
+            "CREATE TABLE agent_registry ( id INTEGER PRIMARY KEY, agent_name TEXT"
+            " NOT NULL, rel_path TEXT NOT NULL, source_folder TEXT NOT NULL,"
+            " deconflicted_from TEXT, description TEXT, agent_file TEXT NOT NULL,"
+            " valid_from TEXT NOT NULL, valid_to TEXT, change_reason TEXT NOT NULL)")
+        conn.execute("CREATE UNIQUE INDEX idx_agent_cur_path"
+                     " ON agent_registry(rel_path) WHERE valid_to IS NULL")
+        conn.execute(
+            "CREATE TABLE agent_optin ( rel_path TEXT PRIMARY KEY, enabled INTEGER"
+            " NOT NULL, requested_name TEXT, description TEXT, decided_at TEXT NOT"
+            " NULL, decided_by TEXT NOT NULL)")
+        for rel in ("Testing", "testing"):     # same directory on this mount
+            conn.execute(
+                "INSERT INTO agent_optin (rel_path, enabled, decided_at, decided_by)"
+                " VALUES (?,1,'2026-01-01T00:00:00Z','prompt')", (rel,))
+        conn.commit()
+        conn.close()
+
+        conn = _sqlite_factory().connect(str(db))
+        raised = None
+        try:
+            cboot._ensure_agent_tables(conn)
+        except sqlite3.IntegrityError as e:
+            raised = str(e)
+        try:
+            conn.rollback()                     # exactly what close() would do
+        except sqlite3.Error:
+            pass
+        conn.close()
+
+        truthy(raised is not None, "the migration raised, it did not silently wedge")
+        truthy(raised and "Testing" in raised and "testing" in raised,
+               "the error names the colliding paths for a human to fix: %r" % (raised,))
+
+        after = sqlite3.connect(db)
+        try:
+            ver = after.execute("PRAGMA user_version").fetchone()[0]
+            idx = {r[0] for r in after.execute(
+                "SELECT name FROM sqlite_master WHERE type='index'")}
+        finally:
+            after.close()
+        eq(ver, 0, "user_version stays 0 — the failed migration rolled back cleanly")
+        truthy("idx_agent_cur_path" in idx,
+               "the old rel_path guard survives a failed migration: %s" % sorted(idx))
+
+
+@test("AG-41", "_ensure_agent_tables")
+def _():
+    """A casefold-equal but NOCASE-DISTINCT pair migrates cleanly (LOW-2).
+
+    `straße`/`STRASSE` are equal under Python str.casefold (ß -> ss) yet distinct
+    under SQLite COLLATE NOCASE (which folds ASCII only). The migration dedups its
+    mint population with NOCASE semantics, so the two mint DISTINCT root_ids and
+    each optin row joins to its own spine — where a casefold dedup would collapse
+    them to one root_id and the STRASSE optin, unable to NOCASE-join the straße
+    spine, would trip the row-count guard.
+    """
+    with scratch_apex() as apex:
+        db = apex / ".state" / "roots.db"
+        conn = sqlite3.connect(db)
+        conn.execute(
+            "CREATE TABLE agent_registry ( id INTEGER PRIMARY KEY, agent_name TEXT"
+            " NOT NULL, rel_path TEXT NOT NULL, source_folder TEXT NOT NULL,"
+            " deconflicted_from TEXT, description TEXT, agent_file TEXT NOT NULL,"
+            " valid_from TEXT NOT NULL, valid_to TEXT, change_reason TEXT NOT NULL)")
+        conn.execute(
+            "CREATE TABLE agent_optin ( rel_path TEXT PRIMARY KEY, enabled INTEGER"
+            " NOT NULL, requested_name TEXT, description TEXT, decided_at TEXT NOT"
+            " NULL, decided_by TEXT NOT NULL)")
+        for rel in ("straße", "STRASSE"):
+            conn.execute(
+                "INSERT INTO agent_optin (rel_path, enabled, decided_at, decided_by)"
+                " VALUES (?,0,'2026-01-01T00:00:00Z','prompt')", (rel,))
+        conn.commit()
+        conn.close()
+
+        conn = _sqlite_factory().connect(str(db))
+        cboot._ensure_agent_tables(conn)        # must NOT trip the row-count guard
+        conn.commit()
+        rows = conn.execute(
+            "SELECT rel_path, root_id FROM roots_register"
+            " WHERE valid_to IS NULL AND rel_path IN ('straße','STRASSE')"
+            " ORDER BY rel_path").fetchall()
+        ver = conn.execute("PRAGMA user_version").fetchone()[0]
+        conn.close()
+
+        eq(ver, 1, "the migration completed (user_version=1)")
+        eq(len(rows), 2, "both NOCASE-distinct paths minted their own spine row")
+        truthy(rows[0]["root_id"] != rows[1]["root_id"],
+               "each got a DISTINCT root_id — the pair was not collapsed")
+
+
+@test("AG-42", "generate_agents")
+def _():
+    """A relink-then-opt-out SWEEPS the moved agent file, not leaves it stale (LOW-3).
+
+    Opted out before its relinked file is re-projected, the file's marker still
+    names the OLD rel_path, so marker_matches(current rel) is false. The close-pass
+    sweep now applies the same move-aware ownership the held-refresh uses: a marker
+    naming a PAST rel of THIS identity is ours, so the file is swept on opt-out
+    instead of misclassed 'diverged, left in place' and stranded forever.
+    """
+    ao = cboot._agent_ownership()
+    with scratch_apex([("drawio", "A tool.\n")]) as apex:
+        ag_optin(apex, [("drawio", 1, "drawio", "A tool.")])
+        ag_boot(apex)                              # projects drawio-pj.md, marker 'drawio'
+        f = apex / ".claude" / "agents" / "drawio-pj.md"
+        truthy(f.exists() and ao.marker_matches(f, "drawio"),
+               "setup: the file was projected at rel 'drawio'")
+
+        # Read the identity's root_id while 'drawio' is still current, then move the
+        # directory on disk and relink to follow — WITHOUT re-projecting (so the
+        # marker keeps naming the OLD rel) — and opt the root out.
+        db = apex / ".state" / "roots.db"
+        conn = _sqlite_factory().connect(str(db))
+        rid = _rid_for(conn, "drawio")
+        (apex / "newdrawio").mkdir()
+        (apex / "newdrawio" / "CLAUDE.md").write_text(
+            "---\nroot: true\nname: newdrawio\n---\n\nA tool.\n")
+        _shutil.rmtree(apex / "drawio")
+        h = Path(tempfile.mkdtemp(prefix="ctest-ag42-home-"))
+        try:
+            _load_roots_register().relink(conn, rid, "newdrawio", home=h)
+        finally:
+            _shutil.rmtree(h, ignore_errors=True)
+        conn.execute("UPDATE agent_optin SET enabled = 0 WHERE root_id = ?", (rid,))
+        conn.commit()
+        conn.close()
+
+        truthy(ao.marker_matches(f, "drawio"),
+               "the moved file still carries the OLD-rel marker (not re-projected)")
+
+        rep = ag_boot(apex)                        # the close pass runs on the opt-out
+
+        truthy(not f.exists(),
+               "the moved-then-opted-out file was swept, not left stale")
+        truthy(not any("diverged" in w for w in rep.warnings),
+               "and it was not misreported as a divergence: %r" % (rep.warnings,))
+        conn = _sqlite_factory().connect(str(db))
+        closed = conn.execute(
+            "SELECT close_reason FROM agent_registry"
+            " WHERE root_id = ? ORDER BY id DESC LIMIT 1", (rid,)).fetchone()
+        conn.close()
+        eq(closed["close_reason"], "opted-out", "the claim was closed opted-out")
+
+
 # ── purge side of the same rule (PG) ─────────────────────────────────
 
 @contextlib.contextmanager
@@ -2257,36 +2421,65 @@ def _():
 
 @test("MQ-12", "build_root_inventory")
 def _():
-    """The inherited-optin backfill PERSISTS across the inventory pass.
+    """A legacy pre-optin claim inherits its decision DURING migration, and the
+    inherited backfill PERSISTS the inventory pass.
 
-    _ensure_agent_tables ends in a DML backfill INSERT (giving a pre-optin live
-    claim an `inherited` agent_optin row). The R3 reorder runs it after the
-    roots/meta commit, so it needs its own commit or close() discards it every
-    boot — a pre-optin project would silently never inherit its decision.
+    The `'inherited'` INSERT lives inside the v1 ladder (LOW-1): it only ever
+    mattered for legacy `agent: true` claims that predate the decision table, which
+    is exactly the one-time population the ladder handles. This drives a genuine
+    legacy (user_version=0) db with a CURRENT claim and NO agent_optin row through
+    a boot, and asserts the claim inherits an enabled decision keyed on its minted
+    root_id, committed (not discarded by close()).
     """
     with scratch_apex([("x", "X.\n")]) as apex:
         db = apex / ".state" / "roots.db"
-        conn = _sqlite_factory().connect(str(db))
-        cboot._ensure_agent_tables(conn)
-        rid = _rid_for(conn, "x")
+        conn = sqlite3.connect(db)
+        # Pre-spine (user_version stays 0) legacy shape: a claim, no optin row.
+        conn.execute(
+            "CREATE TABLE agent_registry ( id INTEGER PRIMARY KEY, agent_name TEXT"
+            " NOT NULL, rel_path TEXT NOT NULL, source_folder TEXT NOT NULL,"
+            " deconflicted_from TEXT, description TEXT, agent_file TEXT NOT NULL,"
+            " valid_from TEXT NOT NULL, valid_to TEXT, change_reason TEXT NOT NULL)")
+        conn.execute(
+            "CREATE TABLE agent_optin ( rel_path TEXT PRIMARY KEY, enabled INTEGER"
+            " NOT NULL, requested_name TEXT, description TEXT, decided_at TEXT NOT"
+            " NULL, decided_by TEXT NOT NULL)")
         conn.execute(
             "INSERT INTO agent_registry (agent_name, rel_path, source_folder,"
-            " description, agent_file, valid_from, change_reason, root_id)"
-            " VALUES ('x-pj','x','x','d','.claude/agents/x-pj.md',"
-            "'2026-01-01T00:00:00Z','opted-in',?)", (rid,))
-        conn.execute("DELETE FROM agent_optin WHERE rel_path='x'")  # pre-optin claim
+            " description, agent_file, valid_from, change_reason)"
+            " VALUES ('x-pj','x','x','X.','.claude/agents/x-pj.md',"
+            "'2026-01-01T00:00:00Z','opted-in')")   # NO agent_optin row -> pre-optin
         conn.commit()
+        truthy(conn.execute("PRAGMA user_version").fetchone()[0] == 0,
+               "setup: a legacy (pre-spine) db")
         conn.close()
 
         rep = cboot.BootReport()
-        cboot.build_root_inventory(rep)   # must persist the inherited backfill
+        cboot.build_root_inventory(rep)   # migrates 0->1, inheriting the pre-optin claim
 
         conn = _sqlite_factory().connect(str(db))
+        rid = conn.execute("SELECT root_id FROM roots_register"
+                           " WHERE rel_path='x' COLLATE NOCASE AND valid_to IS NULL"
+                           ).fetchone()["root_id"]
         row = conn.execute("SELECT enabled, decided_by FROM agent_optin"
-                           " WHERE rel_path='x'").fetchone()
-        conn.close()
-        truthy(row is not None, "the inherited agent_optin row persisted the pass")
+                           " WHERE root_id = ?", (rid,)).fetchone()
+        truthy(row is not None, "the pre-optin claim inherited a decision during migration")
         truthy(row is not None and row["decided_by"] == "inherited", "and is marked inherited")
+        truthy(row is not None and row["enabled"] == 1, "an inherited decision is enabled")
+
+        # LOW-1 discriminator: the inherit lives in the ladder, so it runs ONCE and
+        # never again. Delete the decision and boot a now-migrated (v1) db: it must
+        # NOT be re-created (the old every-boot base INSERT would resurrect it).
+        conn.execute("DELETE FROM agent_optin WHERE root_id = ?", (rid,))
+        conn.commit()
+        conn.close()
+        cboot.build_root_inventory(cboot.BootReport())   # v1: ladder does not run
+        conn = _sqlite_factory().connect(str(db))
+        again = conn.execute("SELECT 1 FROM agent_optin WHERE root_id = ?",
+                             (rid,)).fetchone()
+        conn.close()
+        truthy(again is None,
+               "the inherit does not run post-migration (only the one-time ladder)")
 
 
 # ── roots_register: the single identity/claim writer (RR) ────────────
@@ -2656,6 +2849,67 @@ def _():
         eq(len(rows), 1, "exactly one decision row per root_id")
         eq((rows[0]["enabled"], rows[0]["description"]), (1, "still yes"),
            "the accept decision is updated in place")
+
+
+@test("RR-11", "relink")
+def _():
+    """A destination-store collision is REFUSED, not clobbered (MEDIUM-2).
+
+    The user opened Claude in the new location before relinking, so a transcript
+    store already sits at the destination slug. relink detects it BEFORE any DB
+    write and raises a catchable ValueError: it does NOT crash, does NOT touch
+    either store, and leaves the identity single-current at the OLD path (rolled
+    back). Exercised with BOTH a populated destination (which os.rename would fail
+    on) AND an empty one (which os.rename would silently CONSUME) — only the
+    pre-existence check refuses the empty case, so this pins that check.
+    """
+    def _check(dest_files):
+        with rr_rig() as (rr, conn, apex):
+            rid = rr.mint(conn, "old/home")
+            rr.open_claim(conn, rid, "home-pj", "home", ".claude/agents/home-pj.md")
+            conn.commit()
+            home = Path(tempfile.mkdtemp(prefix="ctest-rr11-home-")).resolve()
+            try:
+                proj = home / ".claude" / "projects"
+                proj.mkdir(parents=True)
+                slug = rr._ts().project_slug
+                old_store = proj / slug(apex / "old/home")
+                new_store = proj / slug(apex / "new/home")
+                old_store.mkdir()
+                (old_store / "old.jsonl").write_text("OLD transcript\n")
+                new_store.mkdir()                          # destination already exists
+                for name, body in dest_files:
+                    (new_store / name).write_text(body)
+
+                raised = None
+                try:
+                    rr.relink(conn, rid, "new/home", home=home)
+                except ValueError as e:
+                    raised = str(e)
+                try:                                       # what close() would do
+                    conn.rollback()
+                except sqlite3.Error:
+                    pass
+
+                truthy(raised is not None,
+                       "relink raised a catchable ValueError (dest_files=%r)" % (dest_files,))
+                truthy(raised and str(new_store) in raised,
+                       "the message names the colliding destination: %r" % (raised,))
+                truthy((old_store / "old.jsonl").read_text() == "OLD transcript\n",
+                       "the OLD store was not moved")
+                eq(sorted(p.name for p in new_store.iterdir()),
+                   sorted(n for n, _ in dest_files),
+                   "the pre-existing destination store was NOT clobbered/merged/consumed")
+                cur = conn.execute(
+                    "SELECT rel_path FROM roots_register"
+                    " WHERE root_id = ? AND valid_to IS NULL", (rid,)).fetchall()
+                eq([r["rel_path"] for r in cur], ["old/home"],
+                   "the identity stays single-current at the OLD path (rolled back)")
+            finally:
+                _shutil.rmtree(home, ignore_errors=True)
+
+    _check([("new.jsonl", "someone else's history\n")])    # populated destination
+    _check([])                                             # empty destination stub
 
 
 # ── /roots reconfigure command (WP-F) ────────────────────────────────
