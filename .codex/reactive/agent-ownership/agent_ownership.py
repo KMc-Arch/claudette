@@ -67,6 +67,25 @@ class RegistryUnavailable(Exception):
 
 # ── Claims ───────────────────────────────────────────────────────────
 
+def _open_ro(db_path):
+    """Open roots.db TRULY read-only, or raise RegistryUnavailable.
+
+    `immutable=1&mode=ro` is the genuine read-only open — `mode=ro` alone still
+    creates/updates `-wal`/`-shm` sidecars on a WAL database (see
+    .state/memory/reference_sqlite_wal_readonly.md). The ONE read-only open every
+    reader in this module shares, so `claims_for` and `read_spine_history` can never
+    disagree about how the db is opened.
+    """
+    db_path = Path(db_path)
+    if not db_path.is_file():
+        raise RegistryUnavailable(f"roots.db not found: {db_path}")
+    uri = "file:" + db_path.resolve().as_posix().replace("?", "%3f").replace("#", "%23")
+    try:
+        return sqlite3.connect(uri + "?immutable=1&mode=ro", uri=True)
+    except sqlite3.Error as e:
+        raise RegistryUnavailable(f"roots.db unopenable: {e}") from e
+
+
 def claims_for(db_path, agents_dir):
     """Return the set of absolute agent-file paths cboot currently claims.
 
@@ -79,21 +98,21 @@ def claims_for(db_path, agents_dir):
 
     Raises RegistryUnavailable on any failure. Never returns a partial answer.
     """
-    db_path = Path(db_path)
     agents_dir = Path(agents_dir)
-    if not db_path.is_file():
-        raise RegistryUnavailable(f"roots.db not found: {db_path}")
-
-    uri = "file:" + db_path.resolve().as_posix().replace("?", "%3f").replace("#", "%23")
-    try:
-        conn = sqlite3.connect(uri + "?immutable=1&mode=ro", uri=True)
-    except sqlite3.Error as e:
-        raise RegistryUnavailable(f"roots.db unopenable: {e}") from e
+    conn = _open_ro(db_path)
     try:
         try:
+            # LEFT JOIN + COALESCE: prefer the CURRENT spine rel_path (so a moved
+            # root is owned at its new location), falling back to the claim's own
+            # frozen rel_path when the identity has no current spine row — a broken
+            # or absent link never un-owns a file.
             rows = conn.execute(
-                "SELECT agent_name, rel_path, agent_file FROM agent_registry"
-                " WHERE valid_to IS NULL"
+                "SELECT ar.agent_name, COALESCE(rr.rel_path, ar.rel_path) AS rel_path,"
+                " ar.agent_file, ar.root_id"
+                " FROM agent_registry ar"
+                " LEFT JOIN roots_register rr"
+                "   ON rr.root_id = ar.root_id AND rr.valid_to IS NULL"
+                " WHERE ar.valid_to IS NULL"
             ).fetchall()
         except sqlite3.Error as e:
             raise RegistryUnavailable(f"agent_registry unreadable: {e}") from e
@@ -101,13 +120,17 @@ def claims_for(db_path, agents_dir):
         conn.close()
 
     claims = {}
-    for agent_name, rel_path, agent_file in rows:
+    for agent_name, rel_path, agent_file, root_id in rows:
         # agent_file is stored apex-relative; resolve against the apex so the
         # comparison key is a single canonical form.
         p = Path(agent_file)
         if not p.is_absolute():
             p = agents_dir.parent.parent / agent_file
-        claims[_key(p)] = {"agent_name": agent_name, "rel_path": rel_path}
+        # root_id rides along so a move-aware caller can gate the past-rel judgement
+        # on THIS identity's own history (see `marker_is_current_or_past_rel`); it is
+        # None only for a legacy pre-spine row, which has no history to consult.
+        claims[_key(p)] = {"agent_name": agent_name, "rel_path": rel_path,
+                           "root_id": root_id}
     return claims
 
 
@@ -125,8 +148,8 @@ def _key(path):
     comparison would call cboot's own file foreign — purge would then mislabel it
     "hand-authored" forever and the project's re-claim would bump to `-2`. The
     result is only ever a dict/comparison key, never a path to open, so folding is
-    safe; neighbours (_free_name, the de-confliction glob) already fold for the
-    same reason.
+    safe; its folding neighbour `roots_register.deconflict` (the relocated
+    de-confliction rule) and the de-confliction glob fold for the same reason.
     """
     p = Path(path)
     if not p.is_absolute():
@@ -161,6 +184,44 @@ def is_tmp_artifact(path):
     return Path(path).name.endswith(TMP_SUFFIX)
 
 
+# ── Spine history (move-aware ownership input) ───────────────────────
+
+def spine_history(conn):
+    """`{root_id: {casefolded rel_path, ...}}` over ALL roots_register rows.
+
+    Every rel_path each identity has EVER held — current AND closed spine rows —
+    keyed on identity. This is the input `marker_is_current_or_past_rel` consults to
+    tell a MOVED-but-ours file (its marker names a rel this identity used to sit at)
+    from a genuinely hand-edited one. Read once from an already-open connection; the
+    caller supplies the connection (cboot's projection pass and `/roots` both hold
+    one), so this never opens the db itself.
+    """
+    hist = {}
+    for root_id, rel in conn.execute(
+            "SELECT root_id, rel_path FROM roots_register"):
+        hist.setdefault(root_id, set()).add(rel.casefold())
+    return hist
+
+
+def read_spine_history(db_path):
+    """`spine_history` for a caller that has NO open connection — purge.
+
+    Opens roots.db truly read-only (`_open_ro`) and returns the same
+    `{root_id: {casefolded rel_path, ...}}`. Raises RegistryUnavailable on any
+    failure; a deleter that cannot read the spine must degrade to an EMPTY history,
+    which makes `marker_is_current_or_past_rel` collapse to exactly `marker_matches`
+    — the safe, preserve-more direction.
+    """
+    conn = _open_ro(db_path)
+    try:
+        try:
+            return spine_history(conn)
+        except sqlite3.Error as e:
+            raise RegistryUnavailable(f"roots_register unreadable: {e}") from e
+    finally:
+        conn.close()
+
+
 # ── Marker (advisory only) ───────────────────────────────────────────
 
 def render_marker(rel_path, generated_at):
@@ -186,6 +247,38 @@ def marker_matches(path, rel_path):
     caller do LESS: cboot skips a rewrite, purge skips a delete.
     """
     return read_marker(path) == rel_path
+
+
+def marker_is_current_or_past_rel(path, current_rel, root_id, hist):
+    """True if `path` still carries OUR marker — for the CURRENT rel_path, OR for
+    any rel_path this identity USED to hold (a relink moved it before it was
+    re-projected). The MOVE-AWARE superset of `marker_matches`.
+
+    A relink versions the spine but leaves the agent file's marker naming the PRIOR
+    rel_path until the next materialize. Five call sites must agree that such a file
+    is still ours-and-current-enough — four ACT on the judgement: cboot's close-pass
+    (sweep it on opt-out) and held-refresh (rewrite it in place), `/roots`
+    `_sweep_owned_file` (sweep it on disable/rename), and purge (treat it as ours,
+    not hand-authored); `compute_drift` alone is report-only (do NOT flag it
+    diverged). Splitting that judgement across the callers is how bare
+    `marker_matches` STRANDED a moved file in three of them; this is the single
+    judgement they now share.
+
+    `hist` is `{root_id: {casefolded rel_path, ...}}` (see `spine_history` /
+    `read_spine_history`). The past-rel arm is gated on THIS `root_id`'s own history,
+    so the recogniser only ever widens to MORE of the OWNING identity's files, never
+    a foreign one; and an empty/missing `hist` degrades to exactly `marker_matches`.
+    Like `marker_matches`, the caller must have established ownership by path
+    (`owns()`) first, and this only ever makes it do LESS work on an already-owned
+    file. `current_rel` is matched EXACTLY (as `marker_matches` does); the past
+    arm is case-folded to mirror the mount's case-insensitivity.
+    """
+    marker_rel = read_marker(path)
+    if marker_rel is None:
+        return False
+    if marker_rel == current_rel:
+        return True
+    return marker_rel.casefold() in hist.get(root_id, set())
 
 
 def read_marker(path):
@@ -262,6 +355,22 @@ def suffixed(base):
     turned into a bare `-pj`.
     """
     return f"{base}{SUFFIX}" if base else base
+
+
+def desuffix(name):
+    """Recover the base from a suffixed @name: strip exactly ONE trailing SUFFIX.
+
+    The inverse of `suffixed` for the ordinary case, and the guard that keeps
+    `agent_optin.requested_name` a BASE name so re-projecting it never doubles the
+    suffix (`x` -> `x-pj`, not `x-pj-pj`). It is NOT idempotent, and deliberately
+    so: a literal `*-pj` FOLDER derives base `draw2-pj`, whose agent name is
+    `draw2-pj-pj`, whose base is `draw2-pj` again — stripping exactly one suffix
+    preserves the intended disjoint-namespace double. A name that does not end in
+    the suffix (or that is nothing but the suffix) is returned unchanged.
+    """
+    if name and len(name) > len(SUFFIX) and name.endswith(SUFFIX):
+        return name[:-len(SUFFIX)]
+    return name
 
 
 def yaml_scalar(value):
