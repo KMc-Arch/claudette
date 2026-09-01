@@ -49,6 +49,8 @@ from pathlib import Path
 # purge came to delete files cboot would have preserved.
 _AO_PATH = (Path(__file__).resolve().parents[3]
             / ".codex" / "reactive" / "agent-ownership" / "agent_ownership.py")
+_TS_PATH = (Path(__file__).resolve().parents[3]
+            / ".codex" / "reactive" / "transcript-slug" / "transcript_slug.py")
 
 
 def _agent_ownership():
@@ -64,6 +66,16 @@ def _agent_ownership():
         return mod
     except (OSError, ImportError, AttributeError):
         return None
+
+
+def _transcript_slug():
+    """Load the shared transcript-slug module. Raises on failure: the slug is
+    needed for correctness (locating a transcript store), not a safety gate, and
+    the module lives on the codex hard floor, so absence means a broken install."""
+    spec = importlib.util.spec_from_file_location("transcript_slug", _TS_PATH)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
 
 # Hard floor — never on any allowlist. Also enforced by separate boundaries
 # (framework immutability, audit-immutability-guard); listed here so purge is
@@ -147,7 +159,7 @@ def _project_slug(project_root: Path) -> str:
     and other characters intact, so `~`/`.`-rooted projects never matched their
     real store and their transcripts were silently skipped under `purge all`.
     """
-    return re.sub(r"[^A-Za-z0-9]", "-", str(project_root.resolve()))
+    return _transcript_slug().project_slug(project_root)
 
 
 def _find_project_footprint(project_root: Path) -> Path | None:
