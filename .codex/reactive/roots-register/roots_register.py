@@ -3,7 +3,9 @@
 Every durable identity/claim mutation in the root-identity system passes through
 this module. `roots_register` (the identity spine), `agent_registry` (the SCD2
 @name claim ledger), and `agent_optin` (the decision) are written HERE and
-nowhere else. Boot's first-touch prompt, the `/roots` reconfigure command, and
+nowhere else. The decision is a matched pair: `open_claim` records an ENABLED
+opt-in (and opens the @name claim), `decline` records a DISABLED one (decision
+only, no claim). Boot's first-touch prompt, the `/roots` reconfigure command, and
 `/move-project` all CALL these functions; none of them writes those tables
 directly. Two divergent copies of claim-mutation is exactly the bug the shared
 `agent_ownership` and `transcript_slug` modules already exist to make
@@ -207,6 +209,33 @@ def open_claim(conn, root_id, agent_name, source_folder, agent_file,
         (root_id, rel_path,
          agent_name if requested_name is None else requested_name,
          description, stamp, decided_by))
+
+
+def decline(conn, root_id, *, requested_name=None, description=None,
+            decided_by="prompt"):
+    """Record a DECLINE decision for `root_id`: agent_optin enabled=0, no claim.
+
+    The disabled complement of `open_claim`'s enabled opt-in. A declined root has
+    no @name claim, so this writes ONLY the durable decision — it never touches
+    `agent_registry`. The `agent_optin` row for `root_id` is upserted to enabled=0,
+    freezing the root's CURRENT spine `rel_path` as the decision-time location.
+    `requested_name` and `description` are nullable: a decline records no chosen
+    name by default. Like the other writers it opens a guarded transaction and
+    leaves the commit to the caller.
+    """
+    _begin(conn)
+    rel_path = _spine_rel_path(conn, root_id)
+    stamp = _now_iso()
+    conn.execute(
+        "INSERT INTO agent_optin (root_id, rel_path, enabled, requested_name,"
+        " description, decided_at, decided_by)"
+        " VALUES (?, ?, 0, ?, ?, ?, ?)"
+        " ON CONFLICT(root_id) DO UPDATE SET"
+        " enabled = 0, rel_path = excluded.rel_path,"
+        " requested_name = excluded.requested_name,"
+        " description = excluded.description,"
+        " decided_at = excluded.decided_at, decided_by = excluded.decided_by",
+        (root_id, rel_path, requested_name, description, stamp, decided_by))
 
 
 def close_claim(conn, root_id, close_reason):

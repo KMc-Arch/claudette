@@ -83,6 +83,7 @@ COVERED = {
     "rename_claim",
     "relink",
     "deconflict",
+    "decline",
 }
 
 
@@ -492,14 +493,54 @@ def scratch_apex(children=()):
         _shutil.rmtree(tmp, ignore_errors=True)
 
 
+def _rid_for(conn, rel):
+    """The current spine root_id for `rel`, minting one through the module if the
+    root has none yet. The single way this harness gives a test root a real
+    root_id — used by ag_optin and by every hand-crafted agent_registry insert, so
+    a re-keyed row's root_id always names a real identity in roots_register.
+    """
+    rr = _load_roots_register()
+    row = conn.execute(
+        "SELECT root_id FROM roots_register WHERE rel_path = ? COLLATE NOCASE"
+        " AND valid_to IS NULL", (rel,)).fetchone()
+    return row["root_id"] if row else rr.mint(conn, rel)
+
+
 def ag_optin(apex, rows):
-    """Record opt-in decisions the way the interactive prompt would."""
+    """Record opt-in decisions the way the interactive prompt would.
+
+    Routed through the identity mutation module so every test root gets a real
+    root_id (forward-compatible with the WP-E boot rewire): each root is minted a
+    spine row if it has none, then the DECISION is recorded keyed on that root_id
+    — a decline through the module's `decline` writer, an enabled decision written
+    to agent_optin in the re-keyed (root_id-PK) shape.
+
+    Only the decision is written here — NOT the agent_registry claim. Opening the
+    claim (name derivation, the -pj suffix, de-confliction against foreign files)
+    is still generate_agents' job in the un-rewired boot, exactly as the AG/WK/MQ
+    tests exercise it; pre-opening a claim via open_claim would make every enabled
+    root read as `held`, skipping the de-confliction those tests assert and
+    colliding two roots that share a base @name on the current-name unique index.
+    Once WP-E rewires boot, that claim-open moves behind the module too.
+    """
+    rr = _load_roots_register()
     conn = _sqlite_factory().connect(str(apex / ".state" / "roots.db"))
     cboot._ensure_agent_tables(conn)
     for rel, enabled, name, desc in rows:
-        conn.execute(
-            "INSERT OR REPLACE INTO agent_optin VALUES (?,?,?,?,"
-            "'2026-01-01T00:00:00Z','prompt')", (rel, enabled, name, desc))
+        root_id = _rid_for(conn, rel)
+        if enabled:
+            conn.execute(
+                "INSERT INTO agent_optin (root_id, rel_path, enabled,"
+                " requested_name, description, decided_at, decided_by)"
+                " VALUES (?, ?, 1, ?, ?, '2026-01-01T00:00:00Z', 'prompt')"
+                " ON CONFLICT(root_id) DO UPDATE SET"
+                " enabled = 1, rel_path = excluded.rel_path,"
+                " requested_name = excluded.requested_name,"
+                " description = excluded.description,"
+                " decided_at = excluded.decided_at, decided_by = excluded.decided_by",
+                (root_id, rel, name, desc))
+        else:
+            rr.decline(conn, root_id, requested_name=name, description=desc)
     conn.commit()
     conn.close()
 
@@ -809,11 +850,12 @@ def purge_rig(claimed=("gen",), with_db=True):
             conn = _sqlite_factory().connect(str(tmp / ".state" / "roots.db"))
             cboot._ensure_agent_tables(conn)
             for n in claimed:
+                rid = _rid_for(conn, n)
                 conn.execute(
                     "INSERT INTO agent_registry (agent_name, rel_path, source_folder,"
-                    " description, agent_file, valid_from, change_reason)"
-                    " VALUES (?,?,?,'d',?,'2026-01-01T00:00:00Z','opted-in')",
-                    (n, n, n, ".claude/agents/%s.md" % n))
+                    " description, agent_file, valid_from, change_reason, root_id)"
+                    " VALUES (?,?,?,'d',?,'2026-01-01T00:00:00Z','opted-in',?)",
+                    (n, n, n, ".claude/agents/%s.md" % n, rid))
             conn.commit()
             conn.close()
         yield tmp, ag
@@ -1855,11 +1897,13 @@ def _():
         victim.write_text(GEN_BODY % "ghost")   # carries a cboot marker for 'ghost'
         conn = _sqlite_factory().connect(str(apex / ".state" / "roots.db"))
         cboot._ensure_agent_tables(conn)
+        rid = _rid_for(conn, "ghost")
         conn.execute(
             "INSERT INTO agent_registry (agent_name, rel_path, source_folder,"
-            " description, agent_file, valid_from, change_reason)"
+            " description, agent_file, valid_from, change_reason, root_id)"
             " VALUES ('ghost','ghost','ghost','d',"
-            "'.claude/agents/../../VICTIM_OUTSIDE.md','2026-01-01T00:00:00Z','opted-in')")
+            "'.claude/agents/../../VICTIM_OUTSIDE.md','2026-01-01T00:00:00Z','opted-in',?)",
+            (rid,))
         conn.commit()
         conn.close()
         rep = cboot.BootReport()
@@ -1969,6 +2013,11 @@ def _():
         cboot._ensure_agent_tables(conn)
         conn.execute("DROP INDEX IF EXISTS idx_agent_cur_path")
         conn.execute("DROP INDEX IF EXISTS idx_agent_cur_name")
+        # These two current rows are a "legacy/restored/hand-edited duplicate" — the
+        # exact case where root_id is legitimately ABSENT (such rows predate the
+        # spine). Left NULL on purpose: a shared real root_id would trip the current
+        # root_id unique index at insert, and claims_for's LEFT JOIN + COALESCE owns
+        # a NULL-root_id row by its frozen rel_path regardless.
         for i in (1, 2):
             conn.execute(
                 "INSERT INTO agent_registry (agent_name, rel_path, source_folder,"
@@ -2032,11 +2081,13 @@ def _():
         db = apex / ".state" / "roots.db"
         conn = _sqlite_factory().connect(str(db))
         cboot._ensure_agent_tables(conn)
+        rid = _rid_for(conn, "a")
         conn.execute(
             "INSERT INTO agent_registry (agent_name, rel_path, source_folder,"
-            " description, agent_file, valid_from, change_reason)"
+            " description, agent_file, valid_from, change_reason, root_id)"
             " VALUES ('../../EVIL','a','a','d',"
-            "'.claude/agents/../../EVIL.md','2026-01-01T00:00:00Z','opted-in')")
+            "'.claude/agents/../../EVIL.md','2026-01-01T00:00:00Z','opted-in',?)",
+            (rid,))
         conn.commit()
         conn.close()
 
@@ -2066,11 +2117,12 @@ def _():
         db = apex / ".state" / "roots.db"
         conn = _sqlite_factory().connect(str(db))
         cboot._ensure_agent_tables(conn)
+        rid = _rid_for(conn, "x")
         conn.execute(
             "INSERT INTO agent_registry (agent_name, rel_path, source_folder,"
-            " description, agent_file, valid_from, change_reason)"
+            " description, agent_file, valid_from, change_reason, root_id)"
             " VALUES ('x-pj','x','x','d','.claude/agents/x-pj.md',"
-            "'2026-01-01T00:00:00Z','opted-in')")
+            "'2026-01-01T00:00:00Z','opted-in',?)", (rid,))
         conn.execute("DELETE FROM agent_optin WHERE rel_path='x'")  # pre-optin claim
         conn.commit()
         conn.close()
@@ -2337,6 +2389,94 @@ def _():
         truthy(joined is None,
                "minting a fresh id orphans the live claim — the failure RR-05's "
                "same-root_id assertion is built to catch")
+
+
+@test("RR-08", "claims_for")
+def _():
+    """WP-B proof: a move is transparent to ownership, and a broken link never
+    un-owns a file.
+
+    claims_for's LEFT JOIN + COALESCE sources the CURRENT spine rel_path for each
+    claim, so a relink is invisible to the ownership key (the agent_file, hence the
+    key, is untouched by the move); and it falls back to the claim's own frozen
+    rel_path when the identity has no current spine row, so a broken or absent link
+    never drops the claim from ownership. Reverting either half of that SELECT
+    fails this test.
+    """
+    ao = cboot._agent_ownership()
+    with rr_rig() as (rr, conn, apex):
+        agents = apex / ".claude" / "agents"
+        agents.mkdir(parents=True, exist_ok=True)
+        db = apex / ".state" / "roots.db"
+        rid = rr.mint(conn, "old/home")
+        rr.open_claim(conn, rid, "home-pj", "home", ".claude/agents/home-pj.md")
+        conn.commit()
+        key = ao._key(agents / "home-pj.md")
+
+        # claims_for opens the db immutable&mode=ro (the true read-only open), which
+        # ignores the WAL of this still-open writer. The AG tests dodge this by
+        # CLOSING their write conn (checkpointing) before reading; here the rr_rig
+        # conn stays open, so checkpoint the WAL into the main db before each read.
+        def _readable():
+            conn.execute("PRAGMA wal_checkpoint(FULL)")
+            return ao.claims_for(db, agents)
+
+        claims = _readable()
+        truthy(key in claims, "the claim is owned")
+        eq(claims[key]["rel_path"], "old/home",
+           "before the move, claims_for sources the current spine rel_path")
+
+        # Move the root. relink versions the spine under the SAME root_id and leaves
+        # the agent_registry claim (its agent_file) untouched.
+        home = Path(tempfile.mkdtemp(prefix="ctest-rr08-home-")).resolve()
+        try:
+            rr.relink(conn, rid, "new/home", home=home)
+            conn.commit()
+        finally:
+            _shutil.rmtree(home, ignore_errors=True)
+        moved = _readable()
+        truthy(key in moved,
+               "the SAME ownership key survives the move (agent_file unchanged)")
+        eq(moved[key]["rel_path"], "new/home",
+           "claims_for now returns the NEW rel_path from the current spine")
+
+        # LEFT JOIN fallback: version the spine out so the identity has NO current
+        # row. The claim must still be owned — by its own frozen rel_path.
+        conn.execute("UPDATE roots_register SET valid_to = '2026-01-01T00:00:00Z'"
+                     " WHERE root_id = ? AND valid_to IS NULL", (rid,))
+        conn.commit()
+        orphan = _readable()
+        truthy(key in orphan,
+               "a claim whose spine row is absent is NOT dropped from ownership")
+        eq(orphan[key]["rel_path"], "old/home",
+           "it falls back to the claim's own frozen (claim-time) rel_path")
+
+
+@test("RR-09", "decline")
+def _():
+    """decline records a DISABLED decision (agent_optin enabled=0) and opens NO
+    claim — the disabled complement of open_claim — and upserts idempotently."""
+    with rr_rig() as (rr, conn, apex):
+        rid = rr.mint(conn, "declined")
+        rr.decline(conn, rid, requested_name="nope", description="not addressable")
+        optin = conn.execute(
+            "SELECT rel_path, enabled, requested_name, description, decided_by"
+            " FROM agent_optin WHERE root_id = ?", (rid,)).fetchone()
+        eq((optin["enabled"], optin["rel_path"], optin["requested_name"],
+            optin["decided_by"]),
+           (0, "declined", "nope", "prompt"),
+           "a disabled opt-in keyed on root_id, freezing the spine rel_path")
+        eq(conn.execute("SELECT COUNT(*) FROM agent_registry WHERE root_id = ?",
+                        (rid,)).fetchone()[0], 0,
+           "decline opens no agent_registry claim")
+
+        # A later decline updates the same decision row in place, never a second.
+        rr.decline(conn, rid, description="still no")
+        rows = conn.execute("SELECT enabled, description FROM agent_optin"
+                            " WHERE root_id = ?", (rid,)).fetchall()
+        eq(len(rows), 1, "exactly one decision row per root_id")
+        eq((rows[0]["enabled"], rows[0]["description"]), (0, "still no"),
+           "the decline decision is updated in place")
 
 
 # ── runner + coverage ────────────────────────────────────────────────

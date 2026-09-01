@@ -91,9 +91,17 @@ def claims_for(db_path, agents_dir):
         raise RegistryUnavailable(f"roots.db unopenable: {e}") from e
     try:
         try:
+            # LEFT JOIN + COALESCE: prefer the CURRENT spine rel_path (so a moved
+            # root is owned at its new location), falling back to the claim's own
+            # frozen rel_path when the identity has no current spine row — a broken
+            # or absent link never un-owns a file.
             rows = conn.execute(
-                "SELECT agent_name, rel_path, agent_file FROM agent_registry"
-                " WHERE valid_to IS NULL"
+                "SELECT ar.agent_name, COALESCE(rr.rel_path, ar.rel_path) AS rel_path,"
+                " ar.agent_file"
+                " FROM agent_registry ar"
+                " LEFT JOIN roots_register rr"
+                "   ON rr.root_id = ar.root_id AND rr.valid_to IS NULL"
+                " WHERE ar.valid_to IS NULL"
             ).fetchall()
         except sqlite3.Error as e:
             raise RegistryUnavailable(f"agent_registry unreadable: {e}") from e

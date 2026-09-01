@@ -1260,6 +1260,7 @@ def _migrate_to_v1(conn):
     back and user_version stays 0 (the next boot retries). Loud on any anomaly
     (lost rows, an unmatched current claim) rather than silently partial.
     """
+    import sqlite3  # for sqlite3.IntegrityError only; connection comes from the factory
     if not conn.in_transaction:
         conn.execute("BEGIN IMMEDIATE")
 
@@ -1356,6 +1357,7 @@ def _migrate_to_v1(conn):
 def _assert_schema_shape(conn):
     """Fail loud (as a sqlite error the caller catches -> warn + skip agent pass)
     if the durable schema is not the shape the current code expects."""
+    import sqlite3  # for sqlite3.IntegrityError only; module-level funcs get no local import elsewhere
     def cols(t):
         return {r[1] for r in conn.execute("PRAGMA table_info(%s)" % t)}
     need = {"id", "root_id", "rel_path", "is_apex", "change_reason",
