@@ -279,11 +279,19 @@ def t_lock_diagnostic():
 
 def t_structural():
     import re
-    strings = "\n".join(_nondocstring_strings(MP_PATH))
-    sql = re.compile(r"(INSERT|UPDATE)\s+(INTO\s+)?(roots_register|agent_registry|agent_optin)", re.I)
+    lits = _nondocstring_strings(MP_PATH)
+    strings = "\n".join(lits)
+    # Any raw write verb reaching an identity table (INSERT / INSERT OR REPLACE /
+    # REPLACE / UPDATE / DELETE FROM), not just INSERT/UPDATE.
+    sql = re.compile(r"\b(INSERT|REPLACE|UPDATE|DELETE)\b.{0,40}?\b(roots_register|agent_registry|agent_optin)\b", re.I | re.S)
     ro = re.compile(r"immutable\s*=\s*1|mode\s*=\s*ro", re.I)
-    # Meta: prove the guards actually fire on a real violation (not vacuous regexes).
-    check("T7 SQL guard has teeth", sql.search("conn.execute('INSERT INTO roots_register ...')") is not None)
+    # Positive control: the extractor is non-empty and captured real SQL (the SELECT).
+    check("T7 extractor non-empty (control)", "roots_register" in strings)
+    # Meta: the guards fire on every raw-write form + the RO URI (not vacuous regexes).
+    for bad in ("INSERT INTO roots_register", "INSERT OR REPLACE INTO agent_optin",
+                "REPLACE INTO roots_register", "DELETE FROM roots_register",
+                "UPDATE agent_registry SET"):
+        check("T7 SQL guard catches %r" % bad, sql.search("conn.execute('%s ...')" % bad) is not None)
     check("T7 RO-URI guard has teeth", ro.search("connect('file:x?immutable=1&mode=ro')") is not None)
     # The real checks, over non-docstring string literals only.
     check("T7 no raw identity-table writes (single-writer)", sql.search(strings) is None)
@@ -369,18 +377,130 @@ def t_unreg_collision_nonblocking():
 
 
 def t_framework_guard():
-    """Refuse moving a dot-prefixed (framework) path such as .state / .codex."""
+    """Refuse moving a dot-prefixed (framework) path such as .state / .codex, as
+    either source or dest."""
     apex, home = build_apex()
     rc = mp.run([".state", "moved-state", "--project-root", str(apex),
                  "--home", str(home), "--execute", "--yes"])
-    check("T15 refuses moving a framework dir (.state)", rc == 2 and (apex / ".state").is_dir())
+    check("T15 refuses framework dir as source (.state)", rc == 2 and (apex / ".state").is_dir())
+    rc = mp.run(["proj", ".hidden-dest", "--project-root", str(apex),
+                 "--home", str(home), "--execute", "--yes"])
+    check("T15 refuses dot-prefixed dest", rc == 2 and not (apex / ".hidden-dest").exists())
+
+
+def t_ghost_verification():
+    """A post-rename ghost (rename 'succeeds' but nothing moved) trips the rollback,
+    never a false success + DB commit over a broken destination."""
+    import io
+    import contextlib
+    apex, home = build_apex()
+    conn = sq.connect(str(apex / ".state" / "roots.db"))
+    plan = mp._preflight(conn, apex.resolve(), (apex / "proj").resolve(),
+                         (apex / "moved").resolve(), home.resolve())
+    orig = mp.os.rename
+
+    def noop_forward(a, b, *r):
+        if str(a).endswith("/proj") and str(b).endswith("/moved"):
+            return          # simulate a 9p ghost: "succeeds" but nothing moved
+        return orig(a, b, *r)
+
+    mp.os.rename = noop_forward
+    buf = io.StringIO()
+    try:
+        with contextlib.redirect_stdout(buf):
+            rc = mp._execute(conn, plan, apex.resolve(), home.resolve())
+    finally:
+        mp.os.rename = orig
+        conn.close()
+    out = buf.getvalue()
+    check("T16 ghost trips failure", rc == 1)
+    check("T16 ghost message shown", "post-rename verification" in out)
+    check("T16 ghost leaves tree at source", (apex / "proj").is_dir()
+          and not (apex / "moved").exists())
+    check("T16 ghost spine unchanged", current_rel(apex, 2) == "proj")
+
+
+def t_rollback_incomplete():
+    """When an undo step itself fails, the tool reports 'rollback INCOMPLETE', never
+    a false clean revert."""
+    import io
+    import contextlib
+    apex, home = build_apex()
+    src = (apex / "proj").resolve()
+    dst = (apex / "moved").resolve()
+    conn = sq.connect(str(apex / ".state" / "roots.db"))
+    plan = mp._preflight(conn, apex.resolve(), src, dst, home.resolve())
+    sub_new = store_dir(home, dst / "sub")      # force the sub relink to fail
+    sub_new.mkdir(parents=True, exist_ok=True)
+    (sub_new / "x.jsonl").write_text("x\n")
+    orig = mp.os.rename
+
+    def reverse_fails(a, b, *r):
+        if str(a).endswith("/moved") and str(b).endswith("/proj"):
+            raise OSError(13, "reverse rename blocked")   # the tree-undo fails
+        return orig(a, b, *r)
+
+    mp.os.rename = reverse_fails
+    buf = io.StringIO()
+    try:
+        with contextlib.redirect_stdout(buf):
+            rc = mp._execute(conn, plan, apex.resolve(), home.resolve())
+    finally:
+        mp.os.rename = orig
+        conn.close()
+    out = buf.getvalue()
+    check("T17 execute failed", rc == 1)
+    check("T17 reports INCOMPLETE", "rollback was INCOMPLETE" in out)
+    check("T17 does NOT claim a clean revert", "move aborted and rolled back" not in out)
+
+
+def t_confirm_interactive():
+    """The interactive confirmation accepts only an exact destination-path match."""
+    import builtins
+    dest = Path("/x/dest/here")
+
+    class FakeTTY:   # forwards real IO (so print still works), but claims to be a tty
+        def __init__(self, real):
+            self._real = real
+
+        def isatty(self):
+            return True
+
+        def __getattr__(self, n):
+            return getattr(self._real, n)
+
+    orig_in, orig_stdin, orig_stdout = builtins.input, mp.sys.stdin, mp.sys.stdout
+    mp.sys.stdin, mp.sys.stdout = FakeTTY(orig_stdin), FakeTTY(orig_stdout)
+    try:
+        builtins.input = lambda *a: str(dest)
+        check("T18 confirm accepts exact dest", mp._confirm(dest) is True)
+        builtins.input = lambda *a: str(dest) + "x"
+        check("T18 confirm rejects a near-miss", mp._confirm(dest) is False)
+    finally:
+        builtins.input, mp.sys.stdin, mp.sys.stdout = orig_in, orig_stdin, orig_stdout
+
+
+def t_under_nonascii():
+    """_under folds full-Unicode case (the FS domain) — a non-ASCII case-variant must
+    match, or the live-session guard fails open."""
+    check("T19 _under folds non-ASCII case", mp._under("/a/ächild/work", "/a/Ächild"))
+    check("T19 _under keeps the boundary (non-ASCII)", not mp._under("/a/ächildX", "/a/Ächild"))
+
+
+def t_rel_case_variant():
+    """_rel must not crash on a case-variant absolute apex prefix (fold-robust)."""
+    check("T20 _rel folds a case-variant apex prefix",
+          mp._rel(Path("/mnt/claudette"), Path("/mnt/Claudette/fooProj")) == "fooProj")
+    check("T20 _rel handles nesting", mp._rel(Path("/a/b"), Path("/A/B/c/d")) == "c/d")
 
 
 def main():
     for t in (t_dry_run, t_execute, t_guards, t_collision, t_live_session,
               t_rollback, t_unregistered, t_lock_diagnostic, t_structural,
               t_confirm_gate, t_nondict_session, t_session_prefix_and_nested,
-              t_case_insensitive, t_unreg_collision_nonblocking, t_framework_guard):
+              t_case_insensitive, t_unreg_collision_nonblocking, t_framework_guard,
+              t_ghost_verification, t_rollback_incomplete, t_confirm_interactive,
+              t_under_nonascii, t_rel_case_variant):
         print("\n== %s ==" % t.__name__)
         try:
             t()

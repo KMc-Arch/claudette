@@ -165,8 +165,16 @@ def _is_within(child, parent):
 
 
 def _under(cwd, base_str):
-    """True if `cwd` is `base_str` or a path beneath it (case-insensitive mount)."""
-    c, b = _fold(cwd), _fold(base_str)
+    """True if `cwd` is `base_str` or a path beneath it — FILESYSTEM domain.
+
+    Uses full-Unicode `str.casefold()`, NOT the ASCII `_fold`: these are real
+    filesystem paths (a session's recorded cwd vs the source directory) and the
+    mount folds the whole BMP, so an ASCII-only fold would miss a non-ASCII
+    case-variant and let the live-session guard fail OPEN — ripping a directory out
+    from under a running session. Over-matching a case-variant here is safe (the
+    blocker errs toward refusing). Identity/DB comparisons keep `_fold`, which must
+    match the spine's ASCII `COLLATE NOCASE`."""
+    c, b = cwd.casefold(), base_str.casefold()
     return c == b or c.startswith(b + "/")
 
 
@@ -200,8 +208,14 @@ class Blocked(Exception):
 
 
 def _rel(apex, abs_path):
-    """Apex-relative POSIX rel_path, matching how boot stores it."""
-    return abs_path.relative_to(apex).as_posix()
+    """Apex-relative POSIX rel_path (real casing), matching how boot stores it.
+
+    Fold-robust: reuses `_apex_rel_parts` rather than a raw `relative_to`. A raw
+    `Path.relative_to` is case-SENSITIVE and would raise `ValueError` on a
+    case-variant absolute arg that the folded containment guards already accepted —
+    an uncaught crash. `_apex_rel_parts` slices off a case-folded prefix, so the two
+    apex-relative derivations agree."""
+    return "/".join(_apex_rel_parts(apex, abs_path))
 
 
 def _apex_rel_parts(apex, abs_path):
@@ -284,9 +298,9 @@ def _preflight(conn, apex, source_abs, dest_abs, home):
     # A REGISTERED identity's store collision is a hard blocker (relink refuses it
     # anyway — a merge would destroy real history). An UNregistered one is
     # best-effort, NOT blocking (start.md): the store just stays put and the dir
-    # re-canonicalizes at the new path on next boot — reported, never fatal.
+    # re-canonicalizes at the new path on next boot — reported (per-item, inline in
+    # the plan and at execute), never fatal.
     collisions = [ns for (_r, _o, _n, _os, ns, wm) in identities if wm and ns.exists()]
-    unreg_collisions = [ns for (_o, _n, _os, ns, wm) in unregistered if wm and ns.exists()]
 
     # ── Session guard + rewrites ─────────────────────────────────────
     live = _live_sessions_under(home, source_abs)
@@ -299,10 +313,8 @@ def _preflight(conn, apex, source_abs, dest_abs, home):
         "apex": apex, "source_abs": source_abs, "dest_abs": dest_abs,
         "source_rel": source_rel, "dest_rel": dest_rel,
         "identities": identities, "unregistered": unregistered,
-        "collisions": collisions, "unreg_collisions": unreg_collisions,
-        "live": live, "sessions": sessions,
+        "collisions": collisions, "live": live, "sessions": sessions,
         "child_repos": child_repos,
-        "tree_will_move": True,
     }
 
 

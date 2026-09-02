@@ -91,9 +91,18 @@ The re-slug operates in **one** path system. A WSL `/mnt/...` <-> native Windows
 
 ## Guards
 
-All path comparisons **fold case** (ASCII, matching the DB's `COLLATE NOCASE`) —
-this drvfs mount is case-insensitive, so a case-variant of a path is the same
-directory and must not slip a guard.
+Path comparisons **fold case** — this drvfs mount is case-insensitive, so a
+case-variant of a path is the same directory and must not slip a guard. Two fold
+domains, deliberately: **filesystem** comparisons (session cwd vs the source dir,
+containment) use full-Unicode `casefold`, matching how the mount itself folds;
+**identity** comparisons (spine `rel_path` matching) use ASCII-only fold, matching
+the DB's `COLLATE NOCASE`. **Known limitation:** for a *non-ASCII* directory name,
+the DB's ASCII `NOCASE` treats a case-variant as a distinct identity while the
+filesystem treats it as the same directory (inherited from the spine's identity
+model — see `reference_testing_case_collision`); this instance uses ASCII paths, so
+it is latent here, but a non-ASCII case-variant move is not fully modeled and should
+be avoided. The filesystem-side guards (the live-session blocker especially) fold
+full-Unicode so they never fail *open* on a non-ASCII variant.
 
 - **Containment:** dest must resolve **strictly inside the apex** (an egress dest is
   refused). Source must be strictly inside the apex and **not** the apex itself.
