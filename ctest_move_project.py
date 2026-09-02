@@ -222,6 +222,41 @@ def t_unregistered():
     check("T8 unregistered NOT minted (no spine row)", n == 0)
 
 
+def t_lock_diagnostic():
+    """On an EACCES tree-move, the failure path prints the why + names the locked
+    descendant(s) via the (mocked here) Windows scan, and still rolls back."""
+    import io
+    import contextlib
+    apex, home = build_apex()
+    conn = sq.connect(str(apex / ".state" / "roots.db"))
+    plan = mp._preflight(conn, apex.resolve(), (apex / "proj").resolve(),
+                         (apex / "moved").resolve(), home.resolve())
+    orig_rename = mp.os.rename
+    orig_scan = mp._win_locked_descendants
+
+    def fake_rename(a, b, *rest):
+        if str(a).endswith("/proj") and str(b).endswith("/moved"):
+            raise PermissionError(13, "Permission denied")
+        return orig_rename(a, b, *rest)
+
+    mp.os.rename = fake_rename
+    mp._win_locked_descendants = lambda src: [str(src / "~outbox" / "held-open")]
+    buf = io.StringIO()
+    try:
+        with contextlib.redirect_stdout(buf):
+            rc = mp._execute(conn, plan, apex.resolve(), home.resolve())
+    finally:
+        mp.os.rename = orig_rename
+        mp._win_locked_descendants = orig_scan
+        conn.close()
+    out = buf.getvalue()
+    check("T9 EACCES reported failure", rc == 1)
+    check("T9 prints the why", "EACCES on the tree move" in out)
+    check("T9 names the locked descendant", "held-open" in out)
+    check("T9 tree not moved", (apex / "proj").is_dir() and not (apex / "moved").exists())
+    check("T9 spine unchanged", current_rel(apex, 2) == "proj")
+
+
 def t_structural():
     code = _code_only(MP_PATH)
     check("T7 no immutable=ro reader (WAL discipline)",
@@ -234,7 +269,7 @@ def t_structural():
 
 def main():
     for t in (t_dry_run, t_execute, t_guards, t_collision, t_live_session,
-              t_rollback, t_unregistered, t_structural):
+              t_rollback, t_unregistered, t_lock_diagnostic, t_structural):
         print("\n== %s ==" % t.__name__)
         try:
             t()

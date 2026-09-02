@@ -97,6 +97,22 @@ The re-slug operates in **one** path system. A WSL `/mnt/...` <-> native Windows
 - **Not in use:** a real move is refused while any **live** session (a running PID)
   has its cwd inside the source tree.
 
+## Troubleshooting — a move denied with `EACCES`
+
+A tree move fails with `Permission denied` (`EACCES`) when another process holds a
+file **or a directory** under the source open — and **one locked descendant
+directory blocks moving the whole subtree**, even though the source node itself is
+free and no file is locked. On WSL the holder is almost always a **Windows** app
+(an Explorer window, an editor/viewer, or Search indexing a file here), invisible
+to Linux `/proc`.
+
+The command **fails safe** (atomic rollback — nothing is left half-moved) and, on
+`EACCES`/`EPERM`, runs a **locked-descendant scan**: on WSL it shells to a
+PowerShell exclusive-open probe over the whole source subtree and prints the exact
+locked path(s); off WSL it prints the portable explanation. Close the holder
+(name it with Sysinternals `handle64.exe <folder>` or Process Explorer → Ctrl+F),
+then re-run. The scan is best-effort and never itself raises.
+
 ## Execution
 
 ```

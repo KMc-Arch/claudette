@@ -33,9 +33,11 @@ system; a WSL `/mnt/...` <-> Windows `D:\\...` move is out of scope and fails sa
 from __future__ import annotations
 
 import argparse
+import errno
 import importlib.util
 import json
 import os
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -351,6 +353,8 @@ def _execute(conn, plan, apex, home):
         except Exception:
             pass
         print("  [FAIL] move aborted and rolled back: %s" % e)
+        if isinstance(e, OSError) and e.errno in (errno.EACCES, errno.EPERM):
+            _report_lock_diagnostic(source_abs)
         return 1
 
     # ── Post-commit reconcile (best-effort) ──────────────────────────
@@ -418,6 +422,106 @@ def _print_report_only(plan):
     print("  [report] NOT rewritten — review by hand: Windows Task Scheduler path "
           "registrations, and cross-project text refs (backlogs/memories/designs) "
           "that mention the old path.")
+
+
+# ── Lock diagnostics (a rename EACCES → who holds the subtree) ────────
+#
+# A move's tree rename fails with EACCES when another process holds a file OR a
+# DIRECTORY under the source open — and a single locked descendant *directory*
+# blocks moving the whole subtree even though the node itself is free and no file
+# is locked. Off WSL that stays a bare errno-13; on WSL the holder is almost always
+# a Windows app (an Explorer window, an editor/viewer, or Search indexing a file
+# here), invisible to Linux /proc. This turns that cryptic failure into a named
+# locked path. Best-effort and self-contained: it must never itself raise.
+
+_LOCKED_DIR_SCAN_PS = r'''$src=@"
+using System;
+using System.Runtime.InteropServices;
+public static class MpLock {
+  [DllImport("kernel32.dll",SetLastError=true,CharSet=CharSet.Unicode)]
+  public static extern IntPtr CreateFileW(string p,uint a,uint sh,IntPtr sa,uint d,uint f,IntPtr t);
+  [DllImport("kernel32.dll",SetLastError=true)]
+  public static extern bool CloseHandle(IntPtr h);
+}
+"@
+Add-Type $src
+$root='__ROOT__'
+$dirs=@($root)+(Get-ChildItem -Recurse -Directory -Force $root -ErrorAction SilentlyContinue | ForEach-Object { $_.FullName })
+foreach($d in $dirs){
+  $h=[MpLock]::CreateFileW($d,0x00010000,0,[IntPtr]::Zero,3,0x02000000,[IntPtr]::Zero)
+  if($h -eq [IntPtr](-1)){
+    $e=[Runtime.InteropServices.Marshal]::GetLastWin32Error()
+    if($e -eq 32){ Write-Output ("LOCKED`t"+$d) }   # 32 = ERROR_SHARING_VIOLATION
+  } else { [void][MpLock]::CloseHandle($h) }
+}
+'''
+
+
+def _which_powershell():
+    """A Windows PowerShell reachable from WSL, or None (feature-detect)."""
+    for name in ("powershell.exe", "pwsh.exe"):
+        p = shutil.which(name)
+        if p:
+            return p
+    cand = Path("/mnt/c/Windows/System32/WindowsPowerShell/v1.0/powershell.exe")
+    return str(cand) if cand.exists() else None
+
+
+def _win_locked_descendants(source_abs):
+    """Descendant dirs of `source_abs` a Windows process holds open (share-violation).
+
+    Returns Linux paths (may include `source_abs` itself). Best-effort: [] off WSL,
+    without powershell/wslpath, or on any probe error — a diagnostic never raises.
+    """
+    pwsh = _which_powershell()
+    wslpath = shutil.which("wslpath")
+    if not pwsh or not wslpath or not source_abs.exists():
+        return []
+    try:
+        win = subprocess.run([wslpath, "-w", str(source_abs)], capture_output=True,
+                             text=True, timeout=15).stdout.strip()
+    except (OSError, subprocess.SubprocessError):
+        return []
+    if not win:
+        return []
+    ps = _LOCKED_DIR_SCAN_PS.replace("__ROOT__", win.replace("'", "''"))
+    try:
+        out = subprocess.run([pwsh, "-NoProfile", "-ExecutionPolicy", "Bypass",
+                              "-Command", ps], capture_output=True, text=True,
+                             timeout=90).stdout
+    except (OSError, subprocess.SubprocessError):
+        return []
+    locked = []
+    for line in out.splitlines():
+        if line.startswith("LOCKED\t"):
+            winpath = line[len("LOCKED\t"):].strip()
+            try:
+                lin = subprocess.run([wslpath, "-u", winpath], capture_output=True,
+                                     text=True, timeout=15).stdout.strip()
+            except (OSError, subprocess.SubprocessError):
+                lin = ""
+            locked.append(lin or winpath)
+    return locked
+
+
+def _report_lock_diagnostic(source_abs):
+    """Explain a rename EACCES and, on WSL, name the locked descendant(s)."""
+    print("  [why] EACCES on the tree move: another process holds a file or a "
+          "DIRECTORY under the source open — even one locked descendant directory "
+          "blocks moving the whole subtree. On WSL this is usually a Windows app "
+          "(an Explorer window, an editor/viewer, or Search indexing a file here), "
+          "invisible to Linux /proc.")
+    locked = _win_locked_descendants(source_abs)
+    if locked:
+        print("  [locked] a Windows process holds these open — close it, then retry:")
+        for p in locked:
+            print("             %s" % p)
+        print("  [tip] name the holder with Sysinternals: `handle64.exe \"%s\"`, or "
+              "Process Explorer -> Ctrl+F -> the folder name." % source_abs.name)
+    else:
+        print("  [locked] could not pin the exact descendant (not on WSL, or the "
+              "probe was unavailable). Close any Explorer window / editor / viewer "
+              "open under the source, then retry.")
 
 
 # ── CLI ──────────────────────────────────────────────────────────────
