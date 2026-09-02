@@ -474,17 +474,68 @@ def t_confirm_interactive():
     try:
         builtins.input = lambda *a: str(dest)
         check("T18 confirm accepts exact dest", mp._confirm(dest) is True)
+        # A PREFIX of dest: `ans in str(dest)` would wrongly accept it; only `==`
+        # rejects — so this pins the exact-match contract against that weakening.
+        builtins.input = lambda *a: str(dest)[:-3]
+        check("T18 confirm rejects a prefix near-miss", mp._confirm(dest) is False)
         builtins.input = lambda *a: str(dest) + "x"
-        check("T18 confirm rejects a near-miss", mp._confirm(dest) is False)
+        check("T18 confirm rejects a superstring", mp._confirm(dest) is False)
     finally:
         builtins.input, mp.sys.stdin, mp.sys.stdout = orig_in, orig_stdin, orig_stdout
 
 
-def t_under_nonascii():
-    """_under folds full-Unicode case (the FS domain) — a non-ASCII case-variant must
-    match, or the live-session guard fails open."""
-    check("T19 _under folds non-ASCII case", mp._under("/a/ächild/work", "/a/Ächild"))
-    check("T19 _under keeps the boundary (non-ASCII)", not mp._under("/a/ächildX", "/a/Ächild"))
+def t_true_case():
+    """_true_case recovers on-disk casing (works even on the case-sensitive test fs —
+    it folds itself), so a mis-cased source arg still follows an unregistered store
+    instead of silently orphaning it. Also proves _under uses the length-preserving
+    ASCII fold (no casefold slice corruption)."""
+    apex, home = build_apex()
+    ap = apex.resolve()
+    check("T19 _true_case recovers on-disk casing", mp._true_case(ap, ap / "PROJ") == ap / "proj")
+    check("T19 _true_case keeps a not-yet-existing leaf as typed",
+          mp._true_case(ap, ap / "proj" / "NewLeaf") == ap / "proj" / "NewLeaf")
+    # _under uses ASCII _fold (length-preserving), not casefold: a ß/SS pair does NOT
+    # over-match (they are different real dirs on this ASCII-folding mount).
+    check("T19 _under does not casefold-overmatch (ss vs ß)", not mp._under("/p/SS/x", "/p/ß"))
+    # end-to-end: a mis-cased source arg + an unregistered nested root → store follows.
+    orphan = apex / "proj" / "Orphan"
+    orphan.mkdir()
+    (orphan / "CLAUDE.md").write_text("---\nroot: true\n---\n")
+    make_store(home, orphan)
+    rc = mp.run(["PROJ/ORPHAN", "moved-orphan", "--project-root", str(apex),
+                 "--home", str(home), "--execute", "--yes"])
+    check("T19 mis-cased source arg executes (canonicalized)", rc == 0)
+    check("T19 unregistered store followed despite mis-cased arg",
+          store_dir(home, ap / "moved-orphan").exists()
+          and not store_dir(home, ap / "proj" / "Orphan").exists())
+
+
+def t_reconcile_subprocess():
+    """The post-commit cboot --materialize-only reconcile actually runs; a failing
+    reconcile warns but never fails a committed move."""
+    import io
+    import contextlib
+    apex, home = build_apex()
+    marker = apex / "cboot-called.txt"
+    (apex / "cboot.py").write_text(
+        "import sys\nopen(%r, 'w').write(' '.join(sys.argv))\nsys.exit(0)\n" % str(marker))
+    buf = io.StringIO()
+    with contextlib.redirect_stdout(buf):
+        rc = mp.run(["proj", "moved", "--project-root", str(apex),
+                     "--home", str(home), "--execute", "--yes"])
+    check("T22 move succeeded", rc == 0)
+    check("T22 reconcile subprocess ran", marker.exists())
+    check("T22 reconcile passed --materialize-only", marker.exists()
+          and "--materialize-only" in marker.read_text())
+    check("T22 reconcile success reported", "reconciled agent files" in buf.getvalue())
+    apex2, home2 = build_apex()
+    (apex2 / "cboot.py").write_text("import sys\nsys.exit(3)\n")
+    buf2 = io.StringIO()
+    with contextlib.redirect_stdout(buf2):
+        rc2 = mp.run(["proj", "moved", "--project-root", str(apex2),
+                      "--home", str(home2), "--execute", "--yes"])
+    check("T22 failing cboot does NOT fail the committed move", rc2 == 0)
+    check("T22 failing cboot warned to run by hand", "run it by hand" in buf2.getvalue())
 
 
 def t_rel_case_variant():
@@ -500,7 +551,7 @@ def main():
               t_confirm_gate, t_nondict_session, t_session_prefix_and_nested,
               t_case_insensitive, t_unreg_collision_nonblocking, t_framework_guard,
               t_ghost_verification, t_rollback_incomplete, t_confirm_interactive,
-              t_under_nonascii, t_rel_case_variant):
+              t_true_case, t_rel_case_variant, t_reconcile_subprocess):
         print("\n== %s ==" % t.__name__)
         try:
             t()

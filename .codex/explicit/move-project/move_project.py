@@ -165,16 +165,17 @@ def _is_within(child, parent):
 
 
 def _under(cwd, base_str):
-    """True if `cwd` is `base_str` or a path beneath it — FILESYSTEM domain.
+    """True if `cwd` is `base_str` or a path beneath it (case-insensitive mount).
 
-    Uses full-Unicode `str.casefold()`, NOT the ASCII `_fold`: these are real
-    filesystem paths (a session's recorded cwd vs the source directory) and the
-    mount folds the whole BMP, so an ASCII-only fold would miss a non-ASCII
-    case-variant and let the live-session guard fail OPEN — ripping a directory out
-    from under a running session. Over-matching a case-variant here is safe (the
-    blocker errs toward refusing). Identity/DB comparisons keep `_fold`, which must
-    match the spine's ASCII `COLLATE NOCASE`."""
-    c, b = cwd.casefold(), base_str.casefold()
+    Uses the SINGLE ASCII `_fold` — the same fold everywhere (DB `COLLATE NOCASE`
+    and the mount's confirmed ASCII case-insensitivity). It is length-preserving, so
+    the `cwd[len(base):]` slice a caller does after this match is always aligned;
+    `casefold` (full-Unicode) is deliberately NOT used — it expands ß->ss, which
+    would over-match an unrelated `SS` path and mis-cut that slice. On this mount
+    args are canonicalised to on-disk casing up front (`_true_case`), so a genuine
+    case-variant source already reads as its real name here — the fold only mops up
+    residual ASCII drift. (Non-ASCII case-folding is a documented latent limitation.)"""
+    c, b = _fold(cwd), _fold(base_str)
     return c == b or c.startswith(b + "/")
 
 
@@ -228,6 +229,30 @@ def _apex_rel_parts(apex, abs_path):
     if p.startswith(a + "/"):
         return tuple(str(abs_path)[len(str(apex)) + 1:].split("/"))
     return (abs_path.name,)
+
+
+def _true_case(apex, abs_path):
+    """`abs_path` with its apex-relative components rebuilt to their TRUE on-disk
+    casing. `.resolve()` does NOT case-normalise on this drvfs mount, so a mis-cased
+    CLI arg keeps its typed case and would mis-slug the transcript store of an
+    unregistered root (the registered path is safe — it slugs the DB-authoritative
+    rel_path). Each component is matched against its parent's real dirents: an exact
+    hit wins; else an ASCII-fold hit (the mount's confirmed case-insensitivity)
+    recovers the real name; else the typed name is kept — a non-ASCII variant or a
+    not-yet-existing dest leaf — so this is never worse than the raw arg. Caller
+    guards that `abs_path` is within `apex` before calling."""
+    cur = apex
+    for name in _apex_rel_parts(apex, abs_path):
+        try:
+            names = [e.name for e in cur.iterdir()]
+        except OSError:
+            names = []
+        if name in names:
+            real = name
+        else:
+            real = next((n for n in names if _fold(n) == _fold(name)), name)
+        cur = cur / real
+    return cur
 
 
 def _preflight(conn, apex, source_abs, dest_abs, home):
@@ -389,7 +414,12 @@ def _execute(conn, plan, apex, home):
         # yet leave a ghost dirent — listed but unstattable/untraversable
         # (reference_9p_rename_ghost). Confirm the move really took BEFORE committing
         # durable identity over it; a ghost trips the undo (rename back) + rollback.
-        if not dest_abs.is_dir() or source_abs.exists():
+        try:
+            moved_ok = dest_abs.is_dir() and not source_abs.exists()
+        except OSError:
+            moved_ok = False   # a ghosted dirent can raise ESTALE rather than
+            #                    return a bool — treat that as a failed verification
+        if not moved_ok:
             raise OSError(errno.EIO, "post-rename verification failed (possible 9p "
                           "ghost): the destination is not a traversable directory, "
                           "or the source is still present after the rename")
@@ -641,6 +671,13 @@ def run(argv=None):
         else args.source.resolve()
     dest_abs = (apex / args.dest).resolve() if not args.dest.is_absolute() \
         else args.dest.resolve()
+    # Recover true on-disk casing (resolve() does not case-normalise on drvfs, so a
+    # mis-cased arg would otherwise mis-slug an unregistered root's store). Only for
+    # in-apex paths — an egress path is left for _preflight to refuse.
+    if _is_within(source_abs, apex):
+        source_abs = _true_case(apex, source_abs)
+    if _is_within(dest_abs, apex):
+        dest_abs = _true_case(apex, dest_abs)
 
     db_path = apex / ".state" / "roots.db"
     if not db_path.exists():

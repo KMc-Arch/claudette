@@ -91,18 +91,26 @@ The re-slug operates in **one** path system. A WSL `/mnt/...` <-> native Windows
 
 ## Guards
 
-Path comparisons **fold case** — this drvfs mount is case-insensitive, so a
-case-variant of a path is the same directory and must not slip a guard. Two fold
-domains, deliberately: **filesystem** comparisons (session cwd vs the source dir,
-containment) use full-Unicode `casefold`, matching how the mount itself folds;
-**identity** comparisons (spine `rel_path` matching) use ASCII-only fold, matching
-the DB's `COLLATE NOCASE`. **Known limitation:** for a *non-ASCII* directory name,
-the DB's ASCII `NOCASE` treats a case-variant as a distinct identity while the
-filesystem treats it as the same directory (inherited from the spine's identity
-model — see `reference_testing_case_collision`); this instance uses ASCII paths, so
-it is latent here, but a non-ASCII case-variant move is not fully modeled and should
-be avoided. The filesystem-side guards (the live-session blocker especially) fold
-full-Unicode so they never fail *open* on a non-ASCII variant.
+**Casing.** This drvfs mount is case-insensitive, so a case-variant of a path is the
+same directory. Two mechanisms keep that from slipping a guard or mis-slugging a
+store:
+
+- **Canonicalisation.** `Path.resolve()` does NOT case-normalise on this mount, so
+  the source/dest args are rebuilt to their true on-disk casing (a dirent walk)
+  before use — otherwise a mis-cased arg (e.g. `testing` for on-disk `Testing`) would
+  mis-slug an *unregistered* root's transcript store and silently strand its history.
+- **A single ASCII fold** (matching the DB's `COLLATE NOCASE` and the mount's
+  confirmed ASCII case-insensitivity) for every residual comparison — containment,
+  session cwd, spine `rel_path` matching. It is length-preserving, so the prefix
+  slices stay aligned (full-Unicode `casefold` is deliberately avoided — its ß→ss
+  expansion would over-match and mis-cut).
+
+**Known limitation:** a *non-ASCII* case-variant is not fully modeled — the mount's
+non-ASCII fold behavior is unconfirmed and the DB's `NOCASE` is ASCII-only (see
+`reference_testing_case_collision`). This instance uses ASCII paths, so it is latent;
+a non-ASCII case-variant move should be avoided. It fails *safe* either way (a
+canonicalisation miss keeps the typed name → a clean refusal or a reported
+best-effort skip, never a containment bypass).
 
 - **Containment:** dest must resolve **strictly inside the apex** (an egress dest is
   refused). Source must be strictly inside the apex and **not** the apex itself.
