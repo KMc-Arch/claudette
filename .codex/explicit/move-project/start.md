@@ -73,12 +73,15 @@ opening one here, a stale-ownership read is impossible **by construction**.
 
 ## Report-only — never rewritten (RULED)
 
-- **Child `.git` internals** (a nested project that is its own repo).
-- **Windows Task Scheduler** path registrations.
+- **Child `.git` internals** — *detected*: any `root: true` nested project under the
+  source that carries a `.git` is listed by path (a plain nested git repo without the
+  `root: true` marker moves fine but is not enumerated).
+- **Windows Task Scheduler** path registrations — a fixed *reminder*, not scanned for.
 - **Cross-project textual references** in backlogs / memories / designs that mention
-  the old path.
+  the old path — a fixed *reminder*, not scanned for.
 
-These are surfaced in the plan and the final report; the human resolves them.
+The detected `.git` set is itemized in the plan and final report; the two reminders
+print unconditionally. The human resolves all three.
 
 ## Non-goal — cross-platform migration (RUL-028)
 
@@ -88,14 +91,28 @@ The re-slug operates in **one** path system. A WSL `/mnt/...` <-> native Windows
 
 ## Guards
 
+All path comparisons **fold case** (ASCII, matching the DB's `COLLATE NOCASE`) —
+this drvfs mount is case-insensitive, so a case-variant of a path is the same
+directory and must not slip a guard.
+
 - **Containment:** dest must resolve **strictly inside the apex** (an egress dest is
   refused). Source must be strictly inside the apex and **not** the apex itself.
-- **Visibility:** a `_`-prefixed source or dest is refused (those paths do not exist
-  to Claude).
+- **Visibility / framework:** a source or dest whose apex-relative path has any
+  `_`-prefixed **or** `.`-prefixed component is refused — the underscore-invisible
+  paths and the dot-prefixed framework internals (`.state`, `.codex`, …) are never
+  moved.
 - **Destination free:** dest must not exist; its parent must; dest must not be inside
   source.
-- **Not in use:** a real move is refused while any **live** session (a running PID)
-  has its cwd inside the source tree.
+- **Destination store free (registered):** a move is refused if a **registered**
+  identity's transcript store already occupies the destination slug (a merge would
+  destroy real session history — `relink()` refuses it anyway). An *unregistered*
+  nested root's store collision is **not** a blocker — best-effort, reported (see the
+  moves table).
+- **Not in use (best-effort):** a real move is refused while a session file records a
+  cwd inside the source tree **and** its PID is still running (`/proc`). This is a
+  PID-heuristic, not a hard guarantee: a stale file whose PID was reused reads as
+  live (false block), and a live session not represented by a running PID under the
+  source is not seen (false clear). It catches the common case; it is not proof.
 
 ## Troubleshooting — a move denied with `EACCES`
 
@@ -106,8 +123,11 @@ free and no file is locked. On WSL the holder is almost always a **Windows** app
 (an Explorer window, an editor/viewer, or Search indexing a file here), invisible
 to Linux `/proc`.
 
-The command **fails safe** (atomic rollback — nothing is left half-moved) and, on
-`EACCES`/`EPERM`, runs a **locked-descendant scan**: on WSL it shells to a
+The command **fails safe**: the atomic core rolls back (tree move + spine writes
+reverted). Rollback is best-effort — if the *reverse* rename itself fails (a lock
+appears on the destination), the command says so plainly (`rollback was INCOMPLETE`)
+and names the paths to reconcile with `/roots`, rather than falsely claiming a clean
+revert. On `EACCES`/`EPERM` it also runs a **locked-descendant scan**: on WSL it shells to a
 PowerShell exclusive-open probe over the whole source subtree and prints the exact
 locked path(s); off WSL it prints the portable explanation. Close the holder
 (name it with Sysinternals `handle64.exe <folder>` or Process Explorer → Ctrl+F),
@@ -126,8 +146,14 @@ python .codex/explicit/move-project/move_project.py <source> <dest> \
    relink, which stores follow, sessions to rewrite, report-only items, any
    blockers) and stops.
 3. Claude relays the plan and **gets the user's confirmation**. Only then does it
-   re-run with `--execute` (adding `--yes` after an explicit confirmation, or
-   letting the terminal prompt).
+   re-run with `--execute` (adding `--yes` after an explicit confirmation). Without
+   `--yes`, `--execute` at a real terminal prompts for confirmation by requiring the
+   operator to **type the destination path exactly**; off a terminal (or a mismatch)
+   it refuses (exit 1) and moves nothing. (`--home` overrides `~` for hermetic tests
+   only.)
 4. On a real move the identity+tree+transcript step is atomic with **written
-   rollback**; the post-move reconcile (sessions, `cboot`, report) is best-effort
-   and its failures are reported, never rolled back over a good move.
+   rollback**, and the cold `os.rename` is **verified after the fact** (a 9p ghost —
+   a rename that "succeeds" but leaves an unstattable dirent — trips the rollback
+   rather than committing identity over a broken destination). The post-move reconcile
+   (sessions, `cboot`, report) is best-effort and its failures are reported, never
+   rolled back over a good move.

@@ -180,6 +180,14 @@ def t_rollback():
     sub_new_store.mkdir(parents=True, exist_ok=True)
     (sub_new_store / "intruder.jsonl").write_text("x\n")
     rc = mp._execute(conn, plan, apex.resolve(), home.resolve())
+    # On the SAME live connection: prove conn.rollback() actually reverted (a passing
+    # assertion via a fresh connection would also hold if rollback were absent, since
+    # uncommitted writes are invisible cross-connection). Here the live conn would
+    # still be mid-transaction and see the mutated spine if rollback had not run.
+    same_conn = conn.execute("SELECT rel_path FROM roots_register "
+                             "WHERE root_id=2 AND valid_to IS NULL").fetchone()
+    check("T6 DB rolled back on the live conn", same_conn is not None
+          and same_conn["rel_path"] == "proj" and not conn.in_transaction)
     conn.close()
     check("T6 execute reports failure", rc == 1)
     check("T6 tree rolled back", src.exists() and not dst.exists())
@@ -189,17 +197,29 @@ def t_rollback():
           and not store_dir(home, dst).exists())
 
 
-def _code_only(path):
-    """Source with docstrings + comments stripped, so a structural grep sees CODE."""
-    import io
-    import tokenize
-    out = []
-    with open(path, "rb") as f:
-        for tok in tokenize.tokenize(f.readline):
-            if tok.type in (tokenize.STRING, tokenize.COMMENT, tokenize.FSTRING_MIDDLE):
-                continue
-            out.append(tok.string)
-    return " ".join(out)
+def _nondocstring_strings(path):
+    """Every NON-docstring string-literal value in a Python file, via AST.
+
+    Docstrings (module/class/func first-statement Expr strings) carry prose like
+    `immutable=1&mode=ro` and are excluded. A real SQL string or a real read-only
+    connection URI is a string used as an argument/expression, so it survives here
+    — which is exactly what makes the structural check have teeth. (The prior
+    tokenize approach stripped ALL strings, so the check could never fail: the very
+    thing it looked for only ever lives inside a string.)"""
+    import ast
+    tree = ast.parse(open(path, encoding="utf-8").read())
+    doc_ids = set()
+    for node in ast.walk(tree):
+        body = getattr(node, "body", None)
+        if isinstance(node, (ast.Module, ast.FunctionDef, ast.AsyncFunctionDef,
+                             ast.ClassDef)) and body:
+            first = body[0]
+            if isinstance(first, ast.Expr) and isinstance(first.value, ast.Constant) \
+                    and isinstance(first.value.value, str):
+                doc_ids.add(id(first.value))
+    return [n.value for n in ast.walk(tree)
+            if isinstance(n, ast.Constant) and isinstance(n.value, str)
+            and id(n) not in doc_ids]
 
 
 def t_unregistered():
@@ -258,18 +278,109 @@ def t_lock_diagnostic():
 
 
 def t_structural():
-    code = _code_only(MP_PATH)
-    check("T7 no immutable=ro reader (WAL discipline)",
-          "immutable" not in code and "sqlite3" not in code.split())
     import re
-    raw = re.search(r"(INSERT|UPDATE)\s+(INTO\s+)?(roots_register|agent_registry|agent_optin)",
-                    code, re.I)
-    check("T7 no raw identity-table writes (single-writer)", raw is None)
+    strings = "\n".join(_nondocstring_strings(MP_PATH))
+    sql = re.compile(r"(INSERT|UPDATE)\s+(INTO\s+)?(roots_register|agent_registry|agent_optin)", re.I)
+    ro = re.compile(r"immutable\s*=\s*1|mode\s*=\s*ro", re.I)
+    # Meta: prove the guards actually fire on a real violation (not vacuous regexes).
+    check("T7 SQL guard has teeth", sql.search("conn.execute('INSERT INTO roots_register ...')") is not None)
+    check("T7 RO-URI guard has teeth", ro.search("connect('file:x?immutable=1&mode=ro')") is not None)
+    # The real checks, over non-docstring string literals only.
+    check("T7 no raw identity-table writes (single-writer)", sql.search(strings) is None)
+    check("T7 no immutable=ro reader (WAL discipline)", ro.search(strings) is None)
+
+
+def t_confirm_gate():
+    """--execute WITHOUT --yes and no TTY must refuse (the CONFIRMED-HOLD gate)."""
+    apex, home = build_apex()
+    rc = mp.run(["proj", "moved", "--project-root", str(apex),
+                 "--home", str(home), "--execute"])   # no --yes; not a tty under test
+    check("T10 execute without --yes refuses", rc == 1)
+    check("T10 unconfirmed move did nothing", (apex / "proj").is_dir()
+          and not (apex / "moved").exists() and current_rel(apex, 2) == "proj")
+
+
+def t_nondict_session():
+    """A valid-JSON non-object session file must not crash the command (incl dry-run)."""
+    apex, home = build_apex()
+    (home / ".claude" / "sessions" / "num.json").write_text("42\n")
+    (home / ".claude" / "sessions" / "list.json").write_text("[]\n")
+    (home / ".claude" / "sessions" / "nul.json").write_text("null\n")
+    rc = mp.run(["proj", "moved", "--project-root", str(apex), "--home", str(home)])
+    check("T11 dry-run survives non-object session files", rc == 0)
+    rc = mp.run(["proj", "moved", "--project-root", str(apex),
+                 "--home", str(home), "--execute", "--yes"])
+    check("T11 execute survives non-object session files",
+          rc == 0 and (apex / "moved").is_dir())
+
+
+def t_session_prefix_and_nested():
+    """_under must not sweep a prefix-sibling session; nested-cwd slice must be right."""
+    apex, home = build_apex()
+    (apex / "projX").mkdir()   # shares the 'proj' name prefix but is a sibling
+    (home / ".claude" / "sessions" / "sib.json").write_text(
+        json.dumps({"pid": 555001, "cwd": str(apex / "projX")}) + "\n")
+    (home / ".claude" / "sessions" / "nested.json").write_text(
+        json.dumps({"pid": 555002, "cwd": str(apex / "proj" / "sub")}) + "\n")
+    rc = mp.run(["proj", "moved", "--project-root", str(apex),
+                 "--home", str(home), "--execute", "--yes"])
+    check("T12 execute exit 0", rc == 0)
+    sib = json.loads((home / ".claude" / "sessions" / "sib.json").read_text())
+    check("T12 prefix-sibling session NOT rewritten", sib["cwd"] == str(apex / "projX"))
+    nested = json.loads((home / ".claude" / "sessions" / "nested.json").read_text())
+    check("T12 nested-cwd session rewritten (correct slice)",
+          nested["cwd"] == str(apex / "moved" / "sub"))
+
+
+def t_case_insensitive():
+    """Path comparisons fold case (drvfs is case-insensitive). Unit-tested because the
+    tmp fs (ext4) is case-SENSITIVE and cannot exercise it via real dirs."""
+    check("T13 _under folds case", mp._under("/a/PROJ/x", "/a/proj"))
+    check("T13 _under respects the boundary", not mp._under("/a/projX", "/a/proj"))
+    check("T13 _is_within folds case",
+          mp._is_within(Path("/a/SomeChild/sub"), Path("/a/somechild")))
+    check("T13 _is_within respects the boundary",
+          not mp._is_within(Path("/a/foobar"), Path("/a/foo")))
+    apex, home = build_apex()
+    (home / ".claude" / "sessions" / "cv.json").write_text(
+        json.dumps({"pid": 556001, "cwd": "/x/proj/sub"}) + "\n")
+    rw = mp._sessions_to_rewrite(home, Path("/x/PROJ"), Path("/x/moved"))
+    check("T13 session rewrite matches a case-variant source",
+          any(new == "/x/moved/sub" for (_f, _c, new) in rw))
+
+
+def t_unreg_collision_nonblocking():
+    """An unregistered nested root whose dest store slug is occupied must NOT block
+    the whole move (best-effort per start.md) — registered identities still move."""
+    apex, home = build_apex()
+    orphan = apex / "proj" / "orphan"
+    orphan.mkdir()
+    (orphan / "CLAUDE.md").write_text("---\nroot: true\n---\n")
+    make_store(home, orphan)                        # the orphan's source store
+    make_store(home, apex / "moved" / "orphan")     # pre-existing dest store => collision
+    rc = mp.run(["proj", "moved", "--project-root", str(apex),
+                 "--home", str(home), "--execute", "--yes"])
+    check("T14 unreg-store collision does NOT block the move", rc == 0)
+    check("T14 registered identity still relinked", current_rel(apex, 2) == "moved")
+    check("T14 tree moved despite unreg collision", (apex / "moved" / "sub").is_dir())
+    check("T14 orphan source store left in place (collision, not clobbered)",
+          store_dir(home, apex / "proj" / "orphan").exists()
+          and store_dir(home, apex / "moved" / "orphan").exists())
+
+
+def t_framework_guard():
+    """Refuse moving a dot-prefixed (framework) path such as .state / .codex."""
+    apex, home = build_apex()
+    rc = mp.run([".state", "moved-state", "--project-root", str(apex),
+                 "--home", str(home), "--execute", "--yes"])
+    check("T15 refuses moving a framework dir (.state)", rc == 2 and (apex / ".state").is_dir())
 
 
 def main():
     for t in (t_dry_run, t_execute, t_guards, t_collision, t_live_session,
-              t_rollback, t_unregistered, t_lock_diagnostic, t_structural):
+              t_rollback, t_unregistered, t_lock_diagnostic, t_structural,
+              t_confirm_gate, t_nondict_session, t_session_prefix_and_nested,
+              t_case_insensitive, t_unreg_collision_nonblocking, t_framework_guard):
         print("\n== %s ==" % t.__name__)
         try:
             t()

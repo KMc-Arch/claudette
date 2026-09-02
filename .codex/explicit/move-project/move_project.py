@@ -142,14 +142,32 @@ def _iter_sessions(home):
         if not f.is_file() or f.suffix != ".json":
             continue
         try:
-            yield f, json.loads(f.read_text(encoding="utf-8"))
+            data = json.loads(f.read_text(encoding="utf-8"))
         except (OSError, ValueError):
             continue
+        if isinstance(data, dict):   # a valid-JSON non-object ([]/42/null) is skipped,
+            yield f, data            # not crashed on — every caller does data.get(...)
+
+
+def _fold(s):
+    """ASCII-only lowercase — the case-fold this drvfs mount actually applies
+    (matches the DB's COLLATE NOCASE and cboot's _nocase_key). Non-ASCII is left
+    untouched and length is preserved, unlike str.casefold (which expands e.g.
+    'ß'->'ss' and would shift a prefix-slice boundary)."""
+    return "".join(chr(ord(c) + 32) if "A" <= c <= "Z" else c for c in str(s))
+
+
+def _is_within(child, parent):
+    """True if `child` is `parent` or nested under it, case-insensitively (this
+    mount folds case), on the resolved absolute paths."""
+    c, p = _fold(str(child)), _fold(str(parent))
+    return c == p or c.startswith(p + "/")
 
 
 def _under(cwd, base_str):
-    """True if a cwd string is `base_str` or a path beneath it."""
-    return cwd == base_str or cwd.startswith(base_str + "/")
+    """True if `cwd` is `base_str` or a path beneath it (case-insensitive mount)."""
+    c, b = _fold(cwd), _fold(base_str)
+    return c == b or c.startswith(b + "/")
 
 
 def _live_sessions_under(home, source_abs):
@@ -186,6 +204,18 @@ def _rel(apex, abs_path):
     return abs_path.relative_to(apex).as_posix()
 
 
+def _apex_rel_parts(apex, abs_path):
+    """Apex-relative path components of `abs_path` (real casing), or () for the apex
+    itself. Sliced off a case-FOLDED prefix match so a case-variant absolute arg
+    still yields the true components (case never changes a path's length)."""
+    a, p = _fold(str(apex)), _fold(str(abs_path))
+    if p == a:
+        return ()
+    if p.startswith(a + "/"):
+        return tuple(str(abs_path)[len(str(apex)) + 1:].split("/"))
+    return (abs_path.name,)
+
+
 def _preflight(conn, apex, source_abs, dest_abs, home):
     """Validate + assemble the move plan. Raises Blocked on a hard refusal.
 
@@ -193,36 +223,41 @@ def _preflight(conn, apex, source_abs, dest_abs, home):
     dry run and consumed by _execute.
     """
     # ── Containment + shape guards ───────────────────────────────────
+    # All path comparisons fold case — this drvfs mount is case-insensitive, so a
+    # case-variant of a path is the SAME directory (a raw == / is_relative_to would
+    # miss it and, e.g., yank a live session out from under a case-variant source).
     if not source_abs.is_dir():
         raise Blocked("source does not exist or is not a directory: %s" % source_abs)
-    if source_abs == apex:
+    if _fold(str(source_abs)) == _fold(str(apex)):
         raise Blocked("refusing to move the apex itself")
-    if not source_abs.is_relative_to(apex):
+    if not _is_within(source_abs, apex):
         raise Blocked("source is outside the apex (%s)" % apex)
-    if not dest_abs.is_relative_to(apex):
+    if not _is_within(dest_abs, apex):
         raise Blocked("destination is outside the apex — that is an egress move, refused")
     if dest_abs.exists():
         raise Blocked("destination already exists: %s" % dest_abs)
     if not dest_abs.parent.is_dir():
         raise Blocked("destination parent does not exist: %s" % dest_abs.parent)
-    if dest_abs == source_abs or dest_abs.is_relative_to(source_abs):
+    if _is_within(dest_abs, source_abs):
         raise Blocked("destination is inside the source — cannot move a tree into itself")
-    for comp in (source_abs.relative_to(apex).parts + dest_abs.relative_to(apex).parts):
-        if comp.startswith("_"):
-            raise Blocked("a path component is underscore-invisible (%r) — refused" % comp)
+    for comp in (_apex_rel_parts(apex, source_abs) + _apex_rel_parts(apex, dest_abs)):
+        if comp.startswith(("_", ".")):
+            raise Blocked("a path component is Claude-internal (%r, dot/underscore-"
+                          "prefixed) — refusing to move framework/invisible internals"
+                          % comp)
 
     source_rel = _rel(apex, source_abs)
     dest_rel = _rel(apex, dest_abs)
     projects = home / ".claude" / "projects"
 
     # ── Spine identities under the moved tree → relink each ───────────
-    src_l = source_rel.casefold()
+    src_l = _fold(source_rel)
     identities = []          # (root_id, old_rel, new_rel, old_store, new_store, will_move)
-    covered_rel = set()      # casefolded rels that a spine identity already owns
+    covered_rel = set()      # folded rels that a spine identity already owns
     for row in conn.execute(
             "SELECT root_id, rel_path FROM roots_register WHERE valid_to IS NULL"):
         rp = row["rel_path"]
-        rp_l = rp.casefold()
+        rp_l = _fold(rp)
         if rp_l == src_l or rp_l.startswith(src_l + "/"):
             new_rel = dest_rel + rp[len(source_rel):]
             old_store = projects / _slug(apex / rp)
@@ -237,7 +272,7 @@ def _preflight(conn, apex, source_abs, dest_abs, home):
     walked = [source_abs] + _discover_child_roots(source_abs)
     for d in walked:
         rel = _rel(apex, d)
-        if rel.casefold() in covered_rel:
+        if _fold(rel) in covered_rel:
             continue
         new_abs = dest_abs / d.relative_to(source_abs)
         old_store = projects / _slug(d)
@@ -245,9 +280,13 @@ def _preflight(conn, apex, source_abs, dest_abs, home):
         will_move = old_store != new_store and old_store.exists()
         unregistered.append((d, new_abs, old_store, new_store, will_move))
 
-    # ── Store-collision blockers (preempt relink's refusal, up front) ─
+    # ── Store collisions ─────────────────────────────────────────────
+    # A REGISTERED identity's store collision is a hard blocker (relink refuses it
+    # anyway — a merge would destroy real history). An UNregistered one is
+    # best-effort, NOT blocking (start.md): the store just stays put and the dir
+    # re-canonicalizes at the new path on next boot — reported, never fatal.
     collisions = [ns for (_r, _o, _n, _os, ns, wm) in identities if wm and ns.exists()]
-    collisions += [ns for (_o, _n, _os, ns, wm) in unregistered if wm and ns.exists()]
+    unreg_collisions = [ns for (_o, _n, _os, ns, wm) in unregistered if wm and ns.exists()]
 
     # ── Session guard + rewrites ─────────────────────────────────────
     live = _live_sessions_under(home, source_abs)
@@ -260,7 +299,8 @@ def _preflight(conn, apex, source_abs, dest_abs, home):
         "apex": apex, "source_abs": source_abs, "dest_abs": dest_abs,
         "source_rel": source_rel, "dest_rel": dest_rel,
         "identities": identities, "unregistered": unregistered,
-        "collisions": collisions, "live": live, "sessions": sessions,
+        "collisions": collisions, "unreg_collisions": unreg_collisions,
+        "live": live, "sessions": sessions,
         "child_repos": child_repos,
         "tree_will_move": True,
     }
@@ -284,10 +324,15 @@ def _print_plan(plan, execute):
             print("               root_id=%s  %s -> %s%s" % (rid, old_rel, new_rel, tail))
     else:
         print("  [identity] no registered identity under the source")
-    for _o, new_abs, _os, _ns, wm in p["unregistered"]:
-        note = "transcript store follows (best-effort)" if wm else "no store"
-        print("  [unreg]    %s — not a registered identity; %s; "
-              "re-canonicalizes at new path on next boot"
+    for _o, new_abs, _os, ns, wm in p["unregistered"]:
+        if wm and ns.exists():
+            note = ("store CANNOT follow — a store already occupies the dest slug; "
+                    "left in place, re-canonicalizes on next boot")
+        elif wm:
+            note = "transcript store follows (best-effort), re-canonicalizes on next boot"
+        else:
+            note = "no store, re-canonicalizes on next boot"
+        print("  [unreg]    %s — not a registered identity; %s"
               % (_rel(p["apex"], new_abs), note))
     if p["sessions"]:
         print("  [sessions] rewrite cwd in %d paused session file(s)" % len(p["sessions"]))
@@ -324,11 +369,18 @@ def _execute(conn, plan, apex, home):
     """
     source_abs, dest_abs = plan["source_abs"], plan["dest_abs"]
     undo = []  # inverse actions for the atomic core, run in reverse on failure
-    committed = False
     try:
         # E1 — cold tree move (this mount ghosts hot-tree renames).
         os.rename(source_abs, dest_abs)
         undo.append(lambda: os.rename(dest_abs, source_abs))
+        # Post-rename verification: a 9p hot-tree rename can "succeed" (no error)
+        # yet leave a ghost dirent — listed but unstattable/untraversable
+        # (reference_9p_rename_ghost). Confirm the move really took BEFORE committing
+        # durable identity over it; a ghost trips the undo (rename back) + rollback.
+        if not dest_abs.is_dir() or source_abs.exists():
+            raise OSError(errno.EIO, "post-rename verification failed (possible 9p "
+                          "ghost): the destination is not a traversable directory, "
+                          "or the source is still present after the rename")
         print("  [ok] moved tree -> %s" % dest_abs)
 
         # E2 — relink each identity in ONE transaction; commit once.
@@ -339,38 +391,55 @@ def _execute(conn, plan, apex, home):
             print("  [ok] relinked root_id=%s -> %s%s"
                   % (rid, new_rel, "  (+ store)" if will_move else ""))
         conn.commit()
-        committed = True
         undo.clear()  # the move is durable; no core rollback past this point
         print("  [ok] identity spine committed")
     except Exception as e:
+        undo_failed = []
         for fn in reversed(undo):
             try:
                 fn()
-            except Exception as ue:  # noqa: BLE001 — best-effort unwind, keep going
-                print("  [warn] rollback step failed: %s" % ue)
+            except Exception as ue:  # best-effort unwind — collect, keep going
+                undo_failed.append(str(ue))
         try:
             conn.rollback()
         except Exception:
             pass
-        print("  [FAIL] move aborted and rolled back: %s" % e)
+        if undo_failed:
+            # The rollback itself could not fully undo — do NOT claim a clean revert.
+            print("  [FAIL] move failed AND rollback was INCOMPLETE: %s" % e)
+            print("  [!!] state may be left partly moved — filesystem and identity "
+                  "spine can be out of sync. source=%s dest=%s. Reconcile with "
+                  "/roots (relink the orphaned identity, or move the tree back by "
+                  "hand), then re-run. rollback errors: %s"
+                  % (source_abs, dest_abs, "; ".join(undo_failed)))
+        else:
+            print("  [FAIL] move aborted and rolled back: %s" % e)
         if isinstance(e, OSError) and e.errno in (errno.EACCES, errno.EPERM):
             _report_lock_diagnostic(source_abs)
         return 1
 
     # ── Post-commit reconcile (best-effort) ──────────────────────────
     for _old_abs, _new_abs, old_store, new_store, will_move in plan["unregistered"]:
-        if will_move and not new_store.exists():
-            try:
-                os.rename(old_store, new_store)
-                print("  [ok] moved unregistered store -> %s" % new_store.name)
-            except OSError as ue:
-                print("  [warn] could not move unregistered store %s: %s"
-                      % (old_store.name, ue))
+        if not will_move:
+            continue
+        if new_store.exists():   # dest slug occupied — leave it, report (never fatal)
+            print("  [warn] unregistered store %s not moved — a store already "
+                  "occupies the dest slug; it re-canonicalizes at the new path on "
+                  "next boot" % old_store.name)
+            continue
+        try:
+            os.rename(old_store, new_store)
+            print("  [ok] moved unregistered store -> %s" % new_store.name)
+        except OSError as ue:
+            print("  [warn] could not move unregistered store %s: %s"
+                  % (old_store.name, ue))
 
     rewritten = 0
     for f, _cwd, new_cwd in plan["sessions"]:
         try:
             data = json.loads(f.read_text(encoding="utf-8"))
+            if not isinstance(data, dict):   # changed under us since preflight
+                continue
             data["cwd"] = new_cwd
             f.write_text(json.dumps(data) + "\n", encoding="utf-8")
             rewritten += 1
