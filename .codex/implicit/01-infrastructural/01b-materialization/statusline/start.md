@@ -1,10 +1,12 @@
 ---
-version: 3
+version: 6
 runtime: sh
 reads:
-  - "the Claude Code status payload on stdin (model, cwd, workspace.project_dir, effort.level, thinking.enabled, rate_limits.five_hour, context_window, transcript_path)"
-  - "the transcript file named by transcript_path (context-window fill)"
-  - "<cwd>/CLAUDE.md and ancestors (root: true probe, anchor for the 📁 field)"
+  - "the Claude Code status payload on stdin (model, cwd, workspace.project_dir, effort.level, thinking.enabled, rate_limits.five_hour, context_window, transcript_path); plus $COLUMNS from the environment"
+  - "the transcript file named by transcript_path (context-window fill + last user message)"
+  - "<cwd>/CLAUDE.md and ancestors (root: true probe — tints 🏠; also the fallback/left-^ anchor for 📁)"
+  - "the nearest ProjectMetaBase.db walking up from cwd (sqlite: core_projects, trans_runs, core_context_files — the project-info segment)"
+  - "the git repo at cwd (branch + porcelain status, when cwd is not gitignored)"
 writes: []
 ---
 
@@ -36,11 +38,24 @@ This module is a shell script — an acknowledged exception to the Python-only r
 
 ## Bar contents
 
-Left to right: **model** · **effort** (`⚡lo`/`⚡md`/`⚡hi`) · **thinking** (`💭on`) · **location** (`🏠`/`📁`, detailed below) · **git** (`🔀branch (status)`, omitted when `cwd` is gitignored) · **context bar** (`~N% of Mk tokens`) · **5h quota bar** (`⏳ N% (reset countdown)`).
+Left to right: **model** · **effort** (`⚡lo`/`⚡md`/`⚡hi`/`⚡xh`/`⚡mx`) · **thinking** (`💭on`/`💭off`) · **location** (`🏠`/`📁`, detailed below) · **project-info** (from `ProjectMetaBase.db`, detailed below; absent when no db is found) · **git** (`🔀branch (status)`, omitted when `cwd` is gitignored) · **context bar** (`N% of Mk tokens`; a `~` prefix marks the estimated baseline shown before real token data arrives) · **5h quota bar** (`⏳ N% (reset countdown)`).
+
+The **project-info** segment appears when a `ProjectMetaBase.db` is found walking up (≤5 levels) from `cwd` and `cwd` sits under a `type/project` folder: it renders `project_id [phase]` (the project's status/last-run phase), a `+N new` badge for unanalyzed context files, `[unregistered]` for a folder not yet in the db, or an `N active projects` summary at the db root. This is a project-discovery integration, not core status-bar machinery.
 
 Every field is read from the stdin payload — including `effort.level` and `thinking.enabled`, which therefore reflect the session's **current** state rather than whatever is configured in `settings.json`. That is deliberate: configured values drift from reality (a mid-session `/model`, effort toggle, or thinking change), and stdin does not.
 
-The two budget bars share one renderer (`_render_bar`) so the context window and the 5-hour rate-limit window read as one visual family rather than lookalikes; both countdowns use `_fmt_secs`. The quota bar is **absent** before the first response and for accounts with no 5-hour window (no `rate_limits.five_hour` in the payload) — the bar just ends after the context segment.
+The two budget bars share one renderer (`_render_bar`) so the context window and the 5-hour rate-limit window read as one visual family rather than lookalikes; the quota bar's reset countdown uses `_fmt_secs` (the context bar has no countdown). The quota bar is **absent** before the first response and for accounts with no 5-hour window (no `rate_limits.five_hour` in the payload) — the bar just ends after the context segment.
+
+## Second row — 💬 last user message
+
+A second line (multi-line status lines are officially supported; each printed line is a row) shows `💬 <the user's last typed prompt>`. It renders the prompt's first non-empty line, then appends each following non-empty line (joined by `⏎`) until the terminal width runs out; a first line that alone overruns is hard-truncated with `...` (ASCII). Width is `$COLUMNS`, which Claude Code sets to the live terminal size before running the script (`tput cols` cannot work — stdout is captured, not attached to the terminal); `$COLUMNS` is validated as an integer before use, and the budget reserves the `💬 ` prefix plus a column. Fallback when `COLUMNS` is unset: the plain-text width of row 1. The budget is measured in **characters**, not display columns, so a prompt of wide glyphs (CJK/emoji) can still overrun and wrap one row — a known limitation (backlogged; the row does not wrap for ASCII prompts). Before printing, the message has C0/C1 control bytes stripped (so a prompt carrying raw ESC cannot rewrite row 1) and is emitted with `printf '%s\n'`, not `echo` (immune to `xpg_echo` backslash interpretation on Git-Bash). Both the row and the context bar are computed from the transcript in one `_transcript_data` pass.
+
+The extraction has two non-obvious properties, each earning its own red-first proof (see the module's git history for the proof transcript paths):
+
+- **Whitelist, not blacklist.** Claude Code writes far more than human prompts as `type:"user"` — task-notifications, hook/`isMeta` payloads, tool results, `sdk` and `auto-continuation` entries. The row keeps only entries whose `origin.kind == "human"` (or, for one legacy shape, `promptSource == "typed"`) and drops `isMeta` / `isSidechain` / `toolUseResult`. A blacklist has to chase every new kind as Claude Code adds them; the whitelist does not. Slash commands vary (verified on 2.1.251): a **skill command** (e.g. `/mileqa`) *is* tagged `origin.kind == "human"`, its content the raw `<command-name>…</command-name>` + `<command-args>` XML — so it is kept and unwrapped to the command-name text plus args (e.g. `/mileqa …`, the slash coming from the tag content, not added by the code); some **built-ins** (e.g. `/model`) record with no `origin` and are skipped, so the row holds the previous real prompt. Older transcripts also tagged commands `human` as that XML.
+- **Line-by-line parse, not `jq -s`.** `jq -s` aborts the entire parse on a single malformed line, and transcripts on this 9p mount can carry runs of NUL bytes mid-file. When that happened, the 💬 row vanished **and** the context bar silently fell back to its fake baseline (~10% of the default 200k window; ~2% of a 1M window). `jq -nR '[inputs | fromjson? // empty]'` drops only the bad line and is benchmarked free. A companion hazard is guarded the same way: each `usage` token is coerced with `tonumber? // 0`, so a valid-JSON entry carrying a **string** token count cannot abort the shared program and re-blank both outputs.
+
+Held for a later pass (scoped 2026-08-31, not yet built): an optional third functional-status row — KMc has not yet chosen its contents (free stdin fields vs. claudette-state behind a TTL cache).
 
 ## Location Display
 
