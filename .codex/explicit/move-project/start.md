@@ -148,7 +148,12 @@ appears on the destination), the command says so plainly (`rollback was INCOMPLE
 and names the paths to reconcile with `/roots`, rather than falsely claiming a clean
 revert. On `EACCES`/`EPERM` it also runs a **locked-descendant scan**: on WSL it shells to a
 PowerShell exclusive-open probe over the whole source subtree and prints the exact
-locked path(s); off WSL it prints the portable explanation. Close the holder
+locked path(s); off WSL it prints the portable explanation. The scan enumerates
+**directories only** (a share-0 probe of every file would false-positive on
+innocuous open files) — so a lock held on a *file* degrades to the generic hint
+rather than a named path. It uses `-LiteralPath` (a project name with `[ ]` glob
+metacharacters would otherwise enumerate nothing) and forces UTF-8/replace decoding,
+so a non-ASCII locked path degrades to mojibake, never a raise. Close the holder
 (name it with Sysinternals `handle64.exe <folder>` or Process Explorer → Ctrl+F),
 then re-run. The scan is best-effort and never itself raises.
 

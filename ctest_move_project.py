@@ -317,6 +317,10 @@ def t_win_lock_scanner():
         #    (raw a'b is NOT a substring of a''b -> mutation-proof).
         check("T27 injection-escape doubled the quote in the PS script",
               seen["ps"] is not None and "a''b" in seen["ps"], repr(seen["ps"]))
+        # 2b. the emitted PS uses -LiteralPath (else [ ] glob metacharacters in the
+        #     source dir name enumerate nothing) — regression guard for finding B.
+        check("T27 PS probe uses -LiteralPath (no wildcard globbing of $root)",
+              seen["ps"] is not None and "-LiteralPath" in seen["ps"], repr(seen["ps"]))
 
         # 3. -u back-translation failure falls back to the raw winpath (never drops it).
         def uerr(argv, **kw):
@@ -337,10 +341,45 @@ def t_win_lock_scanner():
         r4 = mp._win_locked_descendants(src)
         check("T27 probe blow-up returns [] (never raises)", r4 == [], repr(r4))
 
-        # 5. feature-detect off (no powershell) -> [] at the guard, no subprocess.
+        # 6. a decode fault (UnicodeDecodeError, a ValueError) is caught -> [] not a
+        #    raise (finding A: the except tuples now include ValueError). Real code
+        #    also passes errors="replace" so a live decode degrades to mojibake; this
+        #    proves the belt-and-suspenders widened except.
+        def decoderr(argv, **kw):
+            if argv[0].endswith("wslpath"):
+                return fake_run(argv, **kw)
+            raise UnicodeDecodeError("utf-8", b"\xe9", 0, 1, "probe emitted non-UTF-8")
+        mp.subprocess.run = decoderr
+        rA = mp._win_locked_descendants(src)
+        check("T27 decode UnicodeDecodeError -> [] (widened except, never raises)",
+              rA == [], repr(rA))
+
+        # 7. the FIRST subprocess (wslpath -w) failing is caught -> [].
+        def werr(argv, **kw):
+            if argv[0].endswith("wslpath") and argv[1] == "-w":
+                raise OSError("wslpath -w blew up")
+            return fake_run(argv, **kw)
+        mp.subprocess.run = werr
+        rW = mp._win_locked_descendants(src)
+        check("T27 wslpath -w failure -> [] (first-call except branch)", rW == [], repr(rW))
+
+        # 8. an empty wslpath -w result hits the `if not win: return []` early return.
+        def wempty(argv, **kw):
+            if argv[0].endswith("wslpath") and argv[1] == "-w":
+                return cp("\n")     # blank -> win == "" after .strip()
+            return fake_run(argv, **kw)
+        mp.subprocess.run = wempty
+        rE = mp._win_locked_descendants(src)
+        check("T27 empty wslpath -w output -> [] (empty-win early return)", rE == [], repr(rE))
+
+        # 5. feature-detect off (no powershell) -> [] at the guard, and NO subprocess
+        #    ran (L1: reset the probe sentinel and prove the guard short-circuits).
+        seen["ps"] = None
         mp._which_powershell = lambda: None
         r5 = mp._win_locked_descendants(src)
         check("T27 no powershell -> [] at the guard", r5 == [], repr(r5))
+        check("T27 no-powershell guard ran no subprocess (ps stayed None)",
+              seen["ps"] is None, repr(seen["ps"]))
     finally:
         mp.subprocess.run, mp.shutil.which, mp._which_powershell = _run, _which, _pwsh
         _sh.rmtree(src, ignore_errors=True)

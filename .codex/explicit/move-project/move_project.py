@@ -484,7 +484,10 @@ def _execute(conn, plan, apex, home):
         else:
             print("  [FAIL] move aborted and rolled back: %s" % e)
         if isinstance(e, OSError) and e.errno in (errno.EACCES, errno.EPERM):
-            _report_lock_diagnostic(source_abs)
+            try:
+                _report_lock_diagnostic(source_abs)
+            except Exception:
+                pass   # the reporter "must never raise" — never crash the safe path
         return 1
 
     # Checkpoint the WAL into the main db BEFORE the reconcile subprocess. cboot
@@ -594,7 +597,7 @@ public static class MpLock {
 "@
 Add-Type $src
 $root='__ROOT__'
-$dirs=@($root)+(Get-ChildItem -Recurse -Directory -Force $root -ErrorAction SilentlyContinue | ForEach-Object { $_.FullName })
+$dirs=@($root)+(Get-ChildItem -LiteralPath $root -Recurse -Directory -Force -ErrorAction SilentlyContinue | ForEach-Object { $_.FullName })
 foreach($d in $dirs){
   $h=[MpLock]::CreateFileW($d,0x00010000,0,[IntPtr]::Zero,3,0x02000000,[IntPtr]::Zero)
   if($h -eq [IntPtr](-1)){
@@ -619,10 +622,15 @@ def _which_powershell():
 
 
 def _win_locked_descendants(source_abs):
-    """Descendant dirs of `source_abs` a Windows process holds open (share-violation).
+    """Descendant DIRECTORIES of `source_abs` a Windows process holds open (share
+    violation). Directories only — a locked descendant *file* is not enumerated (a
+    share-0 probe of every file would false-positive on innocuous open files).
 
-    Returns Linux paths (may include `source_abs` itself). Best-effort: [] off WSL,
-    without powershell/wslpath, or on any probe error — a diagnostic never raises.
+    Returns Linux paths (may include `source_abs` itself). Best-effort and it never
+    raises: [] off WSL, without powershell/wslpath, or on any probe error. Decode is
+    forced UTF-8/replace and the except tuples include ValueError, so a non-UTF-8
+    child path (e.g. the powershell 5.1 OEM codepage) degrades to mojibake, never a
+    raise.
     """
     pwsh = _which_powershell()
     wslpath = shutil.which("wslpath")
@@ -630,8 +638,9 @@ def _win_locked_descendants(source_abs):
         return []
     try:
         win = subprocess.run([wslpath, "-w", str(source_abs)], capture_output=True,
-                             text=True, timeout=15).stdout.strip()
-    except (OSError, subprocess.SubprocessError):
+                             text=True, encoding="utf-8", errors="replace",
+                             timeout=15).stdout.strip()
+    except (OSError, subprocess.SubprocessError, ValueError):
         return []
     if not win:
         return []
@@ -639,8 +648,8 @@ def _win_locked_descendants(source_abs):
     try:
         out = subprocess.run([pwsh, "-NoProfile", "-ExecutionPolicy", "Bypass",
                               "-Command", ps], capture_output=True, text=True,
-                             timeout=90).stdout
-    except (OSError, subprocess.SubprocessError):
+                             encoding="utf-8", errors="replace", timeout=90).stdout
+    except (OSError, subprocess.SubprocessError, ValueError):
         return []
     locked = []
     for line in out.splitlines():
@@ -648,8 +657,9 @@ def _win_locked_descendants(source_abs):
             winpath = line[len("LOCKED\t"):].strip()
             try:
                 lin = subprocess.run([wslpath, "-u", winpath], capture_output=True,
-                                     text=True, timeout=15).stdout.strip()
-            except (OSError, subprocess.SubprocessError):
+                                     text=True, encoding="utf-8", errors="replace",
+                                     timeout=15).stdout.strip()
+            except (OSError, subprocess.SubprocessError, ValueError):
                 lin = ""
             locked.append(lin or winpath)
     return locked
@@ -670,8 +680,9 @@ def _report_lock_diagnostic(source_abs):
         print("  [tip] name the holder with Sysinternals: `handle64.exe \"%s\"`, or "
               "Process Explorer -> Ctrl+F -> the folder name." % source_abs.name)
     else:
-        print("  [locked] could not pin the exact descendant (not on WSL, or the "
-              "probe was unavailable). Close any Explorer window / editor / viewer "
+        print("  [locked] could not pin the exact locked DIRECTORY (not on WSL, the "
+              "probe was unavailable, or the holder has a *file* open — the probe "
+              "scans directories only). Close any Explorer window / editor / viewer "
               "open under the source, then retry.")
 
 
