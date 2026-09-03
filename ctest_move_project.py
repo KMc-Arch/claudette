@@ -485,29 +485,117 @@ def t_confirm_interactive():
 
 
 def t_true_case():
-    """_true_case recovers on-disk casing (works even on the case-sensitive test fs —
-    it folds itself), so a mis-cased source arg still follows an unregistered store
-    instead of silently orphaning it. Also proves _under uses the length-preserving
-    ASCII fold (no casefold slice corruption)."""
+    """_true_case (full-path) recovers on-disk casing — for a mis-cased ARG and a
+    mis-cased --project-root/apex — even on the case-sensitive test fs (it folds
+    itself), so a mis-cased path never silently orphans a store. Also proves _under
+    uses the length-preserving ASCII fold (no casefold slice corruption)."""
     apex, home = build_apex()
     ap = apex.resolve()
-    check("T19 _true_case recovers on-disk casing", mp._true_case(ap, ap / "PROJ") == ap / "proj")
+    check("T19 _true_case recovers on-disk casing", mp._true_case(ap / "PROJ") == ap / "proj")
     check("T19 _true_case keeps a not-yet-existing leaf as typed",
-          mp._true_case(ap, ap / "proj" / "NewLeaf") == ap / "proj" / "NewLeaf")
-    # _under uses ASCII _fold (length-preserving), not casefold: a ß/SS pair does NOT
-    # over-match (they are different real dirs on this ASCII-folding mount).
+          mp._true_case(ap / "proj" / "NewLeaf") == ap / "proj" / "NewLeaf")
+    check("T19 _true_case canonicalises a mis-cased apex component",
+          mp._true_case(ap.parent / ap.name.upper()) == ap)
     check("T19 _under does not casefold-overmatch (ss vs ß)", not mp._under("/p/SS/x", "/p/ß"))
-    # end-to-end: a mis-cased source arg + an unregistered nested root → store follows.
+    # mis-cased source arg + unregistered nested root → store still follows.
     orphan = apex / "proj" / "Orphan"
     orphan.mkdir()
     (orphan / "CLAUDE.md").write_text("---\nroot: true\n---\n")
     make_store(home, orphan)
     rc = mp.run(["PROJ/ORPHAN", "moved-orphan", "--project-root", str(apex),
                  "--home", str(home), "--execute", "--yes"])
-    check("T19 mis-cased source arg executes (canonicalized)", rc == 0)
+    check("T19 mis-cased source arg executes (canonicalised)", rc == 0)
     check("T19 unregistered store followed despite mis-cased arg",
           store_dir(home, ap / "moved-orphan").exists()
           and not store_dir(home, ap / "proj" / "Orphan").exists())
+    # mis-cased --project-root (apex) → registered store still follows.
+    apex2, home2 = build_apex()
+    ap2 = apex2.resolve()
+    rc = mp.run(["proj", "movedX", "--project-root", str(ap2.parent / ap2.name.upper()),
+                 "--home", str(home2), "--execute", "--yes"])
+    check("T19 mis-cased --project-root canonicalised (registered store follows)",
+          rc == 0 and store_dir(home2, ap2 / "movedX").exists()
+          and not store_dir(home2, ap2 / "proj").exists())
+
+
+def t_nonascii_refused():
+    """A non-ASCII path in the move set is refused (the fold is ASCII-only; a case
+    difference could silently fork an identity)."""
+    apex, home = build_apex()
+    grp = apex / "grüppe"
+    grp.mkdir()
+    (grp / "CLAUDE.md").write_text("---\nroot: true\n---\n")
+    rc = mp.run(["grüppe", "moved", "--project-root", str(apex),
+                 "--home", str(home)])   # dry-run: still refused at preflight
+    check("T24 non-ASCII source refused", rc == 2 and grp.is_dir())
+    rc = mp.run(["proj", "dést", "--project-root", str(apex), "--home", str(home)])
+    check("T24 non-ASCII dest refused", rc == 2)
+
+
+def t_symlink_walk_skipped():
+    """The FS walk skips symlinked dirs — no recursion, no external-root store pulled
+    in. is_symlink() is MOCKED (no real symlink is created — the symlink ABSOLUTE
+    HOLD forbids creating one, even a transient test one)."""
+    apex, home = build_apex()
+    alias = apex / "proj" / "alias"
+    alias.mkdir()                      # a real dir; we mock is_symlink() True for it
+    (alias / "CLAUDE.md").write_text("---\nroot: true\n---\n")
+    src = (apex / "proj").resolve()
+    orig = Path.is_symlink
+
+    def fake_is_symlink(self):
+        return self.name == "alias" or orig(self)
+
+    # control: a real dir under the source IS walked
+    check("T25 control: a real nested root IS walked",
+          any(w.name == "alias" for w in mp._discover_child_roots(src)))
+    Path.is_symlink = fake_is_symlink
+    try:
+        walked = mp._discover_child_roots(src)
+    finally:
+        Path.is_symlink = orig
+    check("T25 a symlinked dir is skipped by the walk",
+          all(w.name != "alias" for w in walked))
+
+
+def t_ghost_estale():
+    """A ghosted dirent can raise (ESTALE) from is_dir() rather than return False; the
+    post-rename check must catch OSError and treat it as a failed verification."""
+    import io
+    import contextlib
+    apex, home = build_apex()
+    conn = sq.connect(str(apex / ".state" / "roots.db"))
+    plan = mp._preflight(conn, apex.resolve(), (apex / "proj").resolve(),
+                         (apex / "moved").resolve(), home.resolve())
+    orig_is_dir = Path.is_dir
+
+    def fake_is_dir(self):
+        if str(self).endswith("/moved"):
+            raise OSError(116, "Stale file handle")   # ESTALE
+        return orig_is_dir(self)
+
+    Path.is_dir = fake_is_dir
+    buf = io.StringIO()
+    try:
+        with contextlib.redirect_stdout(buf):
+            rc = mp._execute(conn, plan, apex.resolve(), home.resolve())
+    finally:
+        Path.is_dir = orig_is_dir
+        conn.close()
+    out = buf.getvalue()
+    check("T23 ESTALE ghost trips failure", rc == 1)
+    check("T23 ESTALE ghost message shown", "post-rename verification" in out)
+    check("T23 ESTALE ghost rolled back", (apex / "proj").is_dir()
+          and not (apex / "moved").exists())
+
+
+def t_missing_db():
+    """No roots.db at the project-root → exit 2, nothing created."""
+    import tempfile as _tf
+    empty = Path(_tf.mkdtemp(prefix="mvpj-nodb-")).resolve()
+    (empty / "target").mkdir()
+    rc = mp.run(["target", "moved", "--project-root", str(empty), "--home", str(empty)])
+    check("T26 missing db exits 2", rc == 2 and not (empty / ".state" / "roots.db").exists())
 
 
 def t_reconcile_subprocess():
@@ -551,7 +639,8 @@ def main():
               t_confirm_gate, t_nondict_session, t_session_prefix_and_nested,
               t_case_insensitive, t_unreg_collision_nonblocking, t_framework_guard,
               t_ghost_verification, t_rollback_incomplete, t_confirm_interactive,
-              t_true_case, t_rel_case_variant, t_reconcile_subprocess):
+              t_true_case, t_rel_case_variant, t_reconcile_subprocess,
+              t_nonascii_refused, t_symlink_walk_skipped, t_ghost_estale, t_missing_db):
         print("\n== %s ==" % t.__name__)
         try:
             t()

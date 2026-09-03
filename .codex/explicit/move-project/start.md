@@ -96,21 +96,23 @@ same directory. Two mechanisms keep that from slipping a guard or mis-slugging a
 store:
 
 - **Canonicalisation.** `Path.resolve()` does NOT case-normalise on this mount, so
-  the source/dest args are rebuilt to their true on-disk casing (a dirent walk)
-  before use — otherwise a mis-cased arg (e.g. `testing` for on-disk `Testing`) would
-  mis-slug an *unregistered* root's transcript store and silently strand its history.
+  the **apex AND both args** are rebuilt to their true on-disk casing (a full-path
+  dirent walk) before use — otherwise a mis-cased arg or `--project-root`/cwd (e.g.
+  `testing` for on-disk `Testing`) would mis-slug a transcript store and silently
+  strand its history.
 - **A single ASCII fold** (matching the DB's `COLLATE NOCASE` and the mount's
   confirmed ASCII case-insensitivity) for every residual comparison — containment,
   session cwd, spine `rel_path` matching. It is length-preserving, so the prefix
   slices stay aligned (full-Unicode `casefold` is deliberately avoided — its ß→ss
   expansion would over-match and mis-cut).
-
-**Known limitation:** a *non-ASCII* case-variant is not fully modeled — the mount's
-non-ASCII fold behavior is unconfirmed and the DB's `NOCASE` is ASCII-only (see
-`reference_testing_case_collision`). This instance uses ASCII paths, so it is latent;
-a non-ASCII case-variant move should be avoided. It fails *safe* either way (a
-canonicalisation miss keeps the typed name → a clean refusal or a reported
-best-effort skip, never a containment bypass).
+- **Non-ASCII is REFUSED, not fudged.** A path in the move set with a non-ASCII
+  component is refused at preflight: the ASCII fold cannot correctly fold it against
+  the mount's Unicode case-insensitivity, and a case difference could silently fork
+  an identity (tree moves, spine doesn't). This instance uses ASCII paths, so nothing
+  legitimate is hit; a non-ASCII project must be renamed to ASCII or moved by hand.
+- **Symlinks are not followed.** The child-root walk skips symlinked dirs (no
+  recursion into a symlink-to-ancestor, no external root pulled into the move),
+  matching the as-referenced containment doctrine.
 
 - **Containment:** dest must resolve **strictly inside the apex** (an egress dest is
   refused). Source must be strictly inside the apex and **not** the apex itself.

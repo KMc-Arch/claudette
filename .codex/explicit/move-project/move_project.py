@@ -122,7 +122,11 @@ def _discover_child_roots(root):
     except OSError:
         return found
     for d in entries:
-        if not d.is_dir() or d.name.startswith((".", "_")):
+        # Skip symlinks: is_dir() follows them, so an unguarded walk could recurse a
+        # symlink-to-ancestor (crash) or pull an EXTERNAL root's store into the move
+        # (breaking apex-only). Not following them also matches the as-referenced
+        # containment doctrine.
+        if not d.is_dir() or d.is_symlink() or d.name.startswith((".", "_")):
             continue
         cmd = d / "CLAUDE.md"
         if cmd.exists() and _has_root_true(cmd):
@@ -231,20 +235,24 @@ def _apex_rel_parts(apex, abs_path):
     return (abs_path.name,)
 
 
-def _true_case(apex, abs_path):
-    """`abs_path` with its apex-relative components rebuilt to their TRUE on-disk
-    casing. `.resolve()` does NOT case-normalise on this drvfs mount, so a mis-cased
-    CLI arg keeps its typed case and would mis-slug the transcript store of an
-    unregistered root (the registered path is safe — it slugs the DB-authoritative
-    rel_path). Each component is matched against its parent's real dirents: an exact
-    hit wins; else an ASCII-fold hit (the mount's confirmed case-insensitivity)
-    recovers the real name; else the typed name is kept — a non-ASCII variant or a
-    not-yet-existing dest leaf — so this is never worse than the raw arg. Caller
-    guards that `abs_path` is within `apex` before calling."""
-    cur = apex
-    for name in _apex_rel_parts(apex, abs_path):
+def _true_case(abs_path):
+    """`abs_path` with EVERY component rebuilt to its TRUE on-disk casing, walked
+    from the filesystem root down. `.resolve()` does NOT case-normalise on this drvfs
+    mount, so a mis-cased arg OR a mis-cased `--project-root`/cwd keeps its typed case
+    and would mis-slug a transcript store — silently stranding history (every slug is
+    `apex / rel`). Each component is matched against its parent's real dirents: an
+    exact hit wins; else an ASCII-fold hit (the mount's confirmed case-insensitivity)
+    recovers the real name; else the typed name is kept — a not-yet-existing dest leaf
+    or an unresolvable component — so this is never worse than the raw path. `iterdir`
+    is sorted so a (structurally-impossible-here) fold collision is at least
+    deterministic."""
+    parts = abs_path.parts
+    if not parts:
+        return abs_path
+    cur = Path(parts[0])                       # the anchor, e.g. "/"
+    for name in parts[1:]:
         try:
-            names = [e.name for e in cur.iterdir()]
+            names = sorted(e.name for e in cur.iterdir())
         except OSError:
             names = []
         if name in names:
@@ -318,6 +326,22 @@ def _preflight(conn, apex, source_abs, dest_abs, home):
         new_store = projects / _slug(new_abs)
         will_move = old_store != new_store and old_store.exists()
         unregistered.append((d, new_abs, old_store, new_store, will_move))
+
+    # ── Refuse non-ASCII paths in the move set ───────────────────────
+    # The fold is ASCII-only (matching the DB's COLLATE NOCASE) and cannot correctly
+    # fold a non-ASCII name against the mount's Unicode case-insensitivity — a case
+    # difference between the arg/DB and disk would silently skip a registered identity
+    # (a spine fork: tree moves, spine doesn't) or miss a live session. Refuse rather
+    # than fail open. (This instance uses ASCII paths, so nothing legitimate is hit.)
+    non_ascii = sorted({p for p in
+                        [source_rel, dest_rel] + [t[1] for t in identities]
+                        + [t[2] for t in identities] + [_rel(apex, d) for d in walked]
+                        if not p.isascii()})
+    if non_ascii:
+        raise Blocked("non-ASCII path component(s) in the move set (%s) — not "
+                      "supported: the case-fold is ASCII-only, so a non-ASCII case "
+                      "difference could silently fork an identity. Rename to ASCII, "
+                      "or move by hand." % ", ".join(non_ascii))
 
     # ── Store collisions ─────────────────────────────────────────────
     # A REGISTERED identity's store collision is a hard blocker (relink refuses it
@@ -434,7 +458,8 @@ def _execute(conn, plan, apex, home):
                   % (rid, new_rel, "  (+ store)" if will_move else ""))
         conn.commit()
         undo.clear()  # the move is durable; no core rollback past this point
-        print("  [ok] identity spine committed")
+        if plan["identities"]:
+            print("  [ok] identity spine committed")
     except Exception as e:
         undo_failed = []
         for fn in reversed(undo):
@@ -575,7 +600,10 @@ def _which_powershell():
         if p:
             return p
     cand = Path("/mnt/c/Windows/System32/WindowsPowerShell/v1.0/powershell.exe")
-    return str(cand) if cand.exists() else None
+    try:
+        return str(cand) if cand.exists() else None
+    except OSError:
+        return None
 
 
 def _win_locked_descendants(source_abs):
@@ -665,19 +693,17 @@ def run(argv=None):
                     help="override ~ (holds .claude/projects and .claude/sessions); for testing")
     args = ap.parse_args(argv)
 
-    apex = args.project_root.resolve()
+    # Recover true on-disk casing for apex AND both args (resolve() does not
+    # case-normalise on drvfs; a mis-cased apex/--project-root/cwd or arg would
+    # otherwise mis-slug a transcript store and strand history). Full-path
+    # canonicalise — an egress path is canonicalised harmlessly and refused by
+    # _preflight's containment guard.
+    apex = _true_case(args.project_root.resolve())
     home = args.home.resolve() if args.home else Path.home()
-    source_abs = (apex / args.source).resolve() if not args.source.is_absolute() \
-        else args.source.resolve()
-    dest_abs = (apex / args.dest).resolve() if not args.dest.is_absolute() \
-        else args.dest.resolve()
-    # Recover true on-disk casing (resolve() does not case-normalise on drvfs, so a
-    # mis-cased arg would otherwise mis-slug an unregistered root's store). Only for
-    # in-apex paths — an egress path is left for _preflight to refuse.
-    if _is_within(source_abs, apex):
-        source_abs = _true_case(apex, source_abs)
-    if _is_within(dest_abs, apex):
-        dest_abs = _true_case(apex, dest_abs)
+    source_abs = _true_case((apex / args.source).resolve() if not args.source.is_absolute()
+                            else args.source.resolve())
+    dest_abs = _true_case((apex / args.dest).resolve() if not args.dest.is_absolute()
+                          else args.dest.resolve())
 
     db_path = apex / ".state" / "roots.db"
     if not db_path.exists():
