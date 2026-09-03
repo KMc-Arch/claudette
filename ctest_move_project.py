@@ -530,6 +530,13 @@ def t_nonascii_refused():
     check("T24 non-ASCII source refused", rc == 2 and grp.is_dir())
     rc = mp.run(["proj", "dést", "--project-root", str(apex), "--home", str(home)])
     check("T24 non-ASCII dest refused", rc == 2)
+    # a non-ASCII DESCENDANT under an ASCII source is refused too (the descendant
+    # terms of the check — a registered/walked rel, not just source_rel/dest_rel).
+    cafe = apex / "proj" / "cäfe"
+    cafe.mkdir()
+    (cafe / "CLAUDE.md").write_text("---\nroot: true\n---\n")
+    rc = mp.run(["proj", "moved2", "--project-root", str(apex), "--home", str(home)])
+    check("T24 non-ASCII descendant refused", rc == 2 and (apex / "proj").is_dir())
 
 
 def t_symlink_walk_skipped():

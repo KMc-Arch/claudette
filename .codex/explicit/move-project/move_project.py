@@ -333,8 +333,10 @@ def _preflight(conn, apex, source_abs, dest_abs, home):
     # difference between the arg/DB and disk would silently skip a registered identity
     # (a spine fork: tree moves, spine doesn't) or miss a live session. Refuse rather
     # than fail open. (This instance uses ASCII paths, so nothing legitimate is hit.)
+    # str(apex) too: the apex prefix is part of every `slug(apex / rel)`, and a
+    # non-ASCII apex would defeat _true_case's ASCII fold and mis-slug a store.
     non_ascii = sorted({p for p in
-                        [source_rel, dest_rel] + [t[1] for t in identities]
+                        [str(apex), source_rel, dest_rel] + [t[1] for t in identities]
                         + [t[2] for t in identities] + [_rel(apex, d) for d in walked]
                         if not p.isascii()})
     if non_ascii:
@@ -484,6 +486,16 @@ def _execute(conn, plan, apex, home):
         if isinstance(e, OSError) and e.errno in (errno.EACCES, errno.EPERM):
             _report_lock_diagnostic(source_abs)
         return 1
+
+    # Checkpoint the WAL into the main db BEFORE the reconcile subprocess. cboot
+    # --materialize-only opens an `immutable=1&mode=ro` reader (claims_for) that
+    # reads ONLY the main db file; without this, our just-committed relink still
+    # sits un-checkpointed in the -wal and that reader would see stale rows (BL-46).
+    # Best-effort, like the reconcile itself.
+    try:
+        conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+    except Exception:
+        pass
 
     # ── Post-commit reconcile (best-effort) ──────────────────────────
     for _old_abs, _new_abs, old_store, new_store, will_move in plan["unregistered"]:

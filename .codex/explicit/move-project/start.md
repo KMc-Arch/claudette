@@ -73,9 +73,9 @@ opening one here, a stale-ownership read is impossible **by construction**.
 
 ## Report-only — never rewritten (RULED)
 
-- **Child `.git` internals** — *detected*: any `root: true` nested project under the
-  source that carries a `.git` is listed by path (a plain nested git repo without the
-  `root: true` marker moves fine but is not enumerated).
+- **Child `.git` internals** — *detected*: the source itself, plus any `root: true`
+  nested project under it, that carries a `.git` is listed by path (a plain nested
+  git repo *below a non-root intermediate dir* moves fine but is not enumerated).
 - **Windows Task Scheduler** path registrations — a fixed *reminder*, not scanned for.
 - **Cross-project textual references** in backlogs / memories / designs that mention
   the old path — a fixed *reminder*, not scanned for.
