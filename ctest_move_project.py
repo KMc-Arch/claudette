@@ -277,6 +277,75 @@ def t_lock_diagnostic():
     check("T9 spine unchanged", current_rel(apex, 2) == "proj")
 
 
+def t_win_lock_scanner():
+    """T27: the REAL _win_locked_descendants (move_project.py:621-655) — parse,
+    winpath<->linux translate, injection-escape ('->''), never-raise envelope.
+    NOT the T9 mock (which stubs the whole scanner to test the *reporter*). This
+    drives the real function by faking only the subprocess seam, so the one
+    function whose bug cost a day in the wild actually executes in the suite."""
+    import types
+    import tempfile as _tf
+    import shutil as _sh
+    _run, _which, _pwsh = mp.subprocess.run, mp.shutil.which, mp._which_powershell
+    src = Path(_tf.mkdtemp(prefix="mvpj-lock-")).resolve()
+    (src / "sub").mkdir()   # a real, existing dir (the fn early-returns if src is gone)
+
+    def cp(out):
+        return types.SimpleNamespace(stdout=out, returncode=0)
+
+    seen = {"ps": None}
+    try:
+        mp._which_powershell = lambda: "/fake/pwsh.exe"          # deterministic, host-independent
+        mp.shutil.which = lambda n: "/usr/bin/wslpath" if n == "wslpath" else None
+
+        def fake_run(argv, **kw):
+            if argv[0].endswith("wslpath") and argv[1] == "-w":  # src -> windows
+                return cp("C:\\proj\\a'b\n")                     # note the single quote
+            if argv[0].endswith("wslpath") and argv[1] == "-u":  # winpath -> linux
+                return cp("/mnt/c/proj/~outbox/model-prez\n")
+            seen["ps"] = argv[-1]                                # the powershell probe script
+            return cp("noise line\n"
+                      "LOCKED\tC:\\proj\\~outbox\\model-prez\n"
+                      "\n")
+        mp.subprocess.run = fake_run
+
+        # 1. LOCKED parsed; noise + blank dropped; back-translated to the Linux form.
+        r1 = mp._win_locked_descendants(src)
+        check("T27 LOCKED parsed, noise/blank dropped, back-translated",
+              r1 == ["/mnt/c/proj/~outbox/model-prez"], repr(r1))
+        # 2. injection-escape ran: the single quote was DOUBLED in the PS script
+        #    (raw a'b is NOT a substring of a''b -> mutation-proof).
+        check("T27 injection-escape doubled the quote in the PS script",
+              seen["ps"] is not None and "a''b" in seen["ps"], repr(seen["ps"]))
+
+        # 3. -u back-translation failure falls back to the raw winpath (never drops it).
+        def uerr(argv, **kw):
+            if argv[0].endswith("wslpath") and argv[1] == "-u":
+                raise mp.subprocess.SubprocessError("boom")
+            return fake_run(argv, **kw)
+        mp.subprocess.run = uerr
+        r3 = mp._win_locked_descendants(src)
+        check("T27 -u failure falls back to the raw winpath",
+              r3 == ["C:\\proj\\~outbox\\model-prez"], repr(r3))
+
+        # 4. never-raises: the probe subprocess blows up -> [] (not an exception).
+        def pserr(argv, **kw):
+            if argv[0].endswith("wslpath"):
+                return fake_run(argv, **kw)
+            raise mp.subprocess.TimeoutExpired("pwsh", 90)
+        mp.subprocess.run = pserr
+        r4 = mp._win_locked_descendants(src)
+        check("T27 probe blow-up returns [] (never raises)", r4 == [], repr(r4))
+
+        # 5. feature-detect off (no powershell) -> [] at the guard, no subprocess.
+        mp._which_powershell = lambda: None
+        r5 = mp._win_locked_descendants(src)
+        check("T27 no powershell -> [] at the guard", r5 == [], repr(r5))
+    finally:
+        mp.subprocess.run, mp.shutil.which, mp._which_powershell = _run, _which, _pwsh
+        _sh.rmtree(src, ignore_errors=True)
+
+
 def t_structural():
     import re
     lits = _nondocstring_strings(MP_PATH)
@@ -642,8 +711,9 @@ def t_rel_case_variant():
 
 def main():
     for t in (t_dry_run, t_execute, t_guards, t_collision, t_live_session,
-              t_rollback, t_unregistered, t_lock_diagnostic, t_structural,
-              t_confirm_gate, t_nondict_session, t_session_prefix_and_nested,
+              t_rollback, t_unregistered, t_lock_diagnostic, t_win_lock_scanner,
+              t_structural, t_confirm_gate, t_nondict_session,
+              t_session_prefix_and_nested,
               t_case_insensitive, t_unreg_collision_nonblocking, t_framework_guard,
               t_ghost_verification, t_rollback_incomplete, t_confirm_interactive,
               t_true_case, t_rel_case_variant, t_reconcile_subprocess,
