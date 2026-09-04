@@ -11,13 +11,21 @@ below — do not guess past them, and do not wait for input that will never come
 - Branch: `{{BRANCH}}` (already checked out), base commit `{{BASE_SHA}}`. Resumed from a previous attempt: {{RESUMED}}
 - Time cap: {{TIME_CAP_MIN}} minutes wall clock. The process is killed at the cap. Commit early and often so a kill still leaves a reviewable branch.
 
-## Scope
+## Scope — the structural boundary (absolute)
 
-**Write scope — the paths you may modify.** Commits touching anything outside this are NOT pushed (reported as a scope breach). Empty = the whole repo.
+These are the paths you may change, set and confirmed by a human at triage. They are enforced, not advisory: if **any** committed file across your whole branch is outside write scope, or inside write forbid, the runner blocks the **entire** push — not just that file — and hands the item back. Nothing partial goes out. So stay inside the boundary; if the work genuinely needs a path outside it, that is a `blocked-on-decision` hand-back, not something you commit anyway.
+
+**Write scope — the paths you MAY modify and publish.** Empty = the whole repo.
 {{WRITE_SCOPE}}
 
-**Read scope — where the answer should live** (guidance, not a wall — nothing enforces it yet). If you find you must read far outside this to proceed, that is a signal the item is under-specified: note it in your outcome.
+**Write forbid — paths you may NEVER touch, even if inside write scope** (deny wins over allow).
+{{WRITE_FORBID}}
+
+**Read scope — where the answer should live** (advisory — Read is not yet guard-enforced). Needing to read far outside it is a signal the item is under-specified: note it.
 {{READ_SCOPE}}
+
+**Read forbid — paths you should not read** (advisory).
+{{READ_FORBID}}
 
 ## Decision authority (how to handle a fork the brief did not settle)
 
@@ -28,7 +36,7 @@ Some decisions only appear mid-attempt: a named function is missing, two impleme
 **Forbidden — never, at any autonomy level:**
 {{FORBID}}
 
-**Pre-authorized — the sender already approved these specific moves:**
+**Pre-authorized decisions — contract crossings the sender approved** (e.g. change an interface, add a dependency). These relax your *decision* latitude only; they do NOT widen the write scope — a file still publishes only if it is inside write scope. To change a file, that file must be in write scope, whatever pre_auth says.
 {{PRE_AUTH}}
 
 **The go / no-go, at every fork:**

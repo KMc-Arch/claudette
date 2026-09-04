@@ -314,6 +314,12 @@ AUTONOMY_RULE = {
            "significant call.",
 }
 
+# A deleted/renamed level rule must fail LOUD at import — never silently serve bounded text at 3am
+# (render_prompt does AUTONOMY_RULE[autonomy], no fallback). This assert + the per-level render tests
+# are what make the envelope's degradation detectable.
+assert set(AUTONOMY_RULE) == set(hb.AUTONOMY_LEVELS), \
+    f"AUTONOMY_RULE {sorted(AUTONOMY_RULE)} != AUTONOMY_LEVELS {sorted(hb.AUTONOMY_LEVELS)}"
+
 
 def _bullets(xs, empty: str) -> str:
     xs = [str(x) for x in (xs or []) if str(x).strip()]
@@ -322,7 +328,7 @@ def _bullets(xs, empty: str) -> str:
 
 def render_prompt(cfg: dict, prov: dict, item_root: Path, project: Path, fm: dict, body: str) -> str:
     tpl = (hb.HB / "prompt-worker.md").read_text(encoding="utf-8")
-    autonomy = hb.autonomy_of(fm)
+    autonomy = hb.autonomy_of(fm, cfg)
     # the item body is untrusted-ish human text: neutralize template markers and fence it
     safe_body = body.strip().replace("{{", "{ {").replace("}}", "} }")
     fields = {
@@ -336,9 +342,11 @@ def render_prompt(cfg: dict, prov: dict, item_root: Path, project: Path, fm: dic
         "QA": str(fm.get("qa") or cfg.get("qa", "mileqa")),
         "PR": "yes" if (fm.get("pr", cfg.get("pr", True)) not in (False, "false", "no")) else "no",
         "WRITE_SCOPE": _bullets(hb.write_scope_of(fm), "- (whole repo)"),
+        "WRITE_FORBID": _bullets(hb.write_forbid_of(fm), "- (none)"),
         "READ_SCOPE": _bullets(fm.get("read_scope"), "- (not restricted — read what you need)"),
+        "READ_FORBID": _bullets(fm.get("read_forbid"), "- (none)"),
         "AUTONOMY": autonomy,
-        "AUTONOMY_RULE": AUTONOMY_RULE.get(autonomy, AUTONOMY_RULE["bounded"]),
+        "AUTONOMY_RULE": AUTONOMY_RULE[autonomy],
         "FORBID": _bullets(fm.get("forbid"), "- (none stated)"),
         "PRE_AUTH": _bullets(fm.get("pre_auth"), "- (none)"),
         "ATTEMPT": str(int(fm.get("attempts", 0)) + 1),
@@ -347,8 +355,12 @@ def render_prompt(cfg: dict, prov: dict, item_root: Path, project: Path, fm: dic
         "ITEM_FRONTMATTER": hb.dump_yaml(fm).rstrip().replace("{{", "{ {"),
         "ITEM_BODY": safe_body,
     }
+    # Neutralize template markers in EVERY value before substituting: without this, a value inserted
+    # early (e.g. a forbid/scope entry from _bullets) that contains a literal {{ITEM_BODY}} gets
+    # expanded by a later pass — item content silently overwriting another field. Body/frontmatter are
+    # already escaped; re-escaping is a no-op, so a blanket pass is safe and closes the whole class.
     for k, v in fields.items():
-        tpl = tpl.replace("{{" + k + "}}", v)
+        tpl = tpl.replace("{{" + k + "}}", v.replace("{{", "{ {"))
     return tpl
 
 
@@ -640,22 +652,29 @@ def scrub_text_file(path: Path) -> tuple[bool, str]:
     return False, (r.stdout or r.stderr).strip().splitlines()[-1][:200] if (r.stdout or r.stderr).strip() else f"rc={r.returncode}"
 
 
-def scope_breach(files: list, scope: list) -> list:
-    """Files touched outside the item's scope allowlist (prefix match).
+def _under_any(f: str, pats: list) -> bool:
+    return any(f == p or f.startswith(p + "/") for p in pats)
 
-    ENFORCED: a non-empty breach withholds publication (no push, no PR) — see the gate in
-    run(). The item still reaches an expected terminus, so it is closed and the worktree
-    removed; the branch is kept locally and named in ~inbox/<ID>/outcome.md alongside the
-    breach list, and re-approving the item resumes that branch. There is no auto-retry:
-    a worker that breached once will likely breach again, so the posture is
-    loud-and-visible rather than automatic.
+
+def scope_breach(files: list, scope: list, forbid: list = None) -> list:
+    """Files that violate the item's STRUCTURAL boundary (prefix match): a file is a breach if
+    write_scope is non-empty and the file is outside it, OR the file is under write_forbid (deny wins
+    over allow — an absolute boundary). Computed over the UNION of every commit in the pushed range
+    (see run()), not the endpoint diff, so a touched-then-reverted off-scope commit still counts.
+
+    ENFORCED: a non-empty breach withholds the WHOLE publication (no push, no PR — never a partial) —
+    see the gate in run(). The item still reaches an expected terminus, so it is closed and the
+    worktree removed; the branch is kept locally and named in ~inbox/<ID>/outcome.md alongside the
+    breach list, and re-approving the item resumes that branch. There is no auto-retry: a worker that
+    breached once will likely breach again, so the posture is loud-and-visible rather than automatic.
     """
-    if not scope:
-        return []
-    pats = [str(s).strip().rstrip("/") for s in scope if str(s).strip()]
+    allow = [str(s).strip().rstrip("/") for s in (scope or []) if str(s).strip()]
+    deny = [str(s).strip().rstrip("/") for s in (forbid or []) if str(s).strip()]
     out = []
     for f in files:
-        if not any(f == p or f.startswith(p + "/") for p in pats):
+        outside_allow = bool(allow) and not _under_any(f, allow)
+        under_deny = _under_any(f, deny)
+        if outside_allow or under_deny:
             out.append(f)
     return out
 
@@ -749,18 +768,18 @@ def run(claim: dict, cfg: dict) -> dict | None:
     if res_fm.get("item_id") not in (None, "", item_id) and str(res_fm.get("item_id")) != item_id:
         hb.log(f"WARN outcome item_id {res_fm.get('item_id')!r} != {item_id}")
     head = _git(project, "rev-parse", "--verify", f"refs/heads/{prov['branch']}").stdout.strip() or None
-    # -z, not .split(): git does NOT quote a plain space, so whitespace-splitting shatters
-    # any path containing one — `docs/design notes.md` became ['docs/design', 'notes.md'],
-    # which withheld publication for an in-scope file AND wrote two non-existent names into
-    # the durable outcome record. Live against the `agentic` root (192 tracked paths with
-    # spaces). Matches the -z idiom already used for ls-files in provision().
-    files = [x for x in _git(project, "diff", "-z", "--name-only",
-                             f"{prov['base_sha']}..{prov['branch']}").stdout.split("\0") if x] if head else []
+    # UNION of every commit in the range, NOT the endpoint diff: `git push` publishes the whole
+    # range, so a file touched then reverted mid-range is still in the pushed history and must count
+    # against the boundary (else the scope contract is bypassable). `git log --name-only --format=`
+    # lists each commit's paths; -z null-separates so a path with a space survives (the endpoint
+    # `git diff` had the same -z reason — `docs/design notes.md` must stay one path).
+    files = sorted({x for x in _git(project, "log", "-z", "--format=", "--name-only",
+                                    f"{prov['base_sha']}..{prov['branch']}").stdout.split("\0") if x}) if head else []
     has_commits = bool(head) and head != prov["base_sha"]
 
     pub = {"pushed": False, "pr": None, "note": "not published"}
     want_pr = fm.get("pr", cfg.get("pr", True)) not in (False, "false", "no")
-    breach = scope_breach(files, hb.write_scope_of(fm))
+    breach = scope_breach(files, hb.write_scope_of(fm), hb.write_forbid_of(fm))
     if terminus in hb.TERMINI_EXPECTED and want_pr and has_commits and breach:
         pub["note"] = f"publish withheld: {len(breach)} file(s) outside the item's scope: {breach[:8]}"
         hb.log(f"item {item_id}: {pub['note']}")
@@ -772,7 +791,7 @@ def run(claim: dict, cfg: dict) -> dict | None:
 
     outcome_fields = {
         "item_id": item_id, "branch": prov["branch"], "pr": pub["pr"], "pushed": pub["pushed"], "publish_note": pub["note"],
-        "scope_breach": breach,
+        "boundary_violation": bool(breach), "scope_breach": breach,
         "terminus": terminus, "qa_result": qa_result, "summary": str(res_fm.get("summary") or "").strip()[:300] or None,
         "base_commit": prov["base_sha"], "head_commit": head, "has_commits": has_commits, "files_touched": files,
         "attempts": entry["attempts"], "session_id": env.get("session_id"),
@@ -787,8 +806,9 @@ def run(claim: dict, cfg: dict) -> dict | None:
         (dst / name).write_text(text, encoding="utf-8")
     state_delta(project, prov["sandbox"], dst)
     entry.update({"terminus": terminus, "qa_result": qa_result, "pr": pub["pr"], "pushed": pub["pushed"], "head_commit": head,
-                  "files_touched": len(files), "cost_usd": env.get("cost_usd"), "duration_min": duration_min,
-                  "summary": outcome_fields["summary"], "session_id": env.get("session_id"), "finished_at": hb.iso(hb.now_utc())})
+                  "files_touched": len(files), "boundary_violation": bool(breach), "cost_usd": env.get("cost_usd"),
+                  "duration_min": duration_min, "summary": outcome_fields["summary"], "session_id": env.get("session_id"),
+                  "finished_at": hb.iso(hb.now_utc())})
 
     if terminus in hb.TERMINI_EXPECTED:
         shutil.copyfile(inflight_path, dst / "item.md")

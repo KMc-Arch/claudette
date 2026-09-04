@@ -44,8 +44,13 @@ An item is solvent when **a no-memory worker on a fresh clone could take it to a
    - **objective** — one bounded outcome that fits the ~90-min cap. Too big → split or narrow.
    - **acceptance** — criteria the worker can self-check under its `qa` predicate (mileqa "converged"
      / tests green). No target → not solvent.
-   - **write_scope** — the path allowlist it may modify (structurally enforced: off-scope commits are
-     not pushed). Push toward narrow; whole-repo is a smell.
+   - **write_scope / write_forbid** — the ABSOLUTE structural boundary: the allow-list of paths the
+     worker may change *and publish*, plus a deny-list that wins over allow. Enforced over the whole
+     branch — ANY off-boundary file blocks the entire push. **This is where you schematize the
+     human's prose path-intent into confirmed fields:** if they say "it may also need the config
+     loader," add that path to `write_scope` now, with their confirmation. The boundary is sacrosanct
+     as written here. Push toward narrow; whole-repo is a smell. `read_scope`/`read_forbid` are the
+     advisory read tier (not yet guard-enforced).
    - **open decisions** — any "A or B" embedded in the item: resolve it NOW, or hand it to autonomy
      (below). Foreseeable forks get pre-decided here; the envelope only governs the unforeseen.
 
@@ -67,8 +72,9 @@ An item is solvent when **a no-memory worker on a fresh clone could take it to a
    - `god` is not "no guardrails": the structural fence (no creds, scrub, write_scope, cap, human PR
      review) still holds. It is safe only because the *project* is disposable — say so to yourself
      before you set it.
-   - `pre_auth` — name any specific out-of-contract moves you want to permit ("may add dependency X",
-     "may touch `Y` outside write_scope"). These punch holes for the foreseeable.
+   - `pre_auth` — name specific *decision* crossings to permit ("may change the `foo` signature", "may
+     add dependency X"). **Decision latitude only — it never widens `write_scope`.** To allow changing
+     a file, put that file in `write_scope`; pre_auth is not a path grant.
 
 6. **Draft the cold-reader brief** (the md body). Write it for a worker with NO memory of this
    conversation and NO ability to ask: what to do, why, how to know it is done, live pointers only
@@ -79,13 +85,17 @@ An item is solvent when **a no-memory worker on a fresh clone could take it to a
    stop. The invariant is that the worker never meets an item it has no rule for.
 
 8. **Show me the full item** (frontmatter + brief) and get an explicit confirm. Then write the spec
-   to a scratch file inside `^/^/.hb-heartbeat/state/` and place it deterministically:
+   to a scratch file **inside `^`** (the target project — always within the containment fence; e.g.
+   `^/.hb-send-<ID>.yaml`) and place it deterministically:
 
    ```
-   python3 ^/^/.hb-heartbeat/hb.py send <ID> --spec <scratch>.yaml --project <^ abs path>
+   python3 ^/^/.hb-heartbeat/hb.py send <ID> --spec ^/.hb-send-<ID>.yaml
    ```
 
-   (Omit `--project` only when `^` is the apex itself.) The writer composes plumbing (id, recipient=hb
+   `send` defaults to the project you are in (`^`, the nearest root at/above your CWD); pass
+   `--project <root>` only to aim elsewhere — reserved for a future apex-session orchestrator doing
+   triage across sub-projects. (Do NOT write scratch to `^/^/…`: from a child session that is above
+   the fence and the write is denied.) The writer composes plumbing (id, recipient=hb
    auto-derived, sender, approved_by/at, status) and **hard-backstops the solvency bar**: it refuses
    to run inside a worker sandbox (HB_SANDBOX set), requires `objective` + `acceptance`, rejects scope
    paths that are absolute / contain `..` / resolve outside the project, and requires a `write_scope`
@@ -95,9 +105,11 @@ An item is solvent when **a no-memory worker on a fresh clone could take it to a
 ## Spec keys (what the writer accepts)
 
 `hb.py send --spec FILE` reads a YAML mapping of: `objective`, `acceptance`, `priority` (0–9),
-`model`, `qa` (mileqa|tests|none), `pr`, `time_cap_min`, `base`, `read_scope`, `write_scope`,
-`autonomy`, `forbid`, `pre_auth`, `depends_on`, `tags`, `attempts_max`, and `brief` (the md body; or
-pass `--body FILE`). Plumbing keys are NOT accepted — the writer owns them; an unknown key is refused.
+`model`, `qa` (mileqa|tests|none — validated), `pr`, `time_cap_min`, `base`, `read_scope`,
+`read_forbid`, `write_scope`, `write_forbid`, `autonomy`, `forbid`, `pre_auth`, `depends_on`, `tags`,
+`attempts_max`, and `brief` (the md body; or pass `--body FILE`). Plumbing keys are NOT accepted — the
+writer owns them; an unknown key is refused. `send` also rejects a project that isn't the top level of
+its own git repo (the runner would reject it at pop), and a `loose`/`god` item with no `write_scope`.
 
 See `^/^/.hb-heartbeat/templates/~outbox/start.md` for the full on-disk item schema, and
 `^/^/.hb-heartbeat/start.md` / `spec.md` for how the runner consumes it.

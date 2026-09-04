@@ -326,10 +326,19 @@ writes the item via the deterministic `hb.py send` writer.
 
 **The planner's output IS the flag.** There is no separate "I have work" sentinel
 (O2 is resolved this way, not built): the only way an item reaches `~outbox/hb/` is
-`/hb-send`, and its presence there is the raised flag. Participation is by-use —
-a project is an HB participant iff someone has planned an item into it — so there is
-no separate opt-in registry. `hb.py approve` remains as the quick night-one stopgap
-(copies a backlog section with default attributes); `/hb-send` is the real planner.
+`/hb-send`, and its presence there is the raised flag. `hb.py approve` remains as the
+quick night-one stopgap (copies a backlog section with default attributes); `/hb-send`
+is the real planner.
+
+**Discovery is via `roots.db`, and that is a real gate to be honest about.** The tick
+scans `~outbox/hb/` only in roots returned by `roots()`, which reads `.state/roots.db`
+and falls back to **apex-only** when the DB is absent (fresh checkout / after `purge all`
+/ before `cboot`). So a project **not registered in `roots.db` has its items silently
+skipped** — not rejected, not run. `roots.db` is the de-facto participation registry; a
+new project must be registered (a `cboot`) before Heartbeat will see its outbox. `roots()`
+logs a WARN whenever it falls back to apex-only (DB absent or unreadable), so a night that
+can see only the apex is not silent. A general "item present in an unregistered root" scan
+is filed as follow-up (BL — Heartbeat discovery), not built here.
 
 ---
 
@@ -455,6 +464,32 @@ Three orthogonal layers, and only the first is `autonomy`:
 The worker brief (`prompt-worker.md`) renders the rule for the item's level. A worker that halts on a
 genuine decision, or finds the premise false, has had a good night — that is the hand-back, not a
 failure.
+
+#### Boundaries — two tiers (sacrosanct as written at triage)
+
+An item's constraints split into a **structural** tier (machine-enforced, absolute) and a **decision**
+tier (prose, behavioural). `/hb-send` is where a human's prose path-intent is *schematized* into the
+structural fields and confirmed — so the runtime gate only ever enforces confirmed fields, never parses
+prose.
+
+| field | tier | enforcement |
+|---|---|---|
+| `write_scope` | structural — allow paths | **enforced.** Any committed path outside it (when non-empty) is a breach. |
+| `write_forbid` | structural — deny paths | **enforced.** Any committed path under it is a breach even if inside `write_scope` (deny wins). |
+| `read_scope` / `read_forbid` | structural — read intent | **advisory only** (Read is not guard-enforced yet); rendered into the brief. |
+| `autonomy` | decision | governs when the worker halts (above). |
+| `forbid` | decision — prohibitions | prose; the denylist `loose`/`god` respect. Not a path gate. |
+| `pre_auth` | decision — grants | prose; relaxes the *decision* halt for named contract crossings (change an interface, add a dep). **Never widens `write_scope`** — to change a file, that file must be in `write_scope`. |
+
+**Breach handling is block-the-whole-push, never strip.** On *any* breach the runner withholds the
+entire push and PR (nothing partial leaves), computed over the **union of every commit in the range**
+(not the endpoint diff — a touched-then-reverted off-scope commit still counts, since `push` publishes
+the whole range). The branch is kept locally, the outcome flags `boundary_violation`, and the human
+re-loops. This is what makes the boundary sacrosanct: a guard-jump attempt hard-fails the attempt.
+
+The full item schema (all fields, required vs optional, defaults) is the writer `hb.py::_item_defaults`
+plus `/hb-send`'s spec-key list — this section is its authoritative prose; the per-root `~outbox`
+`start.md` deliberately does not restate it.
 
 ---
 

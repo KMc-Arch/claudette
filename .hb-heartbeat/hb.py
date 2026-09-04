@@ -82,6 +82,17 @@ TERMINI_EXPECTED = ("converged", "exhausted", "cap", "blocked-on-decision")
 #             disposable/low-blast-radius project, never because the worker is restrained.
 AUTONOMY_LEVELS = ("strict", "bounded", "loose", "god")
 AUTONOMY_DEFAULT = "bounded"
+QA_PREDICATES = ("mileqa", "tests", "none")
+
+# The item's boundaries come in two tiers (spec §10.7):
+#   STRUCTURAL (path, machine-enforced, absolute) — write_scope (allow) + write_forbid (deny, wins).
+#     A committed path outside write_scope, or inside write_forbid, blocks the WHOLE push (no strip,
+#     no partial); the item is re-looped to the human. read_scope/read_forbid are the advisory read
+#     tier (Read is not guard-enforced yet). Set and CONFIRMED at /hb-send triage — sacrosanct as
+#     written. /hb-send is where prose path-intent is schematized INTO these, never joined at runtime.
+#   DECISION (prose, behavioural) — pre_auth (grants) + forbid (prohibitions the worker respects per
+#     its autonomy). These steer what the worker DECIDES; they never widen the structural publish gate.
+STRUCTURAL_PATH_FIELDS = ("read_scope", "read_forbid", "write_scope", "write_forbid")
 
 
 # ── time ─────────────────────────────────────────────────────────────
@@ -351,8 +362,8 @@ def write_night(d: dict) -> None:
 # Fields carried from a run entry into the cross-run outcome ledger. Stable across runs so a later
 # web view can render the whole history from one file.
 LEDGER_FIELDS = ("item_id", "root_name", "project", "terminus", "qa_result", "branch", "pushed",
-                 "pr", "base_commit", "head_commit", "files_touched", "attempts", "summary",
-                 "duration_min", "cost_usd", "session_id", "started_at", "finished_at")
+                 "pr", "boundary_violation", "base_commit", "head_commit", "files_touched", "attempts",
+                 "summary", "duration_min", "cost_usd", "session_id", "started_at", "finished_at")
 
 
 def append_outcome_ledger(entry: dict) -> None:
@@ -391,6 +402,8 @@ def roots() -> list[dict]:
     """All root: true contexts (apex first) from roots.db; falls back to apex only."""
     out = [{"name": "Claudette", "abs_path": str(APEX), "rel_path": "."}]
     if not ROOTS_DB.exists():
+        log("WARN roots.db absent; apex only — child-project outboxes are invisible this run "
+            "(register via cboot). See spec §9.")
         return out
     try:
         conn = sqlite3.connect(f"file:{ROOTS_DB.as_posix()}?immutable=1&mode=ro", uri=True)
@@ -544,10 +557,17 @@ def parse_item(path: Path) -> tuple[dict, str, list[str]]:
     autonomy = fm.get("autonomy")
     if autonomy is not None and str(autonomy).strip().lower() not in AUTONOMY_LEVELS:
         errs.append(f"autonomy {autonomy!r} not in {AUTONOMY_LEVELS}")
-    for lf in ("read_scope", "write_scope", "scope", "forbid", "pre_auth", "acceptance"):
+    if fm.get("qa") is not None and str(fm.get("qa")).strip().lower() not in QA_PREDICATES:
+        errs.append(f"qa {fm.get('qa')!r} not in {QA_PREDICATES}")
+    for lf in ("read_scope", "read_forbid", "write_scope", "write_forbid", "scope",
+               "forbid", "pre_auth", "acceptance"):
         v = fm.get(lf)
         if v is not None and not isinstance(v, list):
             errs.append(f"{lf} must be a list")
+    # pop-time backstop for a HAND-EDITED item: loose/god must carry a stated publish boundary
+    # (send() enforces this too, but a hand-authored file bypasses send()).
+    if str(autonomy or "").strip().lower() in ("loose", "god") and not (fm.get("write_scope") or fm.get("scope")):
+        errs.append("autonomy loose/god requires a non-empty write_scope")
     return fm, m.group(2), errs
 
 
@@ -556,17 +576,32 @@ def render_item(fm: dict, body: str) -> str:
 
 
 def write_scope_of(fm: dict) -> list:
-    """The publish/modify allowlist (structurally enforced: commits outside it are not pushed).
+    """The publish/modify ALLOW list (structurally enforced: commits outside it are not pushed).
     `write_scope` is canonical; `scope` is the pre-split alias, honored whenever write_scope carries
     no restriction. For a publish GATE, either field restricting fails closed — an empty write_scope
     (which the writer always emits) must not silently shadow a populated legacy `scope`."""
     return fm.get("write_scope") or fm.get("scope") or []
 
 
-def autonomy_of(fm: dict) -> str:
-    """The worker's in-flight decision envelope; absent/blank -> the default (bounded)."""
+def write_forbid_of(fm: dict) -> list:
+    """The publish DENY list (structural, absolute): a committed path under any of these is a breach
+    even when it is inside write_scope. Deny wins over allow — so an off-limits file inside an allowed
+    directory still blocks the whole push."""
+    return fm.get("write_forbid") or []
+
+
+def autonomy_of(fm: dict, cfg: dict | None = None) -> str:
+    """The worker's in-flight decision envelope. Prefer the item's own value; else the config default
+    (so an instance-configured default actually takes effect at read time, like model/qa/pr); else the
+    hardcoded default (bounded)."""
     a = str(fm.get("autonomy") or "").strip().lower()
-    return a if a in AUTONOMY_LEVELS else AUTONOMY_DEFAULT
+    if a in AUTONOMY_LEVELS:
+        return a
+    if cfg is not None:
+        c = str(cfg.get("autonomy") or "").strip().lower()
+        if c in AUTONOMY_LEVELS:
+            return c
+    return AUTONOMY_DEFAULT
 
 
 def project_root_for(item_root: Path, fm: dict) -> Path:
@@ -794,8 +829,9 @@ def backlog_section(root: Path, item_id: str) -> str | None:
 # attempts/source) is NOT settable — the writer owns it, so a spec can never forge provenance or
 # flip recipient. Field ORDER in _item_defaults is the on-disk order (dump_yaml preserves it).
 SEND_SEMANTIC_KEYS = ("objective", "acceptance", "priority", "model", "qa", "pr",
-                      "time_cap_min", "base", "read_scope", "write_scope", "autonomy",
-                      "forbid", "pre_auth", "depends_on", "tags", "attempts_max")
+                      "time_cap_min", "base", "read_scope", "read_forbid", "write_scope",
+                      "write_forbid", "autonomy", "forbid", "pre_auth", "depends_on", "tags",
+                      "attempts_max")
 
 
 def _git_user(root: Path) -> str:
@@ -839,9 +875,11 @@ def _item_defaults(item_id: str, root: Path, who: str, cfg: dict) -> dict:
         "objective": "",
         "acceptance": [],
         "qa": cfg.get("qa", "mileqa"),
-        # boundaries — may touch / may decide
+        # boundaries — structural path tier (read_* advisory, write_* enforced) then decision tier
         "read_scope": [],
+        "read_forbid": [],
         "write_scope": [],
+        "write_forbid": [],
         "autonomy": cfg.get("autonomy", AUTONOMY_DEFAULT),
         "forbid": [],
         "pre_auth": [],
@@ -876,7 +914,7 @@ def approve(item_id: str, project: str | None, priority: int | None, model: str 
     """Quick path: copy a backlog section into an item with default attributes. The richer,
     interactive planner path is `/hb-send` (-> send()); this stays for the night-one stopgap."""
     _refuse_in_sandbox("approve")
-    root = Path(project).resolve() if project else APEX
+    root = Path(project).resolve() if project else (caller_root() or APEX)   # default here; --project overrides
     if not (root / "CLAUDE.md").exists():
         raise SystemExit(f"not a project root: {root}")
     if not ID_RE.match(item_id):
@@ -903,10 +941,11 @@ def approve(item_id: str, project: str | None, priority: int | None, model: str 
     return dst
 
 
-def _scope_errors(root: Path, entries: list) -> list:
-    """Each scope entry must be a relative, ..-free path that exists and resolves inside root. An
-    absolute or ..-walking entry passes a naive exists() (root/'/etc' -> /etc) yet never prefix-
-    matches a relative git path in scope_breach — a silent, permanent withheld-publish. Reject it."""
+def _scope_errors(root: Path, entries: list, must_exist: bool = True) -> list:
+    """Each scope entry must be a relative, ..-free path resolving inside root (allow entries must also
+    EXIST; forbid entries need not — you may forbid creating a not-yet-existing path). An absolute or
+    ..-walking entry passes a naive exists() (root/'/etc' -> /etc) yet never prefix-matches a relative
+    git path in scope_breach — a silent, permanent withheld-publish. Reject it."""
     errs = []
     for s in entries:
         s = str(s)
@@ -915,11 +954,11 @@ def _scope_errors(root: Path, entries: list) -> list:
             errs.append(f"{s!r} must be a relative path with no '..'")
             continue
         target = root / p
-        if not target.exists():
+        if must_exist and not target.exists():
             errs.append(f"{s!r} does not exist in {root.name}")
             continue
         try:
-            target.resolve().relative_to(root.resolve())
+            (target.resolve() if target.exists() else target).relative_to(root.resolve())
         except ValueError:
             errs.append(f"{s!r} resolves outside {root.name}")
     return errs
@@ -931,7 +970,7 @@ def send(item_id: str, project: str | None, spec: dict, body: str, cfg: dict) ->
     can (objective + acceptance present; scope paths relative/../-free/inside-root), hard-fails
     loose/god with no stated write_scope, and places it self-validated."""
     _refuse_in_sandbox("send")
-    root = Path(project).resolve() if project else APEX
+    root = Path(project).resolve() if project else (caller_root() or APEX)   # default here; --project overrides
     if not (root / "CLAUDE.md").exists():
         raise SystemExit(f"not a project root: {root}")
     if not ID_RE.match(item_id):
@@ -950,16 +989,28 @@ def send(item_id: str, project: str | None, spec: dict, body: str, cfg: dict) ->
         raise SystemExit("priority must be an integer 0..9")
     if str(fm.get("autonomy")).strip().lower() not in AUTONOMY_LEVELS:
         raise SystemExit(f"autonomy must be one of {AUTONOMY_LEVELS}")
+    if str(fm.get("qa")).strip().lower() not in QA_PREDICATES:
+        raise SystemExit(f"qa must be one of {QA_PREDICATES}")
+    # the writer never leaves an item the runner would reject: the pop gate requires the project be
+    # the top level of its own git repo, so check it HERE too (root/CLAUDE.md alone is not enough —
+    # a gitignored group folder has a CLAUDE.md but is not its own repo).
+    perrs = project_errors(root, fm)
+    if perrs:
+        raise SystemExit("; ".join(perrs))
     # solvency, mechanically enforced: the two fields that DEFINE a solvent item get the same
     # deterministic backstop every other check has — not left to the /hb-send prose alone.
     if not str(fm.get("objective") or "").strip():
         raise SystemExit("objective is required: one bounded, self-contained outcome")
     if not (fm.get("acceptance") or []):
         raise SystemExit("acceptance is required: at least one criterion the worker can self-check")
-    scope_errs = _scope_errors(root, list(fm.get("read_scope") or []) + list(write_scope_of(fm)))
+    # every structural path entry (read/write, allow/deny) must be relative, ..-free, inside root —
+    # an absolute or .. entry passes exists() yet never matches a relative git path (silent wedge).
+    allow_paths = list(fm.get("read_scope") or []) + list(write_scope_of(fm))
+    forbid_paths = list(fm.get("read_forbid") or []) + list(write_forbid_of(fm))
+    scope_errs = _scope_errors(root, allow_paths) + _scope_errors(root, forbid_paths, must_exist=False)
     if scope_errs:
         raise SystemExit("bad scope path(s): " + "; ".join(scope_errs))
-    lvl = autonomy_of(fm)
+    lvl = autonomy_of(fm, cfg)
     if lvl in ("loose", "god"):
         # loose/god widen DECISION latitude; the stated write_scope is the publish boundary that
         # still binds them. An empty write_scope means whole-repo — refuse to pair that with the

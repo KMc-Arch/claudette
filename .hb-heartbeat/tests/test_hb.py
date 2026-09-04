@@ -882,6 +882,19 @@ class TestRunner(Base):
         self.assertEqual(rec["terminus"], "converged")
         self.assertIn("night", rec); self.assertIn("ts", rec)
 
+    def test_write_forbid_blocks_the_whole_publish(self):
+        os.environ["HB_FAKE_MODE"] = "converged"
+        p = self.s.approve()
+        fm, body, _ = hb.parse_item(p)
+        fm["write_forbid"] = ["HB_FAKE_WORK.md"]                                 # deny the file the worker will commit
+        p.write_text(hb.render_item(fm, body))
+        c = self._claim(); e = runner.run(c, self.cfg)
+        self.assertFalse(e["pushed"])                                            # whole push withheld, not stripped
+        self.assertTrue(e["boundary_violation"])
+        oc = (hb.inbox(self.apex) / "BL-07" / "outcome.md").read_text()
+        self.assertIn("boundary_violation: true", oc)
+        self.assertIn("HB_FAKE_WORK.md", oc)
+
     def test_requeue_or_fail_threshold_on_runner_paths(self):
         p = self.s.approve()
         fm, body, _ = hb.parse_item(p); fm["attempts"] = 2; p.write_text(hb.render_item(fm, body))     # one strike left
@@ -1280,10 +1293,11 @@ class TestSendPlanner(Base):
         fm, body, _ = hb.parse_item(p)
         fm["autonomy"] = "nope"; p.write_text(hb.render_item(fm, body))
         self.assertTrue(any("autonomy" in e for e in hb.parse_item(p)[2]))
-        fm["autonomy"] = "god"; fm["forbid"] = "not a list"; p.write_text(hb.render_item(fm, body))
+        fm["autonomy"] = "god"; fm["write_scope"] = ["README.md"]; fm["forbid"] = "not a list"
+        p.write_text(hb.render_item(fm, body))
         errs = hb.parse_item(p)[2]
         self.assertTrue(any("forbid must be a list" in e for e in errs))
-        self.assertFalse(any("autonomy" in e for e in errs))            # god is valid
+        self.assertFalse(any("not in" in e and "autonomy" in e for e in errs))   # god is a valid enum value
 
     def test_write_scope_alias_and_default(self):
         self.assertEqual(hb.write_scope_of({"scope": ["a"]}), ["a"])            # pre-split alias
@@ -1301,6 +1315,86 @@ class TestSendPlanner(Base):
         self.assertIn("NOT in the forbid list", txt)                         # god honors forbid (no contradiction)
         self.assertIn("commit the current good state first", txt)             # checkpoint protocol present
         self.assertIn("blocked-on-decision", txt)
+
+    def test_send_writes_forbid_fields(self):
+        p = hb.send("BL-07", None, self._spec(write_forbid=["README.md"], read_forbid=["nonexistent/x"]),
+                    "b", self.cfg)
+        fm, _, errs = hb.parse_item(p)
+        self.assertEqual(errs, [])
+        self.assertEqual(fm["write_forbid"], ["README.md"])
+        self.assertEqual(hb.write_forbid_of(fm), ["README.md"])
+        # forbid paths need NOT exist (may forbid creating one); allow paths still must
+        self.assertEqual(fm["read_forbid"], ["nonexistent/x"])
+
+    def test_send_rejects_bad_qa(self):
+        with self.assertRaises(SystemExit) as cm:
+            hb.send("BL-07", None, self._spec(qa="pytest"), "b", self.cfg)
+        self.assertIn("qa", str(cm.exception))
+
+    def test_send_rejects_non_repo_project(self):
+        sub = self.apex / "grp"; sub.mkdir(); (sub / "CLAUDE.md").write_text("---\nroot: true\n---\n")
+        with self.assertRaises(SystemExit) as cm:
+            hb.send("BL-07", str(sub), self._spec(write_scope=[]), "b", self.cfg)   # grp is not its own repo
+        self.assertIn("not the top level", str(cm.exception))
+
+    def test_parse_item_flags_loose_god_without_write_scope(self):
+        p = self.s.approve()
+        fm, body, _ = hb.parse_item(p)
+        fm["autonomy"] = "god"; fm["write_scope"] = []; p.write_text(hb.render_item(fm, body))
+        self.assertTrue(any("write_scope" in e for e in hb.parse_item(p)[2]))     # pop gate backstops hand-edits
+
+    def test_send_defaults_to_caller_root(self):
+        child = self.apex / "sub"; child.mkdir(); (child / "CLAUDE.md").write_text("---\nroot: true\n---\n")
+        orig = os.getcwd()
+        try:
+            os.chdir(child)
+            self.assertEqual(hb.caller_root(), child.resolve())                   # #8: "here", not apex
+        finally:
+            os.chdir(orig)
+
+    def test_autonomy_of_consults_cfg(self):
+        self.assertEqual(hb.autonomy_of({}, {"autonomy": "strict"}), "strict")    # #15 read-side honors cfg
+        self.assertEqual(hb.autonomy_of({}, {}), "bounded")
+        self.assertEqual(hb.autonomy_of({"autonomy": "god"}, {"autonomy": "strict"}), "god")
+
+    def test_autonomy_rule_covers_all_levels(self):
+        self.assertEqual(set(runner.AUTONOMY_RULE), set(hb.AUTONOMY_LEVELS))      # #6: no missing/silent level
+
+    def test_render_prompt_each_level_serves_its_own_rule(self):
+        sig = {"strict": "halt on ANY fork", "bounded": "ONLY if it stays inside the contract",
+               "loose": "NOT in the forbid list", "god": "redefining the"}
+        for lvl, phrase in sig.items():
+            p = hb.send(f"BL-{lvl}", None, self._spec(autonomy=lvl, forbid=["x"]), "b", self.cfg)
+            fm, body, _ = hb.parse_item(p)
+            prov = {"branch": "b", "base_sha": "s", "sandbox": self.apex / "sb", "resumed": False}
+            txt = runner.render_prompt(self.cfg, prov, self.apex, self.apex, fm, body)
+            self.assertIn(phrase, txt, lvl)
+            # a DIFFERENT level's signature must be absent — proves the rule isn't static prompt text
+            other = "halt on ANY fork" if lvl != "strict" else "redefining the"
+            self.assertNotIn(other, txt, f"{lvl} leaked another level's rule")
+
+    def test_render_prompt_escapes_field_injection(self):
+        # a forbid entry holding a literal {{ITEM_BODY}} must NOT be expanded to the body
+        p = hb.send("BL-07", None, self._spec(forbid=["{{ITEM_BODY}}"]), "SECRET-BRIEF-TEXT", self.cfg)
+        fm, body, _ = hb.parse_item(p)
+        prov = {"branch": "b", "base_sha": "s", "sandbox": self.apex / "sb", "resumed": False}
+        txt = runner.render_prompt(self.cfg, prov, self.apex, self.apex, fm, body)
+        forbid_line = [ln for ln in txt.splitlines() if "ITEM_BODY" in ln]
+        self.assertTrue(forbid_line)                                             # the literal survives, escaped
+        self.assertNotIn("SECRET-BRIEF-TEXT", forbid_line[0])                    # body did NOT leak into forbid
+
+    def test_scope_gate_uses_commit_union_not_endpoint(self):
+        def g(*a): return sh("git", "-C", str(self.apex), "-c", "user.name=t", "-c", "user.email=t@t", *a)
+        base = g("rev-parse", "main").stdout.strip()
+        g("checkout", "-qb", "unionbr")
+        (self.apex / "OFFSCOPE.md").write_text("x\n"); g("add", "-f", "OFFSCOPE.md"); g("commit", "-qm", "add off")
+        (self.apex / "OFFSCOPE.md").unlink(); g("add", "-A"); g("commit", "-qm", "remove off")
+        endpoint = [x for x in g("diff", "-z", "--name-only", f"{base}..unionbr").stdout.split("\0") if x]
+        union = sorted({x for x in g("log", "-z", "--format=", "--name-only", f"{base}..unionbr").stdout.split("\0") if x})
+        g("checkout", "-q", "main")
+        self.assertNotIn("OFFSCOPE.md", endpoint)                                # endpoint diff misses it
+        self.assertIn("OFFSCOPE.md", union)                                      # union (what run() uses) catches it
+        self.assertEqual(runner.scope_breach(union, ["src"]), ["OFFSCOPE.md"])   # so the gate sees the breach
 
 
 if __name__ == "__main__":
