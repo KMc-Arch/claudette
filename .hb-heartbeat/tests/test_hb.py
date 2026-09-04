@@ -834,7 +834,7 @@ class TestRunner(Base):
     def test_scope_breach_withholds_publish(self):
         os.environ["HB_FAKE_MODE"] = "converged"
         p = self.s.approve()
-        fm, body, _ = hb.parse_item(p); fm["scope"] = [".codex"]; p.write_text(hb.render_item(fm, body))
+        fm, body, _ = hb.parse_item(p); fm["write_scope"] = [".codex"]; p.write_text(hb.render_item(fm, body))
         c = self._claim(); e = runner.run(c, self.cfg)
         self.assertFalse(e["pushed"])
         oc = (hb.inbox(self.apex) / "BL-07" / "outcome.md").read_text()
@@ -844,6 +844,23 @@ class TestRunner(Base):
         self.assertEqual(runner.classify({"timed_out": True}, {"terminus": "converged", "qa_result": "converged"}), ("cap", "converged"))
         self.assertEqual(runner.classify({"is_error": True, "result": "usage limit reached"}, {"terminus": "converged"}), ("quota", "n/a"))
         self.assertEqual(runner.classify({}, {"terminus": "converged", "qa_result": "held"}), ("converged", "held"))
+
+    def test_classify_blocked_on_decision_expected_only_on_clean_exit(self):
+        self.assertEqual(runner.classify({"returncode": 0}, {"terminus": "blocked-on-decision", "qa_result": "n/a"}),
+                         ("blocked-on-decision", "n/a"))
+        # a crashed/errored process cannot self-declare a clean hand-back
+        self.assertEqual(runner.classify({"is_error": True}, {"terminus": "blocked-on-decision"}), ("unexpected", "n/a"))
+
+    def test_blocked_on_decision_consumes_and_publishes(self):
+        os.environ["HB_FAKE_MODE"] = "blocked"
+        self.s.approve(); c = self._claim(); e = runner.run(c, self.cfg)
+        self.assertEqual(e["terminus"], "blocked-on-decision")
+        self.assertEqual(self.flag()["status"], "go")                          # expected terminus -> inflight->go
+        self.assertFalse((hb.outbox(self.apex) / "BL-07.md").exists())         # item consumed, NOT retried
+        self.assertFalse((hb.outbox(self.apex) / "inflight" / "BL-07.md").exists())
+        oc = (hb.inbox(self.apex) / "BL-07" / "outcome.md").read_text()
+        self.assertIn("blocked-on-decision", oc); self.assertIn("## Decisions", oc)
+        self.assertTrue(e["pushed"])                                           # has commits -> published like any expected terminus
 
     def test_requeue_or_fail_threshold_on_runner_paths(self):
         p = self.s.approve()
@@ -1139,6 +1156,93 @@ class TestContainmentAndEvidence(Base):
                                          {"terminus": "converged"})[0], "converged")
         self.assertEqual(runner.classify({"returncode": -15, "is_error": True, "timed_out": True},
                                          {"terminus": "converged"})[0], "cap")
+
+
+# ── /hb-send planner: item schema, autonomy, deterministic writer ─────
+
+class TestSendPlanner(Base):
+    def _spec(self, **kw):
+        base = {"objective": "do the thing", "acceptance": ["it works"],
+                "write_scope": [".state/work"], "read_scope": [".state"]}
+        base.update(kw)
+        return base
+
+    def test_send_writes_valid_item_recipient_auto(self):
+        p = hb.send("BL-07", None, self._spec(priority=7, autonomy="loose", forbid=["never touch the schema"]),
+                    "cold-reader brief", self.cfg)
+        fm, body, errs = hb.parse_item(p)
+        self.assertEqual(errs, [])
+        self.assertEqual(fm["recipient"], "hb")                 # auto-derived, never in the spec
+        self.assertEqual(fm["status"], "approved")
+        self.assertEqual((fm["autonomy"], fm["priority"]), ("loose", 7))
+        self.assertEqual(fm["write_scope"], [".state/work"])
+        self.assertEqual(body.strip(), "cold-reader brief")
+
+    def test_send_defaults_autonomy_bounded(self):
+        p = hb.send("BL-07", None, self._spec(), "b", self.cfg)
+        self.assertEqual(hb.parse_item(p)[0]["autonomy"], "bounded")
+
+    def test_send_rejects_bad_autonomy(self):
+        with self.assertRaises(SystemExit) as cm:
+            hb.send("BL-07", None, self._spec(autonomy="wild"), "b", self.cfg)
+        self.assertIn("autonomy", str(cm.exception))
+
+    def test_send_rejects_missing_scope_path(self):
+        with self.assertRaises(SystemExit) as cm:
+            hb.send("BL-07", None, self._spec(write_scope=["nope/ghost.py"]), "b", self.cfg)
+        self.assertIn("do not exist", str(cm.exception))
+
+    def test_send_refuses_plumbing_keys(self):
+        with self.assertRaises(SystemExit) as cm:
+            hb.send("BL-07", None, self._spec(sender="evil", status="approved"), "b", self.cfg)
+        self.assertIn("unknown spec keys", str(cm.exception))
+
+    def test_send_dedupes(self):
+        hb.send("BL-07", None, self._spec(), "b", self.cfg)
+        with self.assertRaises(SystemExit) as cm:
+            hb.send("BL-07", None, self._spec(), "b", self.cfg)
+        self.assertIn("already queued", str(cm.exception))
+
+    def test_send_loose_without_forbid_warns_not_blocks(self):
+        p = hb.send("BL-07", None, self._spec(autonomy="loose"), "b", self.cfg)
+        self.assertTrue(p.exists())
+        self.assertIn("empty forbid", hb.LOG.read_text())
+
+    def test_send_cli_roundtrip(self):
+        f = hb.STATE / "spec.yaml"; hb.STATE.mkdir(exist_ok=True)
+        spec = self._spec(autonomy="strict", brief="the brief")
+        f.write_text(hb.dump_yaml(spec), encoding="utf-8")
+        self.assertEqual(hb.main(["send", "BL-07", "--spec", str(f)]), 0)
+        fm, body, errs = hb.parse_item(hb.outbox(self.apex) / "BL-07.md")
+        self.assertEqual(errs, [])
+        self.assertEqual(fm["autonomy"], "strict")
+        self.assertEqual(body.strip(), "the brief")
+
+    def test_parse_item_validates_autonomy_and_list_fields(self):
+        p = self.s.approve()
+        fm, body, _ = hb.parse_item(p)
+        fm["autonomy"] = "nope"; p.write_text(hb.render_item(fm, body))
+        self.assertTrue(any("autonomy" in e for e in hb.parse_item(p)[2]))
+        fm["autonomy"] = "god"; fm["forbid"] = "not a list"; p.write_text(hb.render_item(fm, body))
+        errs = hb.parse_item(p)[2]
+        self.assertTrue(any("forbid must be a list" in e for e in errs))
+        self.assertFalse(any("autonomy" in e for e in errs))            # god is valid
+
+    def test_write_scope_alias_and_default(self):
+        self.assertEqual(hb.write_scope_of({"scope": ["a"]}), ["a"])            # pre-split alias
+        self.assertEqual(hb.write_scope_of({"write_scope": ["b"], "scope": ["a"]}), ["b"])
+        self.assertEqual(hb.write_scope_of({}), [])
+
+    def test_render_prompt_carries_autonomy_block(self):
+        p = hb.send("BL-07", None, self._spec(autonomy="god", forbid=["never touch the schema"]), "brief text", self.cfg)
+        fm, body, _ = hb.parse_item(p)
+        prov = {"branch": "hb/BL-07", "base_sha": "abc0000", "sandbox": self.apex / "sb", "resumed": False}
+        txt = runner.render_prompt(self.cfg, prov, self.apex, self.apex, fm, body)
+        self.assertNotIn("{{", txt)                                            # fully rendered
+        self.assertIn("Autonomy: god", txt)
+        self.assertIn("never touch the schema", txt)
+        self.assertIn("commit the current good state first", txt)             # checkpoint protocol present
+        self.assertIn("blocked-on-decision", txt)
 
 
 if __name__ == "__main__":

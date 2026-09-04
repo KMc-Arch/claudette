@@ -4,6 +4,7 @@
 argv: SANDBOX PROMPT_FILE. Behaviour via HB_FAKE_MODE:
   converged  (default) commit a file on the branch, write RESULT/{outcome,context,state}.md, print ok envelope
   exhausted  same but terminus: exhausted / qa_result: exhausted
+  blocked    same but terminus: blocked-on-decision / qa_result: n/a (an expected hand-back)
   none       do work, write NO RESULT, print ok envelope           -> runner classifies "unexpected"
   quota      print error envelope mentioning a rate limit           -> runner classifies "quota"
   sleep      sleep past the cap (caller sets CBOOT_EXEC_TIMEOUT)     -> "cap"
@@ -64,9 +65,10 @@ if bl.exists():
 if mode == "none":
     envelope(); sys.exit(0)
 
-term = "exhausted" if mode == "exhausted" else "converged"
+term = {"exhausted": "exhausted", "blocked": "blocked-on-decision"}.get(mode, "converged")
+qa = {"exhausted": "exhausted", "blocked": "n/a"}.get(mode, "converged")
 result_dir.mkdir(parents=True, exist_ok=True)
-(result_dir / "outcome.md").write_text(f"---\nitem_id: {os.environ.get('HB_ITEM_ID')}\nterminus: {term}\nqa_result: {term}\npr: null\nsummary: fake\n---\nFake worker did fake work.\n", encoding="utf-8")
+(result_dir / "outcome.md").write_text(f"---\nitem_id: {os.environ.get('HB_ITEM_ID')}\nterminus: {term}\nqa_result: {qa}\npr: null\nsummary: fake\n---\nFake worker did fake work.\n\n## Decisions\nnone\n", encoding="utf-8")
 (result_dir / "context.md").write_text("fake context\n", encoding="utf-8")
 (result_dir / "state.md").write_text("fake state\n", encoding="utf-8")
 envelope()

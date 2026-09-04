@@ -34,7 +34,7 @@ These are absolute. Any implementation that violates one is wrong.
 - Nested orchestration (depth lives in the queue, not the call stack)
 - Automated merge, push, or PR creation
 - Cross-night learning outside the message channel
-- Sentinel-file ingestion (see §12 — deferred, not cancelled)
+- Sentinel-file ingestion (RESOLVED, not built — the planner's output is the flag; see §9 / §12 O2)
 
 ---
 
@@ -300,21 +300,30 @@ the thing the whole design exists to prevent.
 
 ---
 
-## 9. Planner (prerequisite)
+## 9. Planner (BUILT — `/hb-send`)
 
 The nightly harness only ever touches **approved** items. Raw backlog is
 noisy and under-specified; an unattended agent will do the easy wrong things
 first.
 
-- Raw backlog items pass through a planner to become approved features.
-- Approval is a flag you set (`auto: ok` or equivalent) during waking hours.
-- Only approved items enter `outbox/`.
+- Raw backlog items pass through a planner to become approved work-orders.
 - One-liners do not become features without bundling. This is also what keeps
   heavy QA (§10.3) from being wasted on trivia.
 
-**The planner is out of scope for HB v1** but is a hard dependency for the
-`outbox/` to be non-empty. Build order: planner first, or hand-approve one
-item for night one.
+**The planner is `/hb-send`** (`.codex/explicit/hb-send/start.md`) — a waking-hours,
+human-gated command run from inside the target project. It vets one or more backlog
+lines for *definitional solvency* (mechanical checks: id exists, scope paths exist,
+not already queued; judgment checks: bounded objective, self-checkable acceptance,
+declared write_scope, no open decisions), interrogates the gaps, drafts the
+cold-reader brief, sets the autonomy envelope (§10.7), and — on human confirm —
+writes the item via the deterministic `hb.py send` writer.
+
+**The planner's output IS the flag.** There is no separate "I have work" sentinel
+(O2 is resolved this way, not built): the only way an item reaches `~outbox/hb/` is
+`/hb-send`, and its presence there is the raised flag. Participation is by-use —
+a project is an HB participant iff someone has planned an item into it — so there is
+no separate opt-in registry. `hb.py approve` remains as the quick night-one stopgap
+(copies a backlog section with default attributes); `/hb-send` is the real planner.
 
 ---
 
@@ -357,8 +366,16 @@ It does not evaluate the quality of what happened inside. Sub-agent outcomes
 | mileqa converged | yes | `inflight → go` |
 | mileqa exhausted | yes | `inflight → go` |
 | iteration cap hit | yes | `inflight → go` |
+| **blocked-on-decision** | **yes** — see §10.7 | `inflight → go` |
 | **quota exhausted** | **NO** — see §11.3 | `inflight → absent` |
 | anything else | no | leave corpse; sweep handles |
+
+`blocked-on-decision` is a deliberate, clean hand-back: the worker hit a fork above its autonomy
+envelope (§10.4) and stopped rather than guess. It is EXPECTED — the item is consumed (not retried;
+retry would meet the same fork) and its branch + decision ledger are delivered to the human, who
+resolves the decision and re-sends. It publishes (branch/PR) if it made checkpoint commits. Only a
+worker that exited clean may declare it; a crash claiming `blocked-on-decision` still takes the corpse
+path.
 
 Do not enumerate outcome types in the control path beyond this table. QA
 exhaustion is a legitimate terminus with a bad payload — the payload
@@ -402,6 +419,34 @@ Requirements:
 | Bad | Prune the branch, or return the item to backlog for a fix in a later round. |
 
 Either path: sandbox state never becomes real.
+
+### 10.7 Decision authority (the autonomy envelope)
+
+"Zero decisions left" is aspirational: some forks only appear mid-attempt (a named function is
+missing, two implementations both fit, the fix wants a file outside write_scope). So the worker
+carries a bounded envelope instead of a pretence, set per item by `/hb-send`:
+
+| `autonomy` | at an unforeseen fork the worker may… |
+|---|---|
+| `strict` | halt on ANY fork with >1 reasonable answer |
+| `bounded` *(default)* | resolve forks INSIDE the contract (within write_scope, no interface/schema/dependency change, no objective change); halt on anything crossing it |
+| `loose` | make any decision NOT in `forbid` (denylist-shaped — needs `forbid` to bite) |
+| `god` | make ANY decision, including redefining the path/objective |
+
+Three orthogonal layers, and only the first is `autonomy`:
+
+- **`autonomy`** decides *when the worker halts to ask* (→ `blocked-on-decision`, §10.2).
+- **Checkpoint-commit** decides *how it explores*: before each autonomous attempt it commits the
+  current green state (message = the decision), attempts, self-checks, and on a regress
+  `git reset --hard`s back and either tries the one alternative or hands back. The commit history is
+  the decision ledger; the outcome's `## Decisions` block summarises it.
+- **The structural fence** decides *what it can never do, at any level*: no git/gh credentials,
+  scrub-before-push, write_scope → withheld push, the time cap, human PR review. `god` removes the
+  behavioural halt, NOT the fence — it is safe only in a disposable/low-blast-radius project.
+
+The worker brief (`prompt-worker.md`) renders the rule for the item's level. A worker that halts on a
+genuine decision, or finds the premise false, has had a good night — that is the hand-back, not a
+failure.
 
 ---
 
@@ -489,7 +534,7 @@ Carried deliberately, not forgotten:
 | # | Item |
 |---|------|
 | O1 | **Window close vs in-flight orchestrator.** Kill mid-item, or let it finish and revoke after? Not decided. |
-| O2 | **Sentinel-file ingestion.** The original trigger concept — projects drop a dirty-bit file. Deferred, not cancelled. Needs reconciling with backlog-pop as a second ingestion path. |
+| O2 | **Sentinel-file ingestion — RESOLVED (2026-09-04), not built.** The original trigger concept was a separate dirty-bit a project drops. Collapsed instead: `/hb-send` (§9) produces the outbox item, and the item's presence IS the flag. One ingestion path, not two — nothing to reconcile. |
 | O3 | **Sandbox→live branch return mechanism.** Sandbox as a git remote of live, or shared bare repo. Unspecified. |
 | O4 | **Item N conflicting with item N-1.** Fresh pull per item means item 2 cannot see item 1's unapproved branch — correct, but they can produce conflicting diffs reviewed blind. |
 | O5 | **Positive "ran and did nothing" signal.** A week of no runs currently looks identical to a week of quiet nights. |

@@ -13,7 +13,7 @@ writes:
 Thin shim. Everything Heartbeat lives in `^/.hb-heartbeat/` — read `^/.hb-heartbeat/start.md` and follow it.
 
 ```
-python3 ^/.hb-heartbeat/hb.py status | approve <ID> [--project P] [--priority 0-9] | kill | install [--dry-run] | summary
+python3 ^/.hb-heartbeat/hb.py status | send <ID> --spec F [--body F] [--project P] | approve <ID> [--project P] [--priority 0-9] | kill | install [--dry-run] | summary
 python3 ^/.hb-heartbeat/hb.py run                              # session-driven, apex-only: process ONE item now
 python3 ^/.hb-heartbeat/hb.py loop start [--interval S] | stop | status   # detached ticker (default 1h); non-persistent
 ```

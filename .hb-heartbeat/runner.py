@@ -297,9 +297,31 @@ def provision(cfg: dict, project: Path, item_id: str, fm: dict) -> dict:
     return {"sandbox": sandbox, "branch": branch, "base_sha": base_sha, "resumed": exists}
 
 
+AUTONOMY_RULE = {
+    "strict": "STRICT — halt on ANY fork with more than one reasonable answer. Do not choose: "
+              "stop and hand back (terminus: blocked-on-decision) with the fork recorded.",
+    "bounded": "BOUNDED (default) — you MAY resolve a fork yourself ONLY if it stays inside the "
+               "contract: within write_scope, changes no public interface / schema / dependency, "
+               "and does not change the objective. Anything crossing that line → stop and hand "
+               "back (blocked-on-decision). Record every call you make.",
+    "loose": "LOOSE — you MAY make any decision that is NOT in the forbid list below (and stays "
+             "within write_scope and the structural rules). Completion beats perfection here. "
+             "Record every call. Hand back (blocked-on-decision) only for a forbidden fork.",
+    "god": "GOD — you MAY make ANY decision, including redefining the path or the objective, to "
+           "reach a done state; seeing it done at all is the value. The STRUCTURAL limits still "
+           "bind (no credentials, scrub, write_scope, time cap, human review): you cannot merge, "
+           "push outside write_scope, or exceed the cap. Record every significant call.",
+}
+
+
+def _bullets(xs, empty: str) -> str:
+    xs = [str(x) for x in (xs or []) if str(x).strip()]
+    return "\n".join(f"- `{x}`" for x in xs) if xs else empty
+
+
 def render_prompt(cfg: dict, prov: dict, item_root: Path, project: Path, fm: dict, body: str) -> str:
     tpl = (hb.HB / "prompt-worker.md").read_text(encoding="utf-8")
-    scope = fm.get("scope") or []
+    autonomy = hb.autonomy_of(fm)
     # the item body is untrusted-ish human text: neutralize template markers and fence it
     safe_body = body.strip().replace("{{", "{ {").replace("}}", "} }")
     fields = {
@@ -312,7 +334,12 @@ def render_prompt(cfg: dict, prov: dict, item_root: Path, project: Path, fm: dic
         "RESULT_DIR": str(prov["sandbox"] / RESULT_REL),
         "QA": str(fm.get("qa") or cfg.get("qa", "mileqa")),
         "PR": "yes" if (fm.get("pr", cfg.get("pr", True)) not in (False, "false", "no")) else "no",
-        "SCOPE": ("\n".join(f"- `{s}`" for s in scope) if scope else "- (whole repo)"),
+        "WRITE_SCOPE": _bullets(hb.write_scope_of(fm), "- (whole repo)"),
+        "READ_SCOPE": _bullets(fm.get("read_scope"), "- (not restricted — read what you need)"),
+        "AUTONOMY": autonomy,
+        "AUTONOMY_RULE": AUTONOMY_RULE.get(autonomy, AUTONOMY_RULE["bounded"]),
+        "FORBID": _bullets(fm.get("forbid"), "- (none stated)"),
+        "PRE_AUTH": _bullets(fm.get("pre_auth"), "- (none)"),
         "ATTEMPT": str(int(fm.get("attempts", 0)) + 1),
         "RESUMED": "yes — the branch already has commits from a previous attempt; continue, do not restart" if prov["resumed"] else "no",
         "TIME_CAP_MIN": str(item_cap_min(cfg, fm)),
@@ -724,7 +751,7 @@ def run(claim: dict, cfg: dict) -> dict | None:
 
     pub = {"pushed": False, "pr": None, "note": "not published"}
     want_pr = fm.get("pr", cfg.get("pr", True)) not in (False, "false", "no")
-    breach = scope_breach(files, fm.get("scope") or [])
+    breach = scope_breach(files, hb.write_scope_of(fm))
     if terminus in hb.TERMINI_EXPECTED and want_pr and has_commits and breach:
         pub["note"] = f"publish withheld: {len(breach)} file(s) outside the item's scope: {breach[:8]}"
         hb.log(f"item {item_id}: {pub['note']}")

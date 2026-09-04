@@ -1,7 +1,16 @@
 # Heartbeat (HB) — Build Plan (overnight execution)
 
 Source spec: `spec.md` (this folder; moved from `~inbox/HEARTBEAT-SPEC.md` 2026-08-15).
-Status: built overnight 2026-08-15/16 on `feature/hb`; mileqa 3 rounds + 2 codas → **HELD** on BL-44 (user-owned OS-user separation); see `.state/tests/mileqa/20260815-2225/summary.md` and §4 for what is verified live. Not merged, not pushed.
+Status (2026-09-04): the nightly runner/worker path is built, mileqa'd, and pushed (`feature/hb`);
+PR #39 (`hb/BL-07`) merged 2026-08-16. Interactive `run`/`loop` drivers added 2026-08-20. **This
+round (2026-09-04): the planner front-end — `/hb-send` + the item schema (autonomy envelope, read/
+write scope split, forbid/pre_auth, blocked-on-decision terminus, decisions ledger) — is built and
+green (test_hb.py 102/102).** See D16–D21 below. Open blockers remain user-owned: **BL-44** (worker
+runs as OS user KMc → disk-readable gh token; real fix = a dedicated OS user or GitHub identity) and
+Task Scheduler registration (must be run natively). `feature/hb` is 65 commits behind `main` and its
+one full-merge PR (#42) was closed — a reconcile-with-main is owed before it can land. Guard is depth,
+not a boundary (BL-53, documented honestly in `start.md`). `.hb-heartbeat/tmp/` holds gitignored
+scratch.
 
 ---
 
@@ -24,6 +33,17 @@ Status: built overnight 2026-08-15/16 on `feature/hb`; mileqa 3 rounds + 2 codas
 | D13 | code home | **`^/.hb-heartbeat/`** — max content in one git-tracked folder (spec, plan, code, templates, tests, win/); runtime `state/` + `sandbox/` untracked via its own `.gitignore`; `.codex/explicit/hb/start.md` is a 5-line shim so `/hb` exists (user ruling 2026-08-15, superseding `.codex/explicit/hb/`) | one place; portable; `~` mailboxes stay at project roots (children need theirs there) |
 | D14 | permissions | worker gets the apex `settings.local.json` broad allows via `child_propagate` merge (no `--dangerously-skip-permissions`; cboot's passthrough allowlist is `--resume`/`--model` only); hooks fire in headless (verified: hb-guard block message returned by a real worker 2026-08-16) | reuse the mileqa'd dispatch channel as-is |
 | D15 | worker model + bound | per-item `model:` frontmatter, default `sonnet`; wall-clock cap = min(item `time_cap_min`, config `item_cap_min`) via `CBOOT_EXEC_TIMEOUT` + process-group kill (no `--max-turns`: not passable through cboot) | cost; mileqa's 3-round/2-coda cap is real |
+
+### Planner front-end (2026-09-04)
+
+| # | Spec said | Decided | Why |
+|---|---|---|---|
+| D16 | §9 planner out of scope; O2 sentinel deferred, "needs reconciling with backlog-pop as a second ingestion path" | **The planner's output IS the flag.** `/hb-send` produces the outbox item; its presence in `~outbox/hb/` is the raised flag. NO separate sentinel/dirty-bit, NO opt-in registry — one ingestion path. | Deletes O2 by construction; participation is by-use; folds the flag into the step that already runs (no parallel mechanism). |
+| D17 | (planner unspecified) | **`/hb-send`** (`.codex/explicit/hb-send/start.md`): a waking-hours, human-gated, thick planner. Vets *definitional solvency* (mechanical: id/paths/dedupe; judgment: bounded objective, self-checkable acceptance, declared scope, no open decisions), drafts the cold-reader brief, writes via `hb.py send`. Refuses rather than half-send. | Raw backlog is under-specified; a validator can't fix that. A slash command is a Claude turn that can write the brief the no-memory worker needs. |
+| D18 | (single `scope`) | **Split `scope` → `read_scope` (advisory in v1; Read is not guard-enforced) + `write_scope` (structural, = old `scope`).** `scope` kept as a fail-closed alias (`write_scope_of`: either field restricting wins). | Read intent ≠ publish gate; the publish gate must fail closed. |
+| D19 | (§9 "zero decisions") | **Autonomy envelope** `strict\|bounded\|loose\|god` (default `bounded`), per item. Governs only forks the worker meets mid-attempt. `loose`/`god` are denylist-shaped (lean on `forbid`; `send` warns if empty). `god` drops only the behavioural halt, never the structural fence. | "Zero decisions" is a pipe dream — some forks only appear in the attempt. Bound the autonomic allowance instead. |
+| D20 | (§10.2 three expected termini) | **`blocked-on-decision` is a fourth EXPECTED terminus** (inflight→go; consumes the item, not retried; publishes if it has commits; only on a clean exit). Plus the **checkpoint-commit protocol** (commit-before-attempt; reset on regress; commit history = decision ledger) and an outcome `## Decisions` block. | A clean hand-back on an above-envelope fork is a good night, not a corpse. Git is the undo and the audit trail. |
+| D21 | (recipient required, hand-set) | **`recipient: hb` is auto-derived** from the outbox folder by the writer; plumbing keys are not settable via `send`. | Redundant with the folder; auto-deriving removes drift and forgery. |
 
 Deliberately unchanged from spec: I1, I3, I4, I5, I6, I7; §6 detector; §8.4 orphan sweep (attempts ≤3); §10.2 terminus table; §11.3 exhaustion-is-unexpected + dumb diag write; §13 rollout (count cap 1 → 2 → quota-bound). **Extended, not contradicted:** §5.3 gains three runner transitions (quota gate closed pre-pop → inflight→go and retry next tick; queue empty → inflight→absent; tick removes an expired `go`) and a `pid_start` field; §7 tick also touches `state/last-tick` and refuses within `item_cap_min` of close.
 

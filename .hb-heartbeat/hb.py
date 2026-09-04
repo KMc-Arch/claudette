@@ -67,7 +67,21 @@ ROOTS_DB = APEX / ".state" / "roots.db"
 RECIPIENT = "hb"
 REQUIRED_ITEM_FIELDS = ("id", "recipient", "sender", "project", "priority", "status",
                         "approved_by", "approved_at", "attempts")
-TERMINI_EXPECTED = ("converged", "exhausted", "cap")
+# blocked-on-decision is an EXPECTED terminus: a deliberate, clean hand-back when the worker
+# hits a fork above its autonomy envelope (see prompt-worker.md). Like converged/exhausted it
+# consumes the item (inflight -> go) and delivers an outcome for the human; it is NOT retried —
+# the human re-sends with the decision resolved. It publishes (branch/PR) if it has commits.
+TERMINI_EXPECTED = ("converged", "exhausted", "cap", "blocked-on-decision")
+# The worker's in-flight decision envelope (prompt-worker.md renders the rule for each).
+#   strict  — halt on ANY fork with >1 reasonable answer
+#   bounded — resolve forks INSIDE the contract (write_scope, no interface/schema/dep change,
+#             no objective change); halt on anything crossing it       (default)
+#   loose   — allow all decisions NOT in `forbid` (denylist-shaped; needs forbid to bite)
+#   god     — allow ALL decisions; may redefine the path/objective. The STRUCTURAL fence
+#             (no creds, scrub, write_scope, cap, review) still holds — god is safe only in a
+#             disposable/low-blast-radius project, never because the worker is restrained.
+AUTONOMY_LEVELS = ("strict", "bounded", "loose", "god")
+AUTONOMY_DEFAULT = "bounded"
 
 
 # ── time ─────────────────────────────────────────────────────────────
@@ -499,11 +513,35 @@ def parse_item(path: Path) -> tuple[dict, str, list[str]]:
             int(fm["attempts_max"])
         except (TypeError, ValueError):
             errs.append("attempts_max not int")
+    # Semantic fields are OPTIONAL at the pop layer (solvency is a planner concern, not a runtime
+    # gate): an item missing `autonomy` defaults to bounded. Validate only when present, so a
+    # malformed value fails loud instead of silently mis-fencing the worker.
+    autonomy = fm.get("autonomy")
+    if autonomy is not None and str(autonomy).strip().lower() not in AUTONOMY_LEVELS:
+        errs.append(f"autonomy {autonomy!r} not in {AUTONOMY_LEVELS}")
+    for lf in ("read_scope", "write_scope", "scope", "forbid", "pre_auth", "acceptance"):
+        v = fm.get(lf)
+        if v is not None and not isinstance(v, list):
+            errs.append(f"{lf} must be a list")
     return fm, m.group(2), errs
 
 
 def render_item(fm: dict, body: str) -> str:
     return "---\n" + dump_yaml(fm) + "---\n" + body.lstrip("\n")
+
+
+def write_scope_of(fm: dict) -> list:
+    """The publish/modify allowlist (structurally enforced: commits outside it are not pushed).
+    `write_scope` is canonical; `scope` is the pre-split alias, honored whenever write_scope carries
+    no restriction. For a publish GATE, either field restricting fails closed — an empty write_scope
+    (which the writer always emits) must not silently shadow a populated legacy `scope`."""
+    return fm.get("write_scope") or fm.get("scope") or []
+
+
+def autonomy_of(fm: dict) -> str:
+    """The worker's in-flight decision envelope; absent/blank -> the default (bounded)."""
+    a = str(fm.get("autonomy") or "").strip().lower()
+    return a if a in AUTONOMY_LEVELS else AUTONOMY_DEFAULT
 
 
 def project_root_for(item_root: Path, fm: dict) -> Path:
@@ -727,14 +765,83 @@ def backlog_section(root: Path, item_id: str) -> str | None:
     return m.group(0).rstrip() + "\n" if m else None
 
 
-def approve(item_id: str, project: str | None, priority: int | None, model: str | None,
-            body_file: str | None, cfg: dict) -> Path:
-    root = Path(project).resolve() if project else APEX
-    if not (root / "CLAUDE.md").exists():
-        raise SystemExit(f"not a project root: {root}")
+# Keys /hb-send may set via its spec. Plumbing (id/recipient/sender/project/status/approved_*/
+# attempts/source) is NOT settable — the writer owns it, so a spec can never forge provenance or
+# flip recipient. Field ORDER in _item_defaults is the on-disk order (dump_yaml preserves it).
+SEND_SEMANTIC_KEYS = ("objective", "acceptance", "priority", "model", "qa", "pr",
+                      "time_cap_min", "base", "read_scope", "write_scope", "autonomy",
+                      "forbid", "pre_auth", "depends_on", "tags", "attempts_max")
+
+
+def _git_user(root: Path) -> str:
+    try:
+        return subprocess.run(["git", "-C", str(root), "config", "user.name"],
+                              capture_output=True, text=True, check=False).stdout.strip()
+    except OSError:
+        return ""
+
+
+def _approver(root: Path) -> str:
+    return os.environ.get("HB_APPROVED_BY") or _git_user(root) or os.environ.get("USER", "unknown")
+
+
+def _item_defaults(item_id: str, root: Path, who: str, cfg: dict) -> dict:
+    """Every item's frontmatter, in on-disk order: plumbing, contract, boundaries, execution."""
+    return {
+        "id": item_id,
+        "recipient": RECIPIENT,                         # auto-derived from ~outbox/hb/; never hand-set
+        "sender": root.name if root != APEX else "claudette",
+        "project": ".",
+        "priority": 5,
+        "status": "approved",
+        "approved_by": who,
+        "approved_at": iso(now_utc()),
+        "source": f".state/work/backlog.md#{item_id}",
+        "attempts": 0,
+        "attempts_max": cfg.get("attempts_max", 3),
+        # contract — what & done
+        "objective": "",
+        "acceptance": [],
+        "qa": cfg.get("qa", "mileqa"),
+        # boundaries — may touch / may decide
+        "read_scope": [],
+        "write_scope": [],
+        "autonomy": cfg.get("autonomy", AUTONOMY_DEFAULT),
+        "forbid": [],
+        "pre_auth": [],
+        "depends_on": [],
+        # execution — how it runs
+        "model": cfg.get("model", "sonnet"),
+        "time_cap_min": cfg.get("item_cap_min", 90),
+        "base": None,
+        "pr": cfg.get("pr", True),
+        "tags": [],
+    }
+
+
+def _place_item(root: Path, item_id: str, fm: dict, body: str) -> Path:
+    """Dedupe, atomically write, then SELF-VALIDATE by parsing the file back: the writer never
+    leaves behind an item the runner would reject. On any validation error the file is removed."""
     dst = outbox(root) / f"{item_id}.md"
     if dst.exists() or (outbox(root) / "inflight" / f"{item_id}.md").exists():
         raise SystemExit(f"already queued: {dst}")
+    dst.parent.mkdir(parents=True, exist_ok=True)
+    (dst.parent / "inflight").mkdir(exist_ok=True)
+    write_atomic(dst, render_item(fm, body))
+    _, _, errs = parse_item(dst)
+    if errs:
+        dst.unlink(missing_ok=True)
+        raise SystemExit(f"refusing to queue {item_id}: " + "; ".join(errs))
+    return dst
+
+
+def approve(item_id: str, project: str | None, priority: int | None, model: str | None,
+            body_file: str | None, cfg: dict) -> Path:
+    """Quick path: copy a backlog section into an item with default attributes. The richer,
+    interactive planner path is `/hb-send` (-> send()); this stays for the night-one stopgap."""
+    root = Path(project).resolve() if project else APEX
+    if not (root / "CLAUDE.md").exists():
+        raise SystemExit(f"not a project root: {root}")
     if not ID_RE.match(item_id):
         raise SystemExit(f"invalid id {item_id!r}: must match {ID_RE.pattern}")
     if priority is not None:
@@ -749,25 +856,49 @@ def approve(item_id: str, project: str | None, priority: int | None, model: str 
         body = backlog_section(root, item_id)
         if body is None:
             raise SystemExit(f"{item_id} not found in {root}/.state/work/backlog.md — pass --body FILE")
-    who = os.environ.get("HB_APPROVED_BY")
-    if not who:
-        try:
-            who = subprocess.run(["git", "-C", str(root), "config", "user.name"], capture_output=True,
-                                 text=True, check=False).stdout.strip()
-        except OSError:
-            who = ""
-    who = who or os.environ.get("USER", "unknown")
-    fm = {"id": item_id, "recipient": RECIPIENT, "sender": root.name if root != APEX else "claudette",
-          "project": ".", "priority": 5 if priority is None else int(priority), "status": "approved",
-          "approved_by": who, "approved_at": iso(now_utc()),
-          "source": f".state/work/backlog.md#{item_id}", "attempts": 0,
-          "attempts_max": cfg.get("attempts_max", 3), "model": model or cfg.get("model", "sonnet"),
-          "time_cap_min": cfg.get("item_cap_min", 90), "qa": cfg.get("qa", "mileqa"), "pr": cfg.get("pr", True),
-          "base": None, "scope": [], "depends_on": [], "tags": []}
-    dst.parent.mkdir(parents=True, exist_ok=True)
-    (dst.parent / "inflight").mkdir(exist_ok=True)
-    write_atomic(dst, render_item(fm, body))
+    fm = _item_defaults(item_id, root, _approver(root), cfg)
+    if priority is not None:
+        fm["priority"] = int(priority)
+    if model:
+        fm["model"] = model
+    dst = _place_item(root, item_id, fm, body)
     log(f"approved {item_id} -> {dst}")
+    return dst
+
+
+def send(item_id: str, project: str | None, spec: dict, body: str, cfg: dict) -> Path:
+    """The planner's deterministic writer (invoked by /hb-send). Composes an item from a spec of
+    SEND_SEMANTIC_KEYS over the defaults, owns the plumbing, verifies every read_scope/write_scope
+    path exists in the project (a mechanical solvency check), warns on loose/god with no forbid,
+    and places it self-validated."""
+    root = Path(project).resolve() if project else APEX
+    if not (root / "CLAUDE.md").exists():
+        raise SystemExit(f"not a project root: {root}")
+    if not ID_RE.match(item_id):
+        raise SystemExit(f"invalid id {item_id!r}: must match {ID_RE.pattern}")
+    unknown = [k for k in spec if k not in SEND_SEMANTIC_KEYS]
+    if unknown:
+        raise SystemExit(f"unknown spec keys (plumbing is not settable via send): {unknown}")
+    fm = _item_defaults(item_id, root, _approver(root), cfg)
+    for k in SEND_SEMANTIC_KEYS:
+        if spec.get(k) is not None:
+            fm[k] = spec[k]
+    try:
+        if not 0 <= int(fm["priority"]) <= 9:
+            raise ValueError
+    except (TypeError, ValueError):
+        raise SystemExit("priority must be an integer 0..9")
+    if str(fm.get("autonomy")).strip().lower() not in AUTONOMY_LEVELS:
+        raise SystemExit(f"autonomy must be one of {AUTONOMY_LEVELS}")
+    missing = [str(s) for s in (list(fm.get("read_scope") or []) + list(write_scope_of(fm)))
+               if not (root / str(s)).exists()]
+    if missing:
+        raise SystemExit(f"scope path(s) do not exist in {root.name}: {missing}")
+    if autonomy_of(fm) in ("loose", "god") and not (fm.get("forbid") or []):
+        log(f"WARN {item_id}: autonomy={autonomy_of(fm)} with an empty forbid list — "
+            f"loose/god is ~unfenced here; consider adding forbid entries")
+    dst = _place_item(root, item_id, fm, body)
+    log(f"sent {item_id} ({autonomy_of(fm)}) -> {dst}")
     return dst
 
 
@@ -1314,6 +1445,33 @@ def main(argv: list[str]) -> int:
                 i += 1
         p = approve(rest[0], opts.get("project"), opts.get("priority"), opts.get("model"), opts.get("body"), cfg)
         print(p)
+        return 0
+    if cmd == "send":
+        if not rest:
+            print("usage: hb.py send <ID> --spec FILE [--body FILE] [--project P]", file=sys.stderr); return 2
+        opts = {}
+        i = 1
+        while i < len(rest):
+            if rest[i] in ("--spec", "--body", "--project") and i + 1 < len(rest):
+                opts[rest[i][2:]] = rest[i + 1]; i += 2
+            else:
+                i += 1
+        if "spec" not in opts:
+            print("hb.py send: --spec FILE required (yaml of item attributes)", file=sys.stderr); return 2
+        try:
+            spec = yaml.safe_load(Path(opts["spec"]).read_text(encoding="utf-8")) or {}
+        except (OSError, yaml.YAMLError) as e:
+            print(f"hb.py send: cannot read --spec: {e}", file=sys.stderr); return 2
+        if not isinstance(spec, dict):
+            print("hb.py send: --spec must be a yaml mapping", file=sys.stderr); return 2
+        brief = spec.pop("brief", "")                       # the md body may ride in the spec or a --body file
+        try:
+            body = Path(opts["body"]).read_text(encoding="utf-8") if "body" in opts else str(brief or "")
+        except OSError as e:
+            print(f"hb.py send: cannot read --body: {e}", file=sys.stderr); return 2
+        if not body.strip():
+            print("hb.py send: a brief is required (--body FILE or `brief:` in the spec)", file=sys.stderr); return 2
+        print(send(rest[0], opts.get("project"), spec, body, cfg))
         return 0
     if cmd == "status":
         print(status(cfg)); return 0

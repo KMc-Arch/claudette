@@ -32,10 +32,20 @@ sandboxed *worker* and never touches the flag or the queues.
 | `state/` | runtime (untracked): `GO`, `night.json`, `quota.json`, `last-tick`, `diag/`, `log/hb.log` — see `state/start.md` |
 | `sandbox/<ITEM>/` | runtime worktrees (untracked); removed after harvest, kept only on an unexpected terminus |
 
+## Getting work into the queue
+
+**`/hb-send`** is the planner (`.codex/explicit/hb-send/start.md`): run it in waking hours from inside
+the target project, hand it a backlog id (or a bundle), and it vets the item for *definitional
+solvency*, fills the gaps with you, sets the autonomy envelope, and — on your confirm — writes it to
+`~outbox/hb/` via `hb.py send`. The item's presence there IS the flag; there is no separate opt-in or
+"I have work" signal. `hb.py approve` below is the quick night-one stopgap (raw backlog copy, default
+attributes).
+
 ## Daily use
 
 ```
-python3 .hb-heartbeat/hb.py approve BL-07 [--priority 0-9] [--project <root>]   # backlog section -> ~outbox/hb/BL-07.md
+python3 .hb-heartbeat/hb.py send BL-07 --spec item.yaml [--project <root>]      # deterministic writer behind /hb-send
+python3 .hb-heartbeat/hb.py approve BL-07 [--priority 0-9] [--project <root>]   # stopgap: backlog section -> ~outbox/hb/BL-07.md
 python3 .hb-heartbeat/hb.py status                                              # flag, tonight, queues, quota
 python3 .hb-heartbeat/hb.py kill                                                # = rm state/GO
 python3 .hb-heartbeat/hb.py window open --force                                 # arm by hand outside the window (plain `open` refuses)
