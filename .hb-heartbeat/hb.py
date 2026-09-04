@@ -348,10 +348,35 @@ def write_night(d: dict) -> None:
     write_atomic(NIGHT, json.dumps(d, indent=2, default=str))
 
 
+# Fields carried from a run entry into the cross-run outcome ledger. Stable across runs so a later
+# web view can render the whole history from one file.
+LEDGER_FIELDS = ("item_id", "root_name", "project", "terminus", "qa_result", "branch", "pushed",
+                 "pr", "base_commit", "head_commit", "files_touched", "attempts", "summary",
+                 "duration_min", "cost_usd", "session_id", "started_at", "finished_at")
+
+
+def append_outcome_ledger(entry: dict) -> None:
+    """Append one stable-schema JSON record per handled item to the apex ~inbox/hb/outcomes.jsonl —
+    the consolidated, cross-run roster of every overnight outcome (the eventual web view's data
+    source). Best-effort: a ledger write must never crash the nightly cycle."""
+    try:
+        rec = {"ts": iso(now_utc()), "night": night_key()}
+        for k in LEDGER_FIELDS:
+            if k in entry:
+                rec[k] = entry[k]
+        path = inbox(APEX) / "outcomes.jsonl"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with open(path, "a", encoding="utf-8") as f:
+            f.write(json.dumps(rec, ensure_ascii=False) + "\n")
+    except (OSError, ValueError) as e:
+        log(f"WARN outcome ledger append failed: {e}")
+
+
 def night_add_run(entry: dict) -> None:
     n = read_night()
     n.setdefault("runs", []).append(entry)
     write_night(n)
+    append_outcome_ledger(entry)                        # cross-run roster in ~inbox/hb/outcomes.jsonl
 
 
 def night_note(msg: str) -> None:
@@ -785,6 +810,17 @@ def _approver(root: Path) -> str:
     return os.environ.get("HB_APPROVED_BY") or _git_user(root) or os.environ.get("USER", "unknown")
 
 
+def _refuse_in_sandbox(action: str) -> None:
+    """Structural anti-self-queue (I7 / spec §8.6: 'closing the loop with no human in it is the thing
+    the whole design exists to prevent'). The runner sets HB_SANDBOX only in the worker's env
+    (runner.worker_env), so its presence means we are inside a worker — a worker must never queue or
+    approve work. A worker that deliberately unsets HB_SANDBOX in-process defeats this (the BL-53
+    ceiling), but it raises the bar from a prose rule to an env gate that the obvious routes trip."""
+    if os.environ.get("HB_SANDBOX"):
+        raise SystemExit(f"refusing to {action} from inside a Heartbeat worker sandbox "
+                         f"(HB_SANDBOX set) — the worker is never a state actor")
+
+
 def _item_defaults(item_id: str, root: Path, who: str, cfg: dict) -> dict:
     """Every item's frontmatter, in on-disk order: plumbing, contract, boundaries, execution."""
     return {
@@ -839,6 +875,7 @@ def approve(item_id: str, project: str | None, priority: int | None, model: str 
             body_file: str | None, cfg: dict) -> Path:
     """Quick path: copy a backlog section into an item with default attributes. The richer,
     interactive planner path is `/hb-send` (-> send()); this stays for the night-one stopgap."""
+    _refuse_in_sandbox("approve")
     root = Path(project).resolve() if project else APEX
     if not (root / "CLAUDE.md").exists():
         raise SystemExit(f"not a project root: {root}")
@@ -866,11 +903,34 @@ def approve(item_id: str, project: str | None, priority: int | None, model: str 
     return dst
 
 
+def _scope_errors(root: Path, entries: list) -> list:
+    """Each scope entry must be a relative, ..-free path that exists and resolves inside root. An
+    absolute or ..-walking entry passes a naive exists() (root/'/etc' -> /etc) yet never prefix-
+    matches a relative git path in scope_breach — a silent, permanent withheld-publish. Reject it."""
+    errs = []
+    for s in entries:
+        s = str(s)
+        p = Path(s)
+        if p.is_absolute() or ".." in p.parts:
+            errs.append(f"{s!r} must be a relative path with no '..'")
+            continue
+        target = root / p
+        if not target.exists():
+            errs.append(f"{s!r} does not exist in {root.name}")
+            continue
+        try:
+            target.resolve().relative_to(root.resolve())
+        except ValueError:
+            errs.append(f"{s!r} resolves outside {root.name}")
+    return errs
+
+
 def send(item_id: str, project: str | None, spec: dict, body: str, cfg: dict) -> Path:
     """The planner's deterministic writer (invoked by /hb-send). Composes an item from a spec of
-    SEND_SEMANTIC_KEYS over the defaults, owns the plumbing, verifies every read_scope/write_scope
-    path exists in the project (a mechanical solvency check), warns on loose/god with no forbid,
-    and places it self-validated."""
+    SEND_SEMANTIC_KEYS over the defaults, owns the plumbing, mechanically enforces the solvency bar it
+    can (objective + acceptance present; scope paths relative/../-free/inside-root), hard-fails
+    loose/god with no stated write_scope, and places it self-validated."""
+    _refuse_in_sandbox("send")
     root = Path(project).resolve() if project else APEX
     if not (root / "CLAUDE.md").exists():
         raise SystemExit(f"not a project root: {root}")
@@ -890,15 +950,26 @@ def send(item_id: str, project: str | None, spec: dict, body: str, cfg: dict) ->
         raise SystemExit("priority must be an integer 0..9")
     if str(fm.get("autonomy")).strip().lower() not in AUTONOMY_LEVELS:
         raise SystemExit(f"autonomy must be one of {AUTONOMY_LEVELS}")
-    missing = [str(s) for s in (list(fm.get("read_scope") or []) + list(write_scope_of(fm)))
-               if not (root / str(s)).exists()]
-    if missing:
-        raise SystemExit(f"scope path(s) do not exist in {root.name}: {missing}")
-    if autonomy_of(fm) in ("loose", "god") and not (fm.get("forbid") or []):
-        log(f"WARN {item_id}: autonomy={autonomy_of(fm)} with an empty forbid list — "
-            f"loose/god is ~unfenced here; consider adding forbid entries")
+    # solvency, mechanically enforced: the two fields that DEFINE a solvent item get the same
+    # deterministic backstop every other check has — not left to the /hb-send prose alone.
+    if not str(fm.get("objective") or "").strip():
+        raise SystemExit("objective is required: one bounded, self-contained outcome")
+    if not (fm.get("acceptance") or []):
+        raise SystemExit("acceptance is required: at least one criterion the worker can self-check")
+    scope_errs = _scope_errors(root, list(fm.get("read_scope") or []) + list(write_scope_of(fm)))
+    if scope_errs:
+        raise SystemExit("bad scope path(s): " + "; ".join(scope_errs))
+    lvl = autonomy_of(fm)
+    if lvl in ("loose", "god"):
+        # loose/god widen DECISION latitude; the stated write_scope is the publish boundary that
+        # still binds them. An empty write_scope means whole-repo — refuse to pair that with the
+        # widest decision envelopes (user ruling: bound god, do not merely warn).
+        if not write_scope_of(fm):
+            raise SystemExit(f"autonomy={lvl} requires a non-empty write_scope (a stated publish boundary)")
+        if not (fm.get("forbid") or []):
+            log(f"WARN {item_id}: autonomy={lvl} with an empty forbid list — the denylist it leans on is empty")
     dst = _place_item(root, item_id, fm, body)
-    log(f"sent {item_id} ({autonomy_of(fm)}) -> {dst}")
+    log(f"sent {item_id} ({lvl}) -> {dst}")
     return dst
 
 

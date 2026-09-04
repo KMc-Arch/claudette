@@ -307,10 +307,11 @@ AUTONOMY_RULE = {
     "loose": "LOOSE — you MAY make any decision that is NOT in the forbid list below (and stays "
              "within write_scope and the structural rules). Completion beats perfection here. "
              "Record every call. Hand back (blocked-on-decision) only for a forbidden fork.",
-    "god": "GOD — you MAY make ANY decision, including redefining the path or the objective, to "
-           "reach a done state; seeing it done at all is the value. The STRUCTURAL limits still "
-           "bind (no credentials, scrub, write_scope, time cap, human review): you cannot merge, "
-           "push outside write_scope, or exceed the cap. Record every significant call.",
+    "god": "GOD — you MAY make ANY decision NOT in the forbid list below — including redefining the "
+           "path or the objective — to reach a done state; seeing it done at all is the value. The "
+           "STRUCTURAL limits still bind (no credentials, scrub, write_scope, time cap, human "
+           "review): you cannot merge, push outside write_scope, or exceed the cap. Record every "
+           "significant call.",
 }
 
 
@@ -518,9 +519,13 @@ def classify(env: dict, res_fm: dict) -> tuple[str, str]:
     return "unexpected", qa
 
 
-def publish(cfg: dict, project: Path, prov: dict, item_id: str, res_fm: dict, res_body: str) -> dict:
+def publish(cfg: dict, project: Path, prov: dict, item_id: str, res_fm: dict, res_body: str,
+            open_pr: bool = True) -> dict:
     """RUNNER-side push + PR (the worker has no credentials). The live repo's pre-push hook (scrub) is
-    the push gate; a blocked push is reported, never forced. Returns {pushed, pr, note}."""
+    the push gate; a blocked push is reported, never forced. Returns {pushed, pr, note}. The branch is
+    ALWAYS pushed when there are commits (the ephemeral sandbox is discarded, so an unpushed branch is
+    lost work); a PR is opened only when open_pr is True — the runner reserves that for a converged
+    terminus, so gh never shows an unfinished hand-back as review-ready work."""
     branch = prov["branch"]
     out = {"pushed": False, "pr": None, "note": ""}
     if os.environ.get("HB_NO_PUBLISH"):
@@ -555,6 +560,10 @@ def publish(cfg: dict, project: Path, prov: dict, item_id: str, res_fm: dict, re
         hb.log(f"publish {item_id}: push failed rc={r.returncode}")
         return out
     out["pushed"] = True
+    if not open_pr:
+        out["note"] = "branch pushed; PR withheld (a PR opens only on a converged terminus)"
+        hb.log(f"publish {item_id}: {out['note']}")
+        return out
     existing = pr_url(project, branch, cfg)
     if existing:
         out["pr"] = existing
@@ -756,7 +765,7 @@ def run(claim: dict, cfg: dict) -> dict | None:
         pub["note"] = f"publish withheld: {len(breach)} file(s) outside the item's scope: {breach[:8]}"
         hb.log(f"item {item_id}: {pub['note']}")
     elif terminus in hb.TERMINI_EXPECTED and want_pr and has_commits:
-        pub = publish(cfg, project, prov, item_id, res_fm, res_body)
+        pub = publish(cfg, project, prov, item_id, res_fm, res_body, open_pr=(terminus == "converged"))
     elif terminus in hb.TERMINI_EXPECTED and want_pr and not has_commits:
         pub["note"] = "no commits on the branch — nothing to publish"
     duration_min = round((time.time() - t_start) / 60, 1)
@@ -779,7 +788,7 @@ def run(claim: dict, cfg: dict) -> dict | None:
     state_delta(project, prov["sandbox"], dst)
     entry.update({"terminus": terminus, "qa_result": qa_result, "pr": pub["pr"], "pushed": pub["pushed"], "head_commit": head,
                   "files_touched": len(files), "cost_usd": env.get("cost_usd"), "duration_min": duration_min,
-                  "session_id": env.get("session_id"), "finished_at": hb.iso(hb.now_utc())})
+                  "summary": outcome_fields["summary"], "session_id": env.get("session_id"), "finished_at": hb.iso(hb.now_utc())})
 
     if terminus in hb.TERMINI_EXPECTED:
         shutil.copyfile(inflight_path, dst / "item.md")

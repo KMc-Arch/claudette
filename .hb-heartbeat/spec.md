@@ -298,6 +298,12 @@ Required content:
 orchestrator. This is deliberate — closing the loop with no human in it is
 the thing the whole design exists to prevent.
 
+**The cross-run roster:** every handled item also appends one stable-schema
+JSON record to the apex `~inbox/hb/outcomes.jsonl` (id, root, terminus,
+qa_result, branch, pr, pushed, commits, summary, timestamps). Per-item
+`outcome.md` and per-night summaries stay; this is the append-only history
+across all runs and projects — the data source a later web view renders.
+
 ---
 
 ## 9. Planner (BUILT — `/hb-send`)
@@ -373,9 +379,11 @@ It does not evaluate the quality of what happened inside. Sub-agent outcomes
 `blocked-on-decision` is a deliberate, clean hand-back: the worker hit a fork above its autonomy
 envelope (§10.4) and stopped rather than guess. It is EXPECTED — the item is consumed (not retried;
 retry would meet the same fork) and its branch + decision ledger are delivered to the human, who
-resolves the decision and re-sends. It publishes (branch/PR) if it made checkpoint commits. Only a
-worker that exited clean may declare it; a crash claiming `blocked-on-decision` still takes the corpse
-path.
+resolves the decision and re-sends. It **pushes its branch** if it made checkpoint commits (the
+sandbox is ephemeral — an unpushed branch is lost work) but opens **no PR**: a PR is reserved for a
+`converged` terminus (§10.6), so an unfinished hand-back never appears in the PR list as review-ready
+work. Only a worker that exited clean may declare it; a crash claiming `blocked-on-decision` still
+takes the corpse path.
 
 Do not enumerate outcome types in the control path beyond this table. QA
 exhaustion is a legitimate terminus with a bad payload — the payload

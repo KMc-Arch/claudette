@@ -43,8 +43,10 @@ A worker that halts on a genuine decision, or discovers the premise is false ("t
 
 1. Commit **only** on `{{BRANCH}}`. Do not touch `main`, other branches, or the live tree. The structural control is that you hold no git/gh credentials and the runner publishes for you; the command guard is a second layer, not a guarantee.
 2. **You have no git or gh credentials, by design.** Do not push. Do not create, merge, close, or touch PRs. When you
-   finish, the runner pushes `{{BRANCH}}` and opens the PR for you (push+PR = **{{PR}}**), gated by the repo's scrub
-   pre-push hook. If you want early feedback, you may run scrub yourself: read `.codex/explicit/scrub/start.md`.
+   finish, the runner pushes `{{BRANCH}}` (push = **{{PR}}**), gated by the repo's scrub pre-push hook. It opens a PR
+   **only on a converged terminus**; a `blocked-on-decision` (or exhausted/cap) hand-back pushes the branch without a
+   PR — your outcome + decision ledger is the surface. If you want early feedback, you may run scrub yourself: read
+   `.codex/explicit/scrub/start.md`.
 3. Read `.codex/start.md` and the folder `start.md`s you touch, as always. Governance applies in full.
 4. Do the item below to its **acceptance criteria**. Then QA per **{{QA}}**:
    - `mileqa` → read `.codex/explicit/mileqa/start.md` and follow it (bounded: 3 rounds + 2 codas). Map its exit state

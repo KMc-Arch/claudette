@@ -53,8 +53,11 @@ python3 .hb-heartbeat/hb.py install [--dry-run]                                 
 /checkWinTasks hb-                                                              # scheduler health
 ```
 
-Morning review: `~inbox/hb/night-<date>.md` (always written, even for a quiet night) and `~inbox/hb/<ITEM>/outcome.md`
-(terminus + qa_result + branch + PR). Merge awake, by hand. Bad → prune the branch or re-approve with a better brief.
+Morning review: `~inbox/hb/outcomes.jsonl` (the cross-run roster — one stable-schema record per item ever handled, the
+eventual web view's data source), `~inbox/hb/night-<date>.md` (always written, even for a quiet night), and
+`~inbox/hb/<ITEM>/outcome.md` (terminus + qa_result + branch + PR + decision ledger). A **PR opens only on a converged
+terminus**; a blocked-on-decision / exhausted / cap run pushes its branch (so the work is inspectable) without a PR.
+Merge awake, by hand. Bad → prune the branch or re-approve with a better brief.
 
 ## Session-driven (no scheduler)
 

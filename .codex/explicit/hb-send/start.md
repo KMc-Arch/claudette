@@ -61,6 +61,9 @@ An item is solvent when **a no-memory worker on a fresh clone could take it to a
 
    - `loose`/`god` are **denylist-shaped**: they lean on **`forbid`** to bite. `hb.py send` warns if
      you set them with an empty forbid list. Add `forbid` entries, or step down to `bounded`.
+   - `loose`/`god` **require a non-empty `write_scope`** — the stated publish boundary still binds the
+     widest decision envelopes. `hb.py send` hard-fails them without one (bound god; do not hand it an
+     unbounded publish surface).
    - `god` is not "no guardrails": the structural fence (no creds, scrub, write_scope, cap, human PR
      review) still holds. It is safe only because the *project* is disposable — say so to yourself
      before you set it.
@@ -83,8 +86,11 @@ An item is solvent when **a no-memory worker on a fresh clone could take it to a
    ```
 
    (Omit `--project` only when `^` is the apex itself.) The writer composes plumbing (id, recipient=hb
-   auto-derived, sender, approved_by/at, status), validates, self-checks by re-parsing, and prints the
-   placed path. Remove the scratch file. Report the path and the autonomy level set.
+   auto-derived, sender, approved_by/at, status) and **hard-backstops the solvency bar**: it refuses
+   to run inside a worker sandbox (HB_SANDBOX set), requires `objective` + `acceptance`, rejects scope
+   paths that are absolute / contain `..` / resolve outside the project, and requires a `write_scope`
+   for `loose`/`god`. It then self-checks by re-parsing and prints the placed path. Remove the scratch
+   file. Report the path and the autonomy level set.
 
 ## Spec keys (what the writer accepts)
 

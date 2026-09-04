@@ -860,7 +860,27 @@ class TestRunner(Base):
         self.assertFalse((hb.outbox(self.apex) / "inflight" / "BL-07.md").exists())
         oc = (hb.inbox(self.apex) / "BL-07" / "outcome.md").read_text()
         self.assertIn("blocked-on-decision", oc); self.assertIn("## Decisions", oc)
-        self.assertTrue(e["pushed"])                                           # has commits -> published like any expected terminus
+        self.assertTrue(e["pushed"])                                           # branch pushed (ephemeral sandbox)
+        self.assertIsNone(e["pr"])                                            # but NO PR — not a converged terminus
+        self.assertIn("PR withheld", oc)
+
+    def test_pr_only_on_converged(self):
+        os.environ["HB_FAKE_MODE"] = "converged"
+        self.s.approve(); c = self._claim(); e = runner.run(c, self.cfg)
+        self.assertTrue(e["pushed"])
+        # converged DOES attempt a PR (gh fails in the harness: no GitHub) — the attempt is the signal
+        self.assertIn("gh pr create", (hb.inbox(self.apex) / "BL-07" / "outcome.md").read_text())
+
+    def test_outcome_ledger_appended(self):
+        os.environ["HB_FAKE_MODE"] = "converged"
+        self.s.approve(); self.issue(); hb.write_night({"runs": []})
+        hb.tick(self.cfg)                                                     # full path: tick -> run -> night_add_run -> ledger
+        ledger = hb.inbox(self.apex) / "outcomes.jsonl"
+        self.assertTrue(ledger.exists())
+        rec = json.loads([ln for ln in ledger.read_text().splitlines() if ln.strip()][-1])
+        self.assertEqual(rec["item_id"], "BL-07")
+        self.assertEqual(rec["terminus"], "converged")
+        self.assertIn("night", rec); self.assertIn("ts", rec)
 
     def test_requeue_or_fail_threshold_on_runner_paths(self):
         p = self.s.approve()
@@ -1190,7 +1210,44 @@ class TestSendPlanner(Base):
     def test_send_rejects_missing_scope_path(self):
         with self.assertRaises(SystemExit) as cm:
             hb.send("BL-07", None, self._spec(write_scope=["nope/ghost.py"]), "b", self.cfg)
-        self.assertIn("do not exist", str(cm.exception))
+        self.assertIn("does not exist", str(cm.exception))
+
+    def test_send_rejects_absolute_and_dotdot_scope(self):
+        with self.assertRaises(SystemExit) as cm:
+            hb.send("BL-07", None, self._spec(write_scope=["/etc"]), "b", self.cfg)
+        self.assertIn("relative", str(cm.exception))                    # absolute path -> dead pointer
+        with self.assertRaises(SystemExit) as cm:
+            hb.send("BL-07", None, self._spec(write_scope=["../outside"]), "b", self.cfg)
+        self.assertIn("relative", str(cm.exception))                    # .. walks out of the tree
+
+    def test_send_requires_objective_and_acceptance(self):
+        s = self._spec(); s.pop("objective")
+        with self.assertRaises(SystemExit) as cm:
+            hb.send("BL-07", None, s, "b", self.cfg)
+        self.assertIn("objective", str(cm.exception))
+        s = self._spec(); s["acceptance"] = []
+        with self.assertRaises(SystemExit) as cm:
+            hb.send("BL-07", None, s, "b", self.cfg)
+        self.assertIn("acceptance", str(cm.exception))
+
+    def test_send_hardfails_loose_god_empty_write_scope(self):
+        for lvl in ("loose", "god"):
+            with self.assertRaises(SystemExit) as cm:
+                hb.send("BL-07", None, self._spec(autonomy=lvl, write_scope=[]), "b", self.cfg)
+            self.assertIn("write_scope", str(cm.exception))
+        # bounded is fine with no write_scope (whole repo)
+        self.assertTrue(hb.send("BL-07", None, self._spec(write_scope=[]), "b", self.cfg).exists())
+
+    def test_send_refuses_inside_worker_sandbox(self):
+        os.environ["HB_SANDBOX"] = str(self.apex / ".hb-heartbeat" / "sandbox" / "X")
+        try:
+            for fn in (lambda: hb.send("BL-07", None, self._spec(), "b", self.cfg),
+                       lambda: self.s.approve()):
+                with self.assertRaises(SystemExit) as cm:
+                    fn()
+                self.assertIn("worker sandbox", str(cm.exception))
+        finally:
+            os.environ.pop("HB_SANDBOX", None)
 
     def test_send_refuses_plumbing_keys(self):
         with self.assertRaises(SystemExit) as cm:
@@ -1241,6 +1298,7 @@ class TestSendPlanner(Base):
         self.assertNotIn("{{", txt)                                            # fully rendered
         self.assertIn("Autonomy: god", txt)
         self.assertIn("never touch the schema", txt)
+        self.assertIn("NOT in the forbid list", txt)                         # god honors forbid (no contradiction)
         self.assertIn("commit the current good state first", txt)             # checkpoint protocol present
         self.assertIn("blocked-on-decision", txt)
 

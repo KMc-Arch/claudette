@@ -76,9 +76,17 @@ for a cold reader with no memory of the conversation — the worker has none.
 **Autonomy** governs a fork the worker meets mid-attempt that the brief did not settle. `bounded`
 (default) lets it resolve forks *inside the contract* (write_scope, no interface/schema/dep change, no
 objective change) and halt on anything crossing it (`terminus: blocked-on-decision`); `strict` halts
-on any real fork; `loose` allows anything not in `forbid`; `god` allows all decisions (structural
-fence still holds). Every autonomous call is recorded in the worker's commit history and its outcome
-`## Decisions` ledger. See `^/^/.hb-heartbeat/prompt-worker.md`.
+on any real fork; `loose` allows anything not in `forbid`; `god` allows any decision not in `forbid`,
+including redefining the path (structural fence still holds). `loose`/`god` **require a non-empty
+`write_scope`** — the stated publish boundary still binds the widest decision envelopes; `/hb-send`
+refuses them without one. `/hb-send` also requires `objective` + `acceptance` and rejects scope paths
+that are absolute, contain `..`, or resolve outside the project. Every autonomous call is recorded in
+the worker's commit history and its outcome `## Decisions` ledger. See
+`^/^/.hb-heartbeat/prompt-worker.md`.
+
+On finish, the runner pushes the branch if there are commits but opens a **PR only on a converged
+terminus**; every handled item also appends one record to the apex `~inbox/hb/outcomes.jsonl` — the
+cross-run outcome roster.
 
 Priority semantics are one comparator in `hb.py::pop_order`; if 0-high/9-low ever feels more natural, flip it there.
 
