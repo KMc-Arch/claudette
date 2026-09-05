@@ -109,7 +109,8 @@ def is_git_repo(cwd: Path) -> bool:
     """Return True if cwd is inside a git repository."""
     result = subprocess.run(
         ["git", "rev-parse", "--is-inside-work-tree"],
-        cwd=cwd, capture_output=True, text=True, check=False,
+        cwd=cwd, capture_output=True, text=True,
+        encoding="utf-8", errors="replace", check=False,
     )
     return result.returncode == 0
 
@@ -121,6 +122,8 @@ def git_run(args: list[str], cwd: Path) -> str:
         cwd=cwd,
         capture_output=True,
         text=True,
+        encoding="utf-8",
+        errors="replace",
         check=False,
     )
     if result.returncode != 0:
