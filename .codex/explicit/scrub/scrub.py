@@ -110,20 +110,25 @@ def is_git_repo(cwd: Path) -> bool:
     result = subprocess.run(
         ["git", "rev-parse", "--is-inside-work-tree"],
         cwd=cwd, capture_output=True, text=True,
-        encoding="utf-8", errors="replace", check=False,
+        encoding="utf-8", check=False,
     )
     return result.returncode == 0
 
 
 def git_run(args: list[str], cwd: Path) -> str:
     """Run a git command and return stdout."""
+    # Pin utf-8: without it, text mode decodes with the platform default, which on
+    # Windows is the console codepage (cp1252) -- it mojibakes/crashes on the utf-8
+    # bytes git emits. Decode strict (no errors=): undecodable git output must fail
+    # closed via the main() catch-all (exit 2 = "could not scan" = block), never a
+    # silent lossy decode that could scan a secret-bearing non-utf-8 diff and
+    # certify it clean. This gate is fail-closed everywhere else; keep it so here.
     result = subprocess.run(
         ["git"] + args,
         cwd=cwd,
         capture_output=True,
         text=True,
         encoding="utf-8",
-        errors="replace",
         check=False,
     )
     if result.returncode != 0:
