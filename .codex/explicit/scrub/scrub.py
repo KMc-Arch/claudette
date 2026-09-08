@@ -110,25 +110,36 @@ def is_git_repo(cwd: Path) -> bool:
     result = subprocess.run(
         ["git", "rev-parse", "--is-inside-work-tree"],
         cwd=cwd, capture_output=True, text=True,
-        encoding="utf-8", check=False,
+        encoding="utf-8", errors="replace", check=False,
     )
     return result.returncode == 0
 
 
 def git_run(args: list[str], cwd: Path) -> str:
     """Run a git command and return stdout."""
-    # Pin utf-8: without it, text mode decodes with the platform default, which on
-    # Windows is the console codepage (cp1252) -- it mojibakes/crashes on the utf-8
-    # bytes git emits. Decode strict (no errors=): undecodable git output must fail
-    # closed via the main() catch-all (exit 2 = "could not scan" = block), never a
-    # silent lossy decode that could scan a secret-bearing non-utf-8 diff and
-    # certify it clean. This gate is fail-closed everywhere else; keep it so here.
+    # Pin utf-8: without an explicit encoding, text mode decodes with the platform
+    # default, which on Windows is the console codepage (cp1252) and raises/mojibakes
+    # on the utf-8 bytes git emits -- the crash this pin exists to stop.
+    #
+    # errors="replace", not strict: no real secret escapes replace that strict would
+    # catch. Nearly every value pattern is a positive ASCII-only class
+    # ([A-Za-z0-9+/=_.~@:%-]{8,}), so a non-ASCII byte can't be part of a match and
+    # replacing it with U+FFFD hides nothing; a real (ASCII) credential decodes
+    # byte-identically either way. The lone exception -- the connection-URI pattern's
+    # negated [^@\s] value class -- is if anything MORE robust under replace: U+FFFD
+    # still satisfies it, so a URI whose password carries a bad byte still matches,
+    # where strict would abort. Strict buys no detection here; it would only abort the
+    # entire scan on one stray non-utf-8 byte (an Excel/CSV smart-quote, a latin-1
+    # config), blocking a secret-free push with no clean fix but `--no-verify`, which
+    # disables the gate wholesale. scan_file() decodes replace for the same reason;
+    # this keeps diff/range mode consistent with it. (mileqa 20260906 round 2.)
     result = subprocess.run(
         ["git"] + args,
         cwd=cwd,
         capture_output=True,
         text=True,
         encoding="utf-8",
+        errors="replace",
         check=False,
     )
     if result.returncode != 0:

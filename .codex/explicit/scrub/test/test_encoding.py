@@ -1,8 +1,7 @@
 #!/usr/bin/env python3
 """Regression tests for scrub.py git-output decoding.
 
-Guards two properties of git_run()/is_git_repo(), each proven red->green against
-the two-line change that introduced them:
+Guards two properties of git_run()/is_git_repo():
 
   1. UTF-8 PIN. git output is decoded as utf-8 regardless of the platform/locale
      default, so a valid-utf-8 diff never spuriously aborts. Without the pin, a
@@ -10,11 +9,19 @@ the two-line change that introduced them:
      UnicodeDecodeError on git's utf-8 bytes and the push is blocked with a
      misleading "could not scan". -> test_utf8_pin_survives_ascii_locale
 
-  2. FAIL-CLOSED on undecodable input. When git output is genuinely NOT utf-8, the
-     gate must fail closed (exit 2 = block), never scan a lossy decode and possibly
-     certify a secret-bearing non-utf-8 diff clean. An errors="replace" decode turns
-     the accented bytes of a password into U+FFFD, breaks the value char-class, and
-     returns PASS -- a fail-open hole. -> test_non_utf8_secret_fails_closed
+  2. errors="replace", NOT strict. The value patterns are ASCII-only, so a
+     non-ASCII byte can never be part of a matched secret and replacing an
+     undecodable byte with U+FFFD cannot hide one. Strict decoding would only
+     over-block: one stray non-utf-8 byte (an Excel/CSV smart-quote, a latin-1
+     config) with no secret present would abort the whole scan and block the push.
+     Replace preserves detection of the real (ASCII) credentials that actually
+     matter, even when the same diff also carries undecodable bytes.
+       -> test_non_utf8_no_secret_does_not_overblock  (RED under strict: rc 2)
+       -> test_ascii_secret_survives_non_utf8_bytes
+
+This posture was set by mileqa 20260906 round 2, reversing the round-1 strict
+decode: strict traded an illusory fail-open (no ASCII secret ever evaded replace)
+for a real gate-eroding over-block. See git_run()'s rationale comment.
 
 Run directly (`python3 test_encoding.py`) or under pytest. Non-zero exit on failure.
 """
@@ -69,16 +76,35 @@ def test_utf8_pin_survives_ascii_locale():
     assert "UnicodeDecodeError" not in (proc.stdout + proc.stderr), "decode aborted the scan"
 
 
-def test_non_utf8_secret_fails_closed():
-    """A secret in a genuinely non-utf-8 file must BLOCK (exit 2), not PASS.
-    RED under errors="replace" (rc would be 0: the U+FFFD-mangled value evades)."""
+def test_non_utf8_no_secret_does_not_overblock():
+    """A benign diff carrying a non-utf-8 byte and NO secret must PASS (exit 0),
+    not block the push. RED under a strict decode (rc would be 2: the byte aborts
+    the whole scan). This is the over-block round 2 rejected."""
     with tempfile.TemporaryDirectory() as tmp:
         repo = make_repo(Path(tmp))
-        # latin-1 bytes: 0xE4=a-umlaut 0xF6=o-umlaut inside a password value
-        (repo / "config.ini").write_bytes(b'password = "P\xe455w\xf6rd7"\n')  # scrub:allow -- synthetic fixture
+        # 0x92 is the cp1252 right-single-quote (a smart apostrophe): a lone
+        # continuation byte, invalid utf-8. Common in Excel/CSV/Word exports.
+        (repo / "notes.txt").write_bytes(b"comment = draft\x92s ready to ship\n")
         proc = scan_diff(repo)
-    assert proc.returncode == 2, (
-        f"expected fail-closed block (2), got {proc.returncode} -- fail-open regression\n"
+    assert proc.returncode == 0, (
+        f"expected clean PASS (0), got {proc.returncode} -- strict over-block regression\n"
+        f"{proc.stdout}{proc.stderr}"
+    )
+
+
+def test_ascii_secret_survives_non_utf8_bytes():
+    """A real (ASCII) secret is still caught (exit 1) when the same diff also carries
+    an undecodable byte -- replace mangles only the bad byte to U+FFFD and leaves the
+    ASCII credential intact. This is why dropping strict loses no detection."""
+    with tempfile.TemporaryDirectory() as tmp:
+        repo = make_repo(Path(tmp))
+        (repo / "config.ini").write_bytes(
+            b"comment = draft\x92s ready to ship\n"
+            b'password = "Pa55word7xy"\n'  # scrub:allow -- synthetic fixture
+        )
+        proc = scan_diff(repo)
+    assert proc.returncode == 1, (
+        f"expected match/FAIL (1), got {proc.returncode} -- replace dropped a real secret\n"
         f"{proc.stdout}{proc.stderr}"
     )
 
@@ -96,7 +122,8 @@ def test_ascii_secret_is_caught():
 
 def _main() -> int:
     tests = [test_utf8_pin_survives_ascii_locale,
-             test_non_utf8_secret_fails_closed,
+             test_non_utf8_no_secret_does_not_overblock,
+             test_ascii_secret_survives_non_utf8_bytes,
              test_ascii_secret_is_caught]
     failed = 0
     for t in tests:
