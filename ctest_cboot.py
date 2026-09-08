@@ -464,6 +464,38 @@ def _():
     conn.close()
 
 
+@test("RI-02", "build_root_inventory")
+def _():
+    """The walk records each root's declared `codex:` source and CLAUDE.md mtime.
+
+    Grafted from the abandoned feature/project-index branch: main already captured
+    name/path/depth/parent/is_apex/contains_roots but not the declared codex source
+    or a per-root freshness stamp. Both come straight off the CLAUDE.md the walk
+    already reads, so this asserts the graft, not a new walk. Hermetic (scratch
+    apex) — never touches the live roots.db.
+    """
+    with scratch_apex([("inherits", "child.\n"), ("plain", "child.\n")]) as apex:
+        # One child declares an inherited codex source; the other leaves it bare.
+        (apex / "inherits" / "CLAUDE.md").write_text(
+            "---\nroot: true\nname: inherits\ncodex: ^/^/.codex\n---\n")
+        ag_boot(apex)
+        conn = _sqlite_factory().connect(str(apex / ".state" / "roots.db"))
+        conn.row_factory = sqlite3.Row
+        cols = {r[1] for r in conn.execute("PRAGMA table_info(roots)")}
+        truthy({"codex_inherit_from", "claude_md_mtime"} <= cols,
+               "new columns present (have %s)" % sorted(cols))
+        rows = {r["rel_path"]: r for r in conn.execute(
+            "SELECT rel_path, codex_inherit_from, claude_md_mtime FROM roots")}
+        conn.close()
+    eq(rows["inherits"]["codex_inherit_from"], "^/^/.codex", "codex: value captured")
+    eq(rows["plain"]["codex_inherit_from"], None, "no codex: declared -> NULL")
+    truthy("." in rows, "apex row present")
+    # Every walked root carries an ISO-8601 UTC mtime (…Z), a freshness signal.
+    for rel, row in rows.items():
+        truthy(row["claude_md_mtime"] and row["claude_md_mtime"].endswith("Z"),
+               "%s mtime is ISO-8601 UTC: %r" % (rel, row["claude_md_mtime"]))
+
+
 # ── Addressable agents (AG) ──────────────────────────────────────────
 #
 # Every AG test builds a throwaway apex in a temp dir and redirects cboot's
