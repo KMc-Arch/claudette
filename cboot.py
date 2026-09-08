@@ -831,6 +831,36 @@ def _extract_root_name(claude_md: Path, fallback: str) -> str:
     return fallback
 
 
+def _extract_codex_source(claude_md: Path) -> str | None:
+    """Pull `codex:` from a CLAUDE.md frontmatter — the inherited codex source a
+    child declares. None when the file is unreadable or declares no inheritance."""
+    try:
+        text = claude_md.read_text(encoding="utf-8-sig")
+        if text.startswith("---"):
+            end = text.find("---", 3)
+            if end != -1:
+                for line in text[3:end].splitlines():
+                    stripped = line.strip()
+                    if stripped.startswith("codex:"):
+                        val = stripped.split(":", 1)[1].strip().strip('"').strip("'")
+                        if val:
+                            return val
+    except (OSError, UnicodeDecodeError):
+        pass
+    return None
+
+
+def _claude_md_mtime(claude_md: Path) -> str | None:
+    """CLAUDE.md modification time as ISO-8601 UTC (second precision). None when the
+    file is missing or unreadable — the mtime is a freshness signal for readers, so
+    an absent file yields no signal rather than a fabricated one."""
+    try:
+        ts = claude_md.stat().st_mtime
+    except OSError:
+        return None
+    return datetime.fromtimestamp(ts, timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
 class RootRows(list):
     """The rows of one filesystem walk, plus what that walk deliberately EXCLUDED.
 
@@ -991,8 +1021,9 @@ def build_root_inventory(report):
     .state/.gitignore.
 
     Records, per root: name, absolute path, apex-relative path, nearest enclosing
-    root (containment parent), depth, whether it is the apex, and how many DIRECT
-    child roots it contains. All connections go through the house sqlite factory
+    root (containment parent), depth, whether it is the apex, how many DIRECT
+    child roots it contains, the `codex:` source it inherits from (if any), and its
+    CLAUDE.md mtime. All connections go through the house sqlite factory
     (.codex/reactive/sqlite/sqlite.py) per the never-call-sqlite3.connect rule.
     """
     try:
@@ -1034,14 +1065,17 @@ def build_root_inventory(report):
     rows = []
     for p in all_roots:
         is_apex = p == apex_abs
+        claude_md = p / "CLAUDE.md"
         rows.append({
-            "name": _extract_root_name(p / "CLAUDE.md", "apex" if is_apex else p.name),
+            "name": _extract_root_name(claude_md, "apex" if is_apex else p.name),
             "abs_path": p.as_posix(),
             "rel_path": "." if is_apex else p.relative_to(apex_abs).as_posix(),
             "parent_path": parents[p].as_posix() if parents[p] else None,
             "depth": depth_of(p),
             "is_apex": 1 if is_apex else 0,
             "contains_roots": child_counts[p],
+            "codex_inherit_from": _extract_codex_source(claude_md),
+            "claude_md_mtime": _claude_md_mtime(claude_md),
             "generated_at": stamp,
         })
     rows.sort(key=lambda r: (r["depth"], r["rel_path"]))
@@ -1074,6 +1108,8 @@ def build_root_inventory(report):
                 " depth INTEGER NOT NULL,"      # 0 = apex, 1 = top-level child, ...
                 " is_apex INTEGER NOT NULL DEFAULT 0,"
                 " contains_roots INTEGER NOT NULL DEFAULT 0,"  # count of DIRECT child roots
+                " codex_inherit_from TEXT,"   # `codex:` frontmatter value; NULL if none declared
+                " claude_md_mtime TEXT,"      # CLAUDE.md mtime (ISO-8601 UTC); NULL if unreadable
                 # Denormalised mirror of agent_registry, filled by generate_agents.
                 # Convenience for readers; agent_registry is the authority.
                 " agent_enabled INTEGER NOT NULL DEFAULT 0,"
@@ -1089,8 +1125,10 @@ def build_root_inventory(report):
             conn.execute("CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT)")
             conn.executemany(
                 "INSERT INTO roots (name, abs_path, rel_path, parent_path, depth,"
-                " is_apex, contains_roots, generated_at) VALUES (:name, :abs_path,"
-                " :rel_path, :parent_path, :depth, :is_apex, :contains_roots, :generated_at)",
+                " is_apex, contains_roots, codex_inherit_from, claude_md_mtime,"
+                " generated_at) VALUES (:name, :abs_path, :rel_path, :parent_path,"
+                " :depth, :is_apex, :contains_roots, :codex_inherit_from,"
+                " :claude_md_mtime, :generated_at)",
                 rows,
             )
             conn.executemany(
