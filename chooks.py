@@ -369,11 +369,11 @@ def test_claude_md_allows_other_files(t: HookTestRunner):
     t.assert_exit("CM02", "Allows write to non-CLAUDE.md files", code, 0, err)
 
 @register_test("claude-md-immutability-guard.sh")
-def test_claude_md_allows_new_claude_md(t: HookTestRunner):
+def test_claude_md_blocks_new_claude_md(t: HookTestRunner):
     target = str(t.root / "ChildProject-that-does-not-exist" / "CLAUDE.md")
     code, out, err = t.run_hook("claude-md-immutability-guard.sh",
                                 make_tool_json("Write", file_path=target, content=_CM_FIXTURE))
-    t.assert_exit("CM03", "Allows creating a new CLAUDE.md (scaffolding)", code, 0, err)
+    _cm_blocked(t, "CM03", "Blocks creating a new CLAUDE.md (human-only)", code, err)
 
 @register_test("claude-md-immutability-guard.sh")
 def test_claude_md_blocks_existing_body_edit(t: HookTestRunner):

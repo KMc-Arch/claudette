@@ -115,7 +115,7 @@ mutate_env "exact on-disk name" "case-variant spelling allowed" 'if base not in 
 mutate_env "permission cases" "unlistable folder allowed" 'die("BLOCKED: cannot list the directory' "${X}"'die("BLOCKED: cannot list the directory'
 # --- judged by result
 mutate "skeleton comparison skipped"             'if new_sk != old_sk:' 'if False:'
-mutate "any Write treated as creation"           'if not exists:' 'if tool == "Write" or not exists:'
+mutate "creating a CLAUDE.md allowed"            'die("BLOCKED: creating a CLAUDE.md is human-only' "${X}"'die("BLOCKED: creating a CLAUDE.md is human-only'
 mutate "non-Write/Edit tool allowed"             'if tool not in ("Write", "Edit"):' 'if False:'
 mutate "fuzzy (non-verbatim) old_string allowed" 'die("BLOCKED: old_string does not occur verbatim' "${X}"'die("BLOCKED: old_string does not occur verbatim'
 mutate "empty old_string allowed"                'die("BLOCKED: an Edit to CLAUDE.md needs a non-empty' "${X}"'die("BLOCKED: an Edit to CLAUDE.md needs a non-empty'

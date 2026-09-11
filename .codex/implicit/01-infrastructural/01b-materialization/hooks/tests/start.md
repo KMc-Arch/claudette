@@ -36,8 +36,8 @@ them at mutated copies.
   re-checked; the edit is judged by its result (Edit, `replace_all`, full Write),
   including the line break the Edit tool also deletes on an empty `new_string`;
   CR/BOM/non-LF files and results, and frontmatter past 64 KiB, are refused; an
-  existing CLAUDE.md must be named by its exact on-disk spelling; creating a new
-  one is allowed; every unvettable input fails **closed** (bad JSON or bytes,
+  existing CLAUDE.md must be named by its exact on-disk spelling; creating one is
+  refused too; every unvettable input fails **closed** (bad JSON or bytes,
   unstatable/unlistable/unreadable targets, device-namespace, drive-relative and
   `/proc` paths, a planted `json.py`, a Store stub or broken interpreter, a
   closed stderr). Payloads are raw UTF-8, as Claude Code sends them. Needs a

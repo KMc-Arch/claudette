@@ -42,13 +42,17 @@
 # which governance and hooks a project runs under. Those stay human-only. A new
 # key is human-only until it is added to ALLOWED below (and to frontmatter.md).
 #
-# CREATION is allowed: a Write to a CLAUDE.md that does not exist yet is
-# scaffolding (/bundle, /rebuild, /new-project). Its reach is real and is NOT
-# limited to future sessions: Claude Code loads a new CLAUDE.md into the running
-# session when it reads a file in that folder, every existing project below it
-# picks it up through the upward CLAUDE.md walk, and one with apex-root: true in
-# a folder between the apex and a child moves where that child resolves ^/^ and
-# so its codex. See frontmatter.md.
+# CREATION is blocked too (KMc, 2026-09-11): a Write to a CLAUDE.md that does
+# not exist yet is refused. A new CLAUDE.md is not confined to future sessions —
+# Claude Code loads it into the running session when a file in that folder is
+# read (subagents, the main thread after compaction, other sessions), every
+# existing project below it picks it up through the upward CLAUDE.md walk, and
+# one with apex-root: true between the apex and a child moves where that child
+# resolves ^/^ and so its codex. Scaffolding goes through the command that owns
+# it (/new-project runs bootstrap-child.py; /bundle renames a staged file with
+# python); anything else, Claude hands the user the text. CLAUDE.local.md and
+# .claude/rules/*.md carry the same authority but are deliberately NOT covered
+# (KMc, 2026-09-11). See frontmatter.md.
 #
 # FAILS CLOSED on anything it cannot vet: undecodable input or file, a path it
 # cannot stat cleanly (only a clean not-found counts as absent), no leading
@@ -220,7 +224,8 @@ except (OSError, ValueError) as e:     # EACCES, ENAMETOOLONG, ELOOP, an unencod
     die("BLOCKED: cannot stat the CLAUDE.md target, so cannot tell whether it exists (fail closed).", "  " + str(e))
 if not exists:
     if tool == "Write":
-        sys.exit(0)                    # creation: scaffolding a new CLAUDE.md
+        die("BLOCKED: creating a CLAUDE.md is human-only — its text loads as instructions into this and other sessions.",
+            "  Scaffold with the command that owns it (/new-project, /bundle), or give the user the text to create.")
     die("BLOCKED: Edit targets a CLAUDE.md that does not exist (fail closed).")
 try:
     names = os.listdir(p.rsplit("/", 1)[0] or "/")

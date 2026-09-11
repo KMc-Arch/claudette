@@ -13,7 +13,7 @@
 #     a frontmatter block ending past 64 KiB is refused
 #   - moving an allowlisted line past a protected one is re-checked as a change
 #   - an existing CLAUDE.md must be addressed by its exact on-disk name
-#   - creating a new CLAUDE.md is allowed (scaffolding)
+#   - creating a new CLAUDE.md is refused too (scaffolding runs scripts)
 #   - anything it cannot vet fails CLOSED (bad JSON, non-UTF-8, no frontmatter,
 #     old_string not verbatim, a path it cannot stat cleanly, device-namespace,
 #     drive-relative and /proc paths, drive paths under POSIX, a planted json.py,
@@ -198,7 +198,7 @@ check "replace_all touching only name:"                             0 "$(j Edit 
 check "relative CLAUDE.md path anchored to CPD, name: edit"         0 "$(j Edit child/CLAUDE.md old_string='name: child' new_string='name: kid')"
 check "Write whole file, only name: changed"                        0 "$(j Write "$R" content='---\nroot: true\nname: Renamed\ncodex: ^/^/.codex\n---\n\nRead `.state/start.md`.\nRoot Group governs this tree.\n')"
 check "Write identical content (no-op)"                             0 "$(j Write "$C" content='---\nroot: true\nname: child\ncodex: ^/^/.codex\n---\n\nChild body.\n')"
-check "Write creates a new CLAUDE.md"                               0 "$(j Write "$ROOT/newproj/CLAUDE.md" content='---\nroot: true\ncodex: /anything\n---\n\nNew body.\n')"
+
 check "non-ASCII folder: name: edit"                                0 "$(j Edit "$NA/CLAUDE.md" old_string='name: cafe' new_string='name: caf\xe9')"
 out=$(printf '%s' "$(j Edit "$C" old_string='name: child' new_string='name: kid')" | PATH="$T/wa/WindowsApps:$T/realbin:/usr/bin:/bin" CLAUDE_PROJECT_DIR="$ROOT" bash "$GUARD" 2>&1); rc=$?
 record "Windows Store python3 stub is skipped (name: edit)"         0 "$rc" "$out"
@@ -320,6 +320,8 @@ if [ "$HAVE_FIFO" -eq 1 ]; then
 check "CLAUDE.md is a FIFO"                                         2 "$(j Write "$ROOT/fifo/CLAUDE.md" content='x')"
 else echo "SKIP  CLAUDE.md is a FIFO (no mkfifo here)"; fi
 check "Edit a CLAUDE.md that does not exist"                        2 "$(j Edit "$ROOT/ghost/CLAUDE.md" old_string='a' new_string='b')"
+check "Write creating a new CLAUDE.md (human-only)"                 2 "$(j Write "$ROOT/newproj/CLAUDE.md" content='---\nroot: true\ncodex: /anything\n---\n\nNew body.\n')"
+check "Write creating a plain-template CLAUDE.md (human-only)"      2 "$(j Write "$ROOT/newproj2/CLAUDE.md" content='---\nroot: true\nname: New\ncodex: ^/^/.codex\n---\n\nRead `.state/start.md`.\n')"
 check "Write strips the BOM"                                        2 "$(j Write "$ROOT/bom/CLAUDE.md" content='---\nroot: true\nname: A\n---\n\nBody.\n')"
 mkdir -p "$ROOT/huge"
 # Over the cap, with the old_string also far past it: a guard reading only the
