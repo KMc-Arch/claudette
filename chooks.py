@@ -348,7 +348,9 @@ def _cm_fixture() -> Path:
 def _cm_blocked(t: HookTestRunner, test_name: str, label: str, code: int, err: str):
     # rc=2 alone is also bash's own error exit: a guard that never ran would pass.
     # A block must also say so on stderr.
-    if code == 2 and "BLOCKED:" in err:
+    # Line-anchored: a bash syntax error echoes the offending source line, which
+    # can contain "BLOCKED:" mid-line.
+    if code == 2 and any(line.startswith("BLOCKED:") for line in err.splitlines()):
         t.ok(test_name, f"{label} (exit 2, BLOCKED:)")
     else:
         t.fail(test_name, label, f"Expected exit 2 with a BLOCKED: line, got {code}. stderr: {err[:200]}")

@@ -29,22 +29,30 @@ them at mutated copies.
   Run: `bash test_guards_identical.sh` — exit 0 = identical.
 
 - `test_claude_md_guard.sh` — `claude-md-immutability-guard.sh`: EVERY CLAUDE.md
-  (case-insensitive name, a hardlink in the same directory, any depth — a parent
-  session is held to the child's rule) has an immutable body, fences and
-  structural keys; only `name:` / `orchestrator:` lines with valid values may
-  change; the edit is judged by its result (Edit, `replace_all`, full Write),
+  (case-insensitive name, trailing-dot/space and `:stream` aliases, a hardlink in
+  the same directory, any depth — a parent session is held to the child's rule)
+  has an immutable body, fences and structural keys; only `name:` /
+  `orchestrator:` lines with valid values may change, and a moved line is
+  re-checked; the edit is judged by its result (Edit, `replace_all`, full Write),
   including the line break the Edit tool also deletes on an empty `new_string`;
-  CR/BOM/non-LF files and results are refused; creating a new CLAUDE.md is
-  allowed; every unvettable input fails **closed**. Payloads are raw UTF-8, as
-  Claude Code sends them. Needs a case-sensitive `TMPDIR` for the lowercase
-  `claude.md` case to mean what it says.
+  CR/BOM/non-LF files and results, and frontmatter past 64 KiB, are refused; an
+  existing CLAUDE.md must be named by its exact on-disk spelling; creating a new
+  one is allowed; every unvettable input fails **closed** (bad JSON or bytes,
+  unstatable/unlistable/unreadable targets, device-namespace, drive-relative and
+  `/proc` paths, a planted `json.py`, a Store stub or broken interpreter, a
+  closed stderr). Payloads are raw UTF-8, as Claude Code sends them. Needs a
+  case-sensitive `TMPDIR` for the lowercase `claude.md` case to mean what it
+  says, and uses the apex's `.state/tmp` for the exact-name case when that is
+  case-insensitive (else skips it); permission cases skip when run as root; the
+  POSIX-only drive-path cases skip under Windows Python.
   Run: `bash test_claude_md_guard.sh` — exit 0 = all pass.
 
-- `mutate_claude_md_guard.sh` — the mutation proof for the suite above: 41
-  mutants, each reverting one hardening, each required to turn the suite red;
-  the four controls it deliberately does not mutate (no verdict changes on this
-  platform) are named, with the reason, in its header.
-  Run: `bash mutate_claude_md_guard.sh` — exit 0 = every mutant caught. ~5 minutes.
+- `mutate_claude_md_guard.sh` — the mutation proof for the suite above: one
+  mutant per hardening (about 70), each required to turn the suite red. Controls
+  it deliberately does not mutate, and mutants that only apply where the suite
+  could run the proving case (reported as ENV), are named with the reason in its
+  header.
+  Run: `bash mutate_claude_md_guard.sh` — exit 0 = every mutant caught. ~15 minutes.
 
 - `mutate_guards.sh` — the mutation proof. Reverts each hardening one at a time
   and requires the suites above to go **red**. This is what makes them evidence

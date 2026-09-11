@@ -10,7 +10,7 @@ scaffolding), then fills `name:` (and, with --description, the one-line body
 description) and flags any parent-group-promotion opportunity.
 
 Usage:
-    python bootstrap-child.py '<name>' [--description '<one line>'] [--project-root <path>]
+    python bootstrap-child.py '<name>' [--description-file <path> | --description='<one line>'] [--project-root '<path>']
 """
 
 import argparse
@@ -143,10 +143,47 @@ def fill_name_in_claude_md(target: Path, name: str) -> None:
         )
     if n == 0:
         raise RuntimeError(f"Could not insert name: into {claude_md}")
-    claude_md.write_text(new_text, encoding="utf-8")
+    # Bytes, not write_text: on Windows, text mode would turn every LF into CRLF,
+    # and the CLAUDE.md guard refuses any CLAUDE.md containing a CR.
+    claude_md.write_bytes(new_text.encode("utf-8"))
 
 
 READ_LINE = re.compile(r"^(Read `\.state/start\.md`\.)[ \t]*$", re.MULTILINE)
+
+# The characters claude-md-immutability-guard.sh refuses anywhere in a CLAUDE.md
+# (every str.splitlines() break other than LF, plus the BOM). Keep in step with
+# UNVETTABLE there: one of these in the scaffold freezes the file for Claude.
+UNVETTABLE = "".join(chr(c) for c in (13, 11, 12, 28, 29, 30, 133, 8232, 8233, 65279))
+NAME_FIRST_BANNED = set("[]{}&*!|>%@`")
+
+
+def input_problem(name: str, description: str) -> str | None:
+    """Why this name/description would leave a broken or frozen CLAUDE.md, or None."""
+    for label, text in (("name", name), ("description", description)):
+        try:
+            text.encode("utf-8")
+        except UnicodeEncodeError as e:
+            return f"{label} cannot be encoded as UTF-8 ({e})."
+        if any(c in UNVETTABLE for c in text):
+            return f"{label} contains a line break or BOM character."
+    if any(unicodedata.category(c) == "Cc" for c in name):
+        return "name contains a control character."
+    if "---" in name:
+        # Frontmatter readers that stop at the first --- anywhere (Claude Code's
+        # own included) would end the block inside the name.
+        return "name contains ---."
+    return None
+
+
+def guard_name_problem(name: str) -> str | None:
+    """Why the guard's name: grammar would refuse a later Claude rename, or None."""
+    if name[:1] in NAME_FIRST_BANNED:
+        return f"starts with {name[0]!r}"
+    if len(name) > 200:
+        return "is longer than 200 characters"
+    if any(unicodedata.category(c) in ("Cf", "Cs", "Co", "Cn") for c in name):
+        return "contains a format, private-use or unassigned character"
+    return None
 
 
 def fill_description_in_claude_md(target: Path, description: str) -> None:
@@ -162,7 +199,7 @@ def fill_description_in_claude_md(target: Path, description: str) -> None:
     if n == 0:
         raise RuntimeError(f"Could not place the description in {claude_md}: "
                            f"no `Read .state/start.md` line")
-    claude_md.write_text(new_text, encoding="utf-8")
+    claude_md.write_bytes(new_text.encode("utf-8"))   # LF on every platform (see above)
 
 
 def find_apex(start: Path) -> Path | None:
@@ -210,35 +247,47 @@ def main() -> int:
         default=Path.cwd(),
         help="Parent project root (default: cwd)",
     )
-    parser.add_argument(
+    desc_group = parser.add_mutually_exclusive_group()
+    desc_group.add_argument(
         "--description",
         default=None,
         help="One-line project description, written into the CLAUDE.md body at scaffold time",
+    )
+    desc_group.add_argument(
+        "--description-file",
+        type=Path,
+        default=None,
+        help="Read the one-line description from this UTF-8 file instead (no shell quoting involved)",
     )
     args = parser.parse_args()
 
     parent = args.project_root.resolve()
     name = args.name.strip()
+    if args.description_file is not None:
+        try:
+            raw_description = args.description_file.read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError) as e:
+            print(f"  Error: cannot read --description-file ({e}).")
+            return 1
+    else:
+        raw_description = args.description or ""
     # One line: collapse any whitespace run (incl. newlines) to a single space.
-    description = " ".join((args.description or "").split())
+    description = " ".join(raw_description.split())
 
     if not name:
         print("  Error: name is empty.")
         return 1
     # Both land in CLAUDE.md, whose body and structural keys Claude can never
-    # repair afterwards (claude-md-immutability-guard.sh) — so refuse bad input
-    # before anything is copied. A line break in the name would inject lines into
-    # the frontmatter; text that cannot be encoded makes write_text leave an
-    # empty CLAUDE.md (it truncates before encoding).
-    if len(name.splitlines()) > 1:
-        print("  Error: name contains a line break.")
+    # repair afterwards (claude-md-immutability-guard.sh) — so refuse input that
+    # would leave a broken or permanently frozen file, before anything is copied.
+    problem = input_problem(name, description)
+    if problem:
+        print(f"  Error: {problem}")
         return 1
-    try:
-        name.encode("utf-8")
-        description.encode("utf-8")
-    except UnicodeEncodeError as e:
-        print(f"  Error: name or description cannot be encoded as UTF-8 ({e}).")
-        return 1
+    later = guard_name_problem(name)
+    if later:
+        print(f"  [NOTE] The name {later}, so Claude will not be able to rename it later "
+              f"(claude-md-immutability-guard.sh); a human can.")
 
     try:
         folder_base = derive_folder_name(name)

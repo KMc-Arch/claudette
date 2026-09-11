@@ -53,13 +53,15 @@ Every child is scaffolded with `~inbox/` and `~outbox/` per the apex **Exchange 
 
 **Before running the script**, get a one-line description of what the project is about. If the creation request already gives the purpose, use it; otherwise ask the user.
 
+Write the one-line description to a scratch file with the Write tool (e.g. `^/.state/tmp/new-project-description.txt`), then:
+
 ```
-python .codex/explicit/new-project/bootstrap-child.py '<name>' --description '<one line>' --project-root ^
+python .codex/explicit/new-project/bootstrap-child.py '<name>' --description-file '<that file>' --project-root '<^ as an absolute path>'
 ```
 
-Pass the name and the description in **single quotes**, writing any `'` inside them as `'\''`. Double quotes let the shell run backtick and `$(...)` text and expand `$VAR` — and a mangled description cannot be repaired afterwards.
+`--description-file` keeps the description out of the shell entirely: no quoting to get wrong, and no word starting with `_` for the visibility guard to block. `--description='<one line>'` also works for short plain text — single quotes, any `'` written as `'\''`, and the `=` form so a description starting with `-` is not read as an option. Quote the name and `--project-root` too (roots can contain spaces).
 
-The description must go in at scaffold time. Once a `CLAUDE.md` exists, its body is immutable to Claude (`claude-md-immutability-guard.sh`), so it cannot be added with an Edit afterwards. If the user declines to give one, scaffold without `--description`; adding it later is a human edit. The script refuses a name containing a line break, and a name or description that cannot be encoded as UTF-8, before it copies anything.
+The description must go in at scaffold time. Once a `CLAUDE.md` exists, its body is immutable to Claude (`claude-md-immutability-guard.sh`), so it cannot be added with an Edit afterwards. If the user declines to give one, scaffold without it; adding it later is a human edit. Before copying anything, the script refuses a name or description the guard would later freeze or misread (a line break, a BOM, a control character, or `---` in the name), and notes when a name would stop Claude from renaming the project later.
 
 ## Post-Creation
 
