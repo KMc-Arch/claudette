@@ -8,6 +8,7 @@ Run: python3 test_claude_md_mutator.py
 
 import importlib.util
 import os
+import stat
 import subprocess
 import sys
 import tempfile
@@ -186,6 +187,37 @@ class Happy(Base):
         self.assertEqual(rc, 0, err)
         self.assertEqual(rd(p), "---\nname: New\n---\n\nintro\n\n---\n\nmore\n")
 
+    def test_single_line_block_indicator_value_editable(self):
+        # A single-line value starting with > or | is a literal the readers take
+        # verbatim, and stays re-editable (no false block-scalar refusal).
+        p = self.write("---\nname: Old\n---\nb\n")
+        rc, _, err = run(p, "name=|v1")
+        self.assertEqual(rc, 0, err)
+        self.assertIn("name: |v1\n", rd(p))
+        rc, _, err = run(p, "name=v2")   # must not refuse as a block scalar
+        self.assertEqual(rc, 0, err)
+        self.assertIn("name: v2\n", rd(p))
+
+    def test_insert_both_keys_when_absent(self):
+        p = self.write("---\nroot: true\n---\nbody\n")
+        rc, _, err = run(p, "name=N", "orchestrator=true")
+        self.assertEqual(rc, 0, err)
+        self.assertEqual(rd(p), "---\nroot: true\nname: N\norchestrator: true\n---\nbody\n")
+
+    def test_noop_avoids_write(self):
+        p = self.write(FM)
+        ino = os.stat(p).st_ino
+        rc, _, err = run(p, "name=Old Name")   # same value
+        self.assertEqual(rc, 0, err)
+        self.assertEqual(os.stat(p).st_ino, ino, "no-op must not rewrite the file")
+
+    def test_replace_preserves_mode(self):
+        p = self.write(FM)
+        os.chmod(p, 0o640)
+        rc, _, err = run(p, "name=New Name")
+        self.assertEqual(rc, 0, err)
+        self.assertEqual(stat.S_IMODE(os.stat(p).st_mode), 0o640, "mode must be preserved")
+
 
 class Refuse(Base):
     def _refuse(self, path, *sets):
@@ -294,6 +326,65 @@ class Refuse(Base):
             self._refuse(p, "name=New")
         finally:
             os.chmod(self.d, 0o755)
+
+    def test_value_unicode_linebreak(self):
+        for ch in (" ", " ", ""):
+            self._refuse(self.write(FM), "name=A" + ch + "B")
+
+    def test_value_c1_control(self):
+        self._refuse(self.write(FM), "name=a\x80b")
+        self._refuse(self.write(FM), "name=a\x9bb")
+
+    def test_value_0x1f_control(self):
+        self._refuse(self.write(FM), "name=a\x1fb")
+
+    def test_value_triple_dash(self):
+        self._refuse(self.write(FM), "name=Alpha --- Beta")
+
+    def test_name_edge_quotes(self):
+        for bad in ('"A', 'A"', "'A", "A'", '""', "''"):
+            self._refuse(self.write(FM), "name=" + bad)
+
+    def test_name_one_sided_whitespace(self):
+        self._refuse(self.write(FM), "name=Padded ")   # trailing only
+        self._refuse(self.write(FM), "name= Padded")   # leading only
+
+    def test_pipe_block_scalar_with_continuation_refused(self):
+        self._refuse(self.write("---\nname: |\n  line1\n  line2\n---\nb\n"), "name=X")
+
+    def test_byte_cap_boundary(self):
+        at = "---\n" + ("x" * 65527) + "\n---\nbody\n"    # consumed == 65536 at close
+        rc, _, err = run(self.write(at), "name=Z")
+        self.assertEqual(rc, 0, "at-cap (65536 B) should be accepted; %s" % err)
+        over = "---\n" + ("x" * 65528) + "\n---\nbody\n"  # consumed == 65537
+        self._refuse(self.write(over), "name=Z")
+
+    def test_dir_target_not_regular_file(self):
+        d2 = os.path.join(self.d, "CLAUDE.md")
+        os.mkdir(d2)
+        rc, _, err = run(d2, "name=X")
+        self.assertEqual(rc, 2, err)
+        self.assertIn("not a regular file", err)
+
+    def test_unreadable_file_clean_refusal(self):
+        if os.geteuid() == 0:
+            self.skipTest("root bypasses file read permission")
+        p = self.write(FM)
+        os.chmod(p, 0o000)
+        try:
+            rc, _, err = run(p, "name=X")
+            self.assertEqual(rc, 2, err)
+            self.assertTrue(err.strip().startswith("REFUSED"), err)
+        finally:
+            os.chmod(p, 0o644)
+
+    def test_missing_path_arg_exits_2(self):
+        p = subprocess.run([sys.executable, MUT], capture_output=True, text=True)
+        self.assertEqual(p.returncode, 2)   # argparse usage error (no REFUSED prefix)
+
+    @unittest.skip("cannot create a symlink to test under the project's ABSOLUTE HOLD on symlink creation")
+    def test_symlink_target_refused(self):
+        pass  # main() refuses os.path.islink(args.path); verified analytically by the L2 lens
 
 
 class Unit(unittest.TestCase):
