@@ -10,7 +10,7 @@ scaffolding), then fills `name:` (and, with --description, the one-line body
 description) and flags any parent-group-promotion opportunity.
 
 Usage:
-    python bootstrap-child.py '<name>' [--description-file <path> | --description='<one line>'] [--project-root '<path>']
+    python bootstrap-child.py [--name-file <path> | -- '<name>'] [--description-file <path> | --description='<one line>'] [--project-root '<path>']
 """
 
 import argparse
@@ -71,6 +71,8 @@ def derive_folder_name(name: str) -> str:
     s = re.sub(r"-+", "-", s).strip("-")
     if not s:
         raise ValueError(f"Name derives to empty folder: {name!r}")
+    if len(s) > FOLDER_MAX:
+        raise ValueError(f"Name derives to a folder name longer than {FOLDER_MAX} characters.")
     return s
 
 
@@ -155,6 +157,8 @@ READ_LINE = re.compile(r"^(Read `\.state/start\.md`\.)[ \t]*$", re.MULTILINE)
 # UNVETTABLE there: one of these in the scaffold freezes the file for Claude.
 UNVETTABLE = "".join(chr(c) for c in (13, 11, 12, 28, 29, 30, 133, 8232, 8233, 65279))
 NAME_FIRST_BANNED = set("[]{}&*!|>%@`")
+DESCRIPTION_MAX = 300
+FOLDER_MAX = 100
 
 
 def input_problem(name: str, description: str) -> str | None:
@@ -168,6 +172,10 @@ def input_problem(name: str, description: str) -> str | None:
             return f"{label} contains a line break or BOM character."
     if any(unicodedata.category(c) == "Cc" for c in name):
         return "name contains a control character."
+    if any(unicodedata.category(c) in ("Cc", "Cf") for c in description):
+        return "description contains a control or invisible formatting character."
+    if len(description) > DESCRIPTION_MAX:
+        return f"description is longer than {DESCRIPTION_MAX} characters."
     if "---" in name:
         # Frontmatter readers that stop at the first --- anywhere (Claude Code's
         # own included) would end the block inside the name.
@@ -240,7 +248,11 @@ def parent_is_root_without_group(parent: Path) -> tuple[bool, str | None]:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="Bootstrap a new Claudette2 child project")
-    parser.add_argument("name", help="Canonical project name (goes into CLAUDE.md name: frontmatter verbatim)")
+    name_group = parser.add_mutually_exclusive_group(required=True)
+    name_group.add_argument("name", nargs="?", default=None,
+                            help="Canonical project name (goes into CLAUDE.md name: frontmatter verbatim)")
+    name_group.add_argument("--name-file", type=Path, default=None,
+                            help="Read the name from this UTF-8 file instead (no shell quoting involved)")
     parser.add_argument(
         "--project-root",
         type=Path,
@@ -262,16 +274,22 @@ def main() -> int:
     args = parser.parse_args()
 
     parent = args.project_root.resolve()
-    name = args.name.strip()
-    if args.description_file is not None:
-        try:
-            raw_description = args.description_file.read_text(encoding="utf-8")
-        except (OSError, UnicodeDecodeError) as e:
-            print(f"  Error: cannot read --description-file ({e}).")
-            return 1
-    else:
-        raw_description = args.description or ""
-    # One line: collapse any whitespace run (incl. newlines) to a single space.
+    try:
+        # utf-8-sig: a file saved by a Windows editor may start with a BOM.
+        raw_name = (args.name_file.read_text(encoding="utf-8-sig") if args.name_file is not None
+                    else args.name or "")
+        raw_description = (args.description_file.read_text(encoding="utf-8-sig")
+                           if args.description_file is not None else args.description or "")
+    except (OSError, UnicodeDecodeError) as e:
+        print(f"  Error: cannot read the name or description file ({e}).")
+        return 1
+    name = raw_name.strip()
+    if args.description_file is not None and not raw_description.strip():
+        print("  Error: --description-file is empty.")
+        return 1
+    if len([ln for ln in raw_description.splitlines() if ln.strip()]) > 1:
+        print("  Error: the description must be one line.")
+        return 1
     description = " ".join(raw_description.split())
 
     if not name:
@@ -286,8 +304,9 @@ def main() -> int:
         return 1
     later = guard_name_problem(name)
     if later:
-        print(f"  [NOTE] The name {later}, so Claude will not be able to rename it later "
-              f"(claude-md-immutability-guard.sh); a human can.")
+        print(f"  [NOTE] The name {later}. Claude cannot write a name like that "
+              f"(claude-md-immutability-guard.sh), so any later rename by Claude — adding "
+              f"' Group', say — must also drop it. A human can edit it freely.")
 
     try:
         folder_base = derive_folder_name(name)
@@ -303,10 +322,16 @@ def main() -> int:
     if not template_dir.exists():
         print(f"  Error: Child template not found at {template_dir}")
         return 1
-    # Check the description has somewhere to go BEFORE copying anything: a
-    # scaffold left without it cannot be fixed by Claude afterwards.
-    if description and not READ_LINE.search(
-            (template_dir / "CLAUDE.md").read_text(encoding="utf-8")):
+    # Check the template BEFORE copying anything: a scaffold that comes out wrong
+    # cannot be fixed by Claude afterwards.
+    template_text = (template_dir / "CLAUDE.md").read_text(encoding="utf-8")
+    if any(c in UNVETTABLE for c in template_text):
+        print("  Error: template CLAUDE.md contains a CR, BOM or other non-LF line break.")
+        return 1
+    if re.search(r"^[ \t]*name:[ \t]*\S", template_text, re.MULTILINE):
+        print("  Error: template CLAUDE.md already has a name: value (filling it would duplicate it).")
+        return 1
+    if description and not READ_LINE.search(template_text):
         print(f"  Error: template CLAUDE.md has no `Read .state/start.md` line "
               f"to place --description above.")
         return 1

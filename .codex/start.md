@@ -233,7 +233,7 @@ Each boundary should have at least two defense layers. Single-layer boundaries a
 | Session | — | persistence rules | `session-close.sh` | `.claude/` gitignored |
 | Instance | classification | — | — | — (env assumption, BDRY-02) |
 | Project | — | path containment + state gravity | `containment-guard.sh` + `gravity-guard.sh` — **Write/Edit only**; Bash and NotebookEdit writes are unguarded (BDRY-10, BL-56) | `root: true` scoping |
-| CLAUDE.md | — | design constraint — body + structural keys human-only; `name:`/`orchestrator:` agent-editable (`01a-resolution/frontmatter.md`) | `claude-md-immutability-guard.sh` — **Write/Edit only** (BDRY-10) | — |
+| CLAUDE.md | — | design constraint — creation, the body and every key but `name:`/`orchestrator:` are human-only (`01a-resolution/frontmatter.md`) | `claude-md-immutability-guard.sh` — **Write/Edit only** (BDRY-10) | — |
 | Audit records | — | immutability rule | `audit-immutability-guard.sh` | — |
 
 ---

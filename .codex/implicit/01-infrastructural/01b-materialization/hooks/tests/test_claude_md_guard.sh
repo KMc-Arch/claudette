@@ -38,7 +38,17 @@ set -u
 
 G=${GUARD_DIR:-$(cd "$(dirname "$0")/.." && pwd)}
 GUARD="$G/claude-md-immutability-guard.sh"
-PY=$(command -v python3 || command -v python)
+# Pick the interpreter the way the guard does: skip a WindowsApps candidate that
+# does not run (the Store stub), so the harness does not die where the guard works.
+PY=
+while IFS= read -r c; do
+    case "$c" in /*) ;; *) continue ;; esac
+    case "$c" in */[Ww][Ii][Nn][Dd][Oo][Ww][Ss][Aa][Pp][Pp][Ss]/*) "$c" -c "" >/dev/null 2>&1 || continue ;; esac
+    PY=$c; break
+done <<EOF
+$(type -ap python3 python 2>/dev/null)
+EOF
+[ -n "$PY" ] || { echo "HARNESS: no python found"; exit 99; }
 BASH_BIN=$(command -v bash)
 TO=$(command -v timeout || command -v gtimeout || true)   # macOS ships neither by default
 
@@ -52,7 +62,7 @@ case "$T" in /*|[A-Za-z]:/*) ;; *) echo "HARNESS: mktemp gave a non-absolute pat
 ROOT="$T/root"; CHILD="$ROOT/child"; NA="$ROOT/caf"$'\xc3\xa9'; FF="$ROOT/fffd"$'\xef\xbf\xbd'"dir"
 for d in "$CHILD" "$NA" "$FF" low crlf bom orch nofm unterm bin smug fence swallow gam beta \
          sep2028 lonecr near loose fifo crname movedash swap mover scancap quotedkey recased \
-         bombody wo noperm/sub noread; do
+         bombody wo noperm/sub noread pseudo2 dashline trailfence; do
     case "$d" in /*) mkdir -p "$d" ;; *) mkdir -p "$ROOT/$d" ;; esac
 done
 for i in 0 1 2 3 4 5 6 7 8 9; do mkdir -p "$ROOT/sep$i"; done
@@ -145,6 +155,25 @@ for i in 0 1 2 3 4 5 6 7 8 9; do
 done
 [ -n "$CI" ] && { mkdir -p "$CI/proj"; fx "$CI/proj/CLAUDE.md" '---\nroot: true\nname: CI\n---\nbody\n'; }
 UNPRIV=1; [ "$(id -u 2>/dev/null)" = 0 ] && UNPRIV=0   # root reads/stats through any mode
+fx "$ROOT/pseudo2/CLAUDE.md" '---\nname: A\n---x\nroot: true\n---\nbody\n'
+fx "$ROOT/dashline/CLAUDE.md" '---\nroot: true\ndescription: cost --- benefit\n---\n\nBody.\n'
+fx "$ROOT/trailfence/CLAUDE.md" '---\nroot: true\nname: A\n--- \n\nBody.\n'
+mkdir -p "$ROOT/.state/memory"
+fx "$ROOT/.state/memory/CLAUDE.md" '---\nname: M\n---\nbody\n'
+# POSIX-only fixtures: names Windows cannot hold (a colon; a non-UTF-8 byte).
+if [ "$IS_NT" = 0 ]; then
+    mkdir -p "$ROOT/C:/proj" "$ROOT/c:/proj" "$ROOT/drel"
+    fx "$ROOT/C:/proj/CLAUDE.md" '---\nroot: true\nname: Drv\n---\nbody\n'
+    fx "$ROOT/c:/proj/CLAUDE.md" '---\nroot: true\nname: drv\n---\nbody\n'
+    fx "$ROOT/drel/C:CLAUDE.md" '---\nroot: true\nname: Rel\n---\nbody\n'
+    "$PY" -c 'import os,sys; d=os.fsencode(sys.argv[1])+b"/lat\xe9"; os.mkdir(d); open(d+b"/CLAUDE.md","wb").write(b"---\nroot: true\nname: L\n---\nbody\n")' "$ROOT" \
+        || { echo "HARNESS: latin-1 fixture failed"; exit 99; }
+fi
+mkdir -p "$T/pyonly" "$T/relcwd/relbin"
+printf '#!/bin/sh\nshift\nexec "%s" "$@"\n' "$PY" > "$T/pyonly/py"; chmod +x "$T/pyonly/py"    # py -3 ... -> python ...
+printf '#!/bin/sh\nexit 0\n' > "$T/relcwd/relbin/python3"; chmod +x "$T/relcwd/relbin/python3"
+BASH_FOR_PY=$BASH_BIN
+command -v cygpath >/dev/null 2>&1 && BASH_FOR_PY=$(cygpath -w "$BASH_BIN")   # Windows Python needs a Windows path
 "$PY" -c 'import sys; h="---\nroot: true\nname: N\n---\n\n"; open(sys.argv[1],"w",encoding="utf-8",newline="").write(h + "b"*(1048576 - 5 - len(h)) + "\n")' "$ROOT/near/CLAUDE.md"
 ln "$ROOT/CLAUDE.md" "$ROOT/alias.md"            # hardlink, not a symlink
 HAVE_FIFO=0
@@ -222,6 +251,9 @@ check "replace_all also hits the body"                              2 "$(j Edit 
 check "replace_all true->false also hits root:"                     2 "$(j Edit "$ROOT/orch/CLAUDE.md" old_string='true' new_string='false' replace_all=true)"
 check "edit that moves the closing fence"                           2 "$(j Edit "$C" old_string='---\n\nChild' new_string='\n---\nChild')"
 check "line after a ---x pseudo-fence is body"                      2 "$(j Edit "$ROOT/fence/CLAUDE.md" old_string='name: after-pseudo-fence' new_string='name: changed')"
+check "a ---x line before the real fence: file is human-only"       2 "$(j Edit "$ROOT/pseudo2/CLAUDE.md" old_string='name: A' new_string='name: B')"
+check "--- inside a protected line: Claude Code ends the block there" 2 "$(j Edit "$ROOT/dashline/CLAUDE.md" old_string='description: cost --- benefit\n' new_string='description: cost --- benefit\nname: INJECTED\n')"
+check "a closing fence with trailing blanks is not clean"           2 "$(j Edit "$ROOT/trailfence/CLAUDE.md" old_string='name: A' new_string='name: B')"
 check "non-ASCII folder: Write flipping root:"                      2 "$(j Write "$NA/CLAUDE.md" content='---\nroot: false\nname: cafe\n---\n\nNon-ASCII folder body.\n')"
 check "add a column-0 name: beside an indented one"                 2 "$(j Edit "$ROOT/loose/CLAUDE.md" old_string='root: true\n' new_string='root: true\nname: Other\n')"
 check "add a column-0 orchestrator: beside a quoted one"            2 "$(j Edit "$ROOT/quotedkey/CLAUDE.md" old_string='root: true\n' new_string='root: true\norchestrator: true\n')"
@@ -254,6 +286,9 @@ done
 
 echo "# invalid allowlisted values -> block"
 check "orchestrator: maybe"                                         2 "$(j Edit "$ROOT/orch/CLAUDE.md" old_string='orchestrator: true' new_string='orchestrator: maybe')"
+check "orchestrator: TRUE (lowercase only)"                         2 "$(j Edit "$ROOT/orch/CLAUDE.md" old_string='orchestrator: true' new_string='orchestrator: TRUE')"
+check "orchestrator:false with no blank"                            2 "$(j Edit "$ROOT/orch/CLAUDE.md" old_string='orchestrator: true' new_string='orchestrator:false')"
+check "orchestrator: with more than 8 trailing blanks"              2 "$(j Edit "$ROOT/orch/CLAUDE.md" old_string='orchestrator: true' new_string='orchestrator: false          ')"
 check "duplicate name: line"                                        2 "$(j Edit "$C" old_string='name: child\n' new_string='name: child\nname: other\n')"
 check "bidi override in name:"                                      2 "$(j Edit "$C" old_string='name: child' new_string='name: a\N{RIGHT-TO-LEFT OVERRIDE}b')"
 check "ESC in name:"                                                2 "$(j Edit "$C" old_string='name: child' new_string='name: a\x1bb')"
@@ -279,36 +314,62 @@ check "hardlink alias to CLAUDE.md, body edit"                      2 "$(j Edit 
 check "backslash path to a CLAUDE.md, body edit"                    2 "$(j Edit "$ROOT"'\child\CLAUDE.md' old_string='Child body.' new_string='X')"
 check "relative CLAUDE.md path anchored to CPD, body edit"          2 "$(j Edit child/CLAUDE.md old_string='Child body.' new_string='X')"
 check "relative CLAUDE.md path, no CPD"                             2 "$(j Edit child/CLAUDE.md old_string='name: child' new_string='name: kid')" ""
-mkdir -p "$T/empty"
-check "relative path resolves against the hook cwd, not the CPD"    2 "$(j Write CLAUDE.md content='---\nroot: false\n---\nx\n' @cwd="$CHILD")" "$T/empty"
+"$PY" -c 'import json,sys; t=open(sys.argv[1],encoding="utf-8").read().replace("name: Root Group","name: Other",1); sys.stdout.write(json.dumps({"tool_name":"Write","tool_input":{"file_path":"CLAUDE.md","content":t},"cwd":sys.argv[2]}))' "$R" "$CHILD" > "$T/cwdw.json"
+check "relative path resolves against the hook cwd, not the CPD"    2 "$(cat "$T/cwdw.json")" "$ROOT"
 check "CLAUDE.md/. (normalised to the marker)"                      2 "$(j Edit "$C/." old_string='Child body.' new_string='X')"
 check "CLAUDE.md/ (trailing slash)"                                 2 "$(j Edit "$C/" old_string='Child body.' new_string='X')"
 check "CLAUDE.md. is treated as the marker (Windows alias)"         2 "$(j Edit "$C." old_string='Child body.' new_string='X')"
 check "CLAUDE.md::\$DATA is treated as the marker (main stream)"    2 "$(j Edit "$CHILD"'/CLAUDE.md::$DATA' old_string='Child body.' new_string='X')"
 if [ "$IS_NT" = 0 ]; then
-check "Windows drive path under POSIX (would read as creation)"     2 "$(j Write 'C:/proj/CLAUDE.md' content='---\nroot: false\n---\nx\n')"
+# Each of these names a CLAUDE.md that EXISTS where a mis-reading would look, with
+# a name:-only change, so the named check is the only thing that can block it.
+out=$(printf '%s' "$(j Edit 'C:/proj/CLAUDE.md' old_string='name: Drv' new_string='name: Drv2')" | (cd "$ROOT" && CLAUDE_PROJECT_DIR="$ROOT" bash "$GUARD") 2>&1); rc=$?
+record "Windows drive path under POSIX (a C: folder in the cwd)"    2 "$rc" "$out"
+check "lowercase drive path c:/... under POSIX"                     2 "$(j Edit 'c:/proj/CLAUDE.md' old_string='name: drv' new_string='name: drv2')"
 check "Windows drive path, backslashes"                             2 "$(j Write 'C:\proj\CLAUDE.md' content='---\nroot: false\n---\nx\n')"
-check "lowercase drive path c:/... under POSIX"                     2 "$(j Write 'c:/proj/CLAUDE.md' content='---\nroot: false\n---\nx\n')"
+check "drive-relative C:CLAUDE.md (a file of that name in the cwd)" 2 "$(j Edit 'C:CLAUDE.md' old_string='name: Rel' new_string='name: Rel2' @cwd="$ROOT/drel")"
 else skip "drive paths under POSIX (Windows Python vets them for real)"; fi
+check "device path //./ to an existing CLAUDE.md (name: edit)"      2 "$(j Edit "//.$C" old_string='name: child' new_string='name: kid')"
 check "device path \\\\.\\C:\\... to a CLAUDE.md"                   2 "$(j Write '\\.\C:\proj\CLAUDE.md' content='---\nroot: false\n---\nx\n')"
 check "device path \\\\?\\UNC\\... to a CLAUDE.md"                  2 "$(j Write '\\?\UNC\host\share\CLAUDE.md' content='---\nroot: false\n---\nx\n')"
 check "lowercase device path to claude.md"                          2 "$(j Write '\\?\UNC\host\share\claude.md' content='---\nroot: false\n---\nx\n')"
-check "drive-relative C:CLAUDE.md"                                  2 "$(j Write 'C:CLAUDE.md' content='---\nroot: false\n---\nx\n')"
+check "drive-relative with a stream suffix C:CLAUDE.md::\$DATA"     2 "$(j Write 'C:CLAUDE.md::$DATA' content='---\nroot: false\n---\nx\n')"
+check "invisible character in the name (CLAUDE<ZWNJ>.md)"          2 "$(j Write "$ROOT/newzw/CLAUDE<U+200C>.md" content='---\nroot: true\n---\nx\n')"
+check "a CLAUDE.md in the auto-memory folder"                       2 "$(j Edit "$ROOT/.state/memory/CLAUDE.md" old_string='name: M' new_string='name: N')"
+if [ "$IS_NT" = 0 ]; then
+"$PY" -c 'import json,sys; t=open(sys.argv[2],encoding="utf-8").read(); sys.stdout.write(json.dumps({"tool_name":"Write","tool_input":{"file_path":sys.argv[1],"content":t}}))' "$ROOT/child"'\y/../CLAUDE.md' "$C" > "$T/bsl.json"
+check "backslash path: vetted one CLAUDE.md, the tool writes another" 2 "$(cat "$T/bsl.json")"
+check "backslash path creating a CLAUDE.md in a folder named x\\.." 2 "$(j Write "$ROOT"'/x\../CLAUDE.md' content='---\nroot: true\nname: Root Group\ncodex: ^/^/.codex\n---\n\nRead `.state/start.md`.\nRoot Group governs this tree.\n')"
+check "backslash in an ordinary file name is fine on POSIX"         0 "$(j Write "$ROOT"'/notes\x.md' content='x')"
+fi
 check "path with a lone surrogate (cannot stat it)"                 2 "$(j Write "$ROOT/fffd<U+D800>dir/CLAUDE.md" content='---\nroot: false\n---\nx\n')"
 if [ "$IS_NT" = 0 ] && [ -d /proc/self ]; then
-out=$(printf '%s' "$(j Write /proc/self/cwd/CLAUDE.md content='---\nroot: false\n---\nx\n')" | (cd "$T" && CLAUDE_PROJECT_DIR="$ROOT" bash "$GUARD") 2>&1); rc=$?
+out=$(printf '%s' "$(j Edit /proc/self/cwd/CLAUDE.md old_string='name: child' new_string='name: kid')" | (cd "$CHILD" && CLAUDE_PROJECT_DIR="$ROOT" bash "$GUARD") 2>&1); rc=$?
 record "/proc/self/cwd/CLAUDE.md (resolves in the hook process)"    2 "$rc" "$out"
+out=$(printf '%s' "$(j Edit //proc/self/cwd/CLAUDE.md old_string='name: child' new_string='name: kid')" | (cd "$CHILD" && CLAUDE_PROJECT_DIR="$ROOT" bash "$GUARD") 2>&1); rc=$?
+record "//proc/self/cwd/CLAUDE.md (a doubled slash is still /proc)"  2 "$rc" "$out"
+out=$(printf '%s' "$(j Edit /dev/fd/3/CLAUDE.md old_string='name: child' new_string='name: kid')" | (cd "$T" && CLAUDE_PROJECT_DIR="$ROOT" bash "$GUARD" 3<"$CHILD") 2>&1); rc=$?
+record "/dev/fd/3/CLAUDE.md (an fd the hook inherited)"             2 "$rc" "$out"
 else skip "/proc path (no /proc here)"; fi
 if [ "$UNPRIV" = 1 ]; then
+# name:-only payloads, so the permission failure is the only thing that can block;
+# each runs only where chmod really took effect (Git Bash on NTFS ignores it).
 chmod 0200 "$ROOT/wo/CLAUDE.md"
-check "unreadable CLAUDE.md (mode 0200)"                            2 "$(j Write "$ROOT/wo/CLAUDE.md" content='---\nroot: false\n---\nx\n')"
+if [ ! -r "$ROOT/wo/CLAUDE.md" ]; then
+check "unreadable CLAUDE.md (mode 0200)"                            2 "$(j Edit "$ROOT/wo/CLAUDE.md" old_string='name: W' new_string='name: X')"
+else skip "unreadable CLAUDE.md (chmod has no effect here)"; fi
+chmod 644 "$ROOT/wo/CLAUDE.md"
 chmod 000 "$ROOT/noperm"
-check "CLAUDE.md under an unsearchable folder (stat fails)"         2 "$(j Write "$ROOT/noperm/sub/CLAUDE.md" content='---\nroot: false\n---\nx\n')"
+if [ ! -e "$ROOT/noperm/sub" ]; then
+check "CLAUDE.md under an unsearchable folder (stat fails)"         2 "$(j Edit "$ROOT/noperm/sub/CLAUDE.md" old_string='name: P' new_string='name: Q')"
+else skip "unsearchable folder (chmod has no effect here)"; fi
 chmod 755 "$ROOT/noperm"
 chmod 0311 "$ROOT/noread"
+if ! ls "$ROOT/noread" >/dev/null 2>&1; then
 check "CLAUDE.md in a folder that cannot be listed"                 2 "$(j Edit "$ROOT/noread/CLAUDE.md" old_string='name: R' new_string='name: S')"
+else skip "unlistable folder (chmod has no effect here)"; fi
 chmod 755 "$ROOT/noread"
-else skip "permission cases (running as root)"; fi
+else skip "unreadable CLAUDE.md (running as root)"; skip "unsearchable folder (running as root)"; skip "unlistable folder (running as root)"; fi
 if [ -n "$CI" ]; then
 check "case-variant spelling of an existing CLAUDE.md"              2 "$(j Edit "$CI/proj/claude.md" old_string='name: CI' new_string='name: CJ')" "$CI"
 else skip "exact on-disk name (no case-insensitive scratch)"; fi
@@ -343,7 +404,9 @@ check "malformed JSON"                                              2 '{"tool_na
 check "JSON that is not an object"                                  2 '["Edit"]'
 check "file_path not a string"                                      2 '{"tool_name":"Edit","tool_input":{"file_path":7}}'
 check "hook stdin that is not UTF-8"                                2 "$(printf '{"tool_name":"Write","tool_input":{"file_path":"%s","content":"\xff"}}' "$C")"
-check "a non-UTF-8 byte in the path (strict decode, no substitution)" 2 "$(printf '{"tool_name":"Write","tool_input":{"file_path":"%s/caf\xe9/CLAUDE.md","content":"---\\nroot: false\\n---\\nx\\n"}}' "$ROOT")"
+if [ "$IS_NT" = 0 ]; then
+check "a non-UTF-8 byte in the path (strict decode, no substitution)" 2 "$(printf '{"tool_name":"Edit","tool_input":{"file_path":"%s/lat\xe9/CLAUDE.md","old_string":"name: L","new_string":"name: M"}}' "$ROOT")"
+fi
 "$PY" -c 'import json,sys; sys.stdout.write(json.dumps({"tool_name":"Write","tool_input":{"file_path":sys.argv[1],"content":"---\nroot: true\nname: child\ncodex: ^/^/.codex\n---\n\n"+"B"*200000+"\n"}}))' "$C" > "$T/big.json"
 check "Write >128 KB (the old env-var handoff failed open on E2BIG)" 2 "$(cat "$T/big.json")"
 
@@ -361,10 +424,14 @@ r, w = os.pipe()
 os.close(r)                            # stderr goes to a pipe nobody reads
 env = dict(os.environ, CLAUDE_PROJECT_DIR=sys.argv[3])
 with open(sys.argv[2], "rb") as fh:
-    p = subprocess.run(["bash", sys.argv[1]], stdin=fh, stdout=subprocess.DEVNULL, stderr=w, env=env)
+    p = subprocess.run([sys.argv[4], sys.argv[1]], stdin=fh, stdout=subprocess.DEVNULL, stderr=w, env=env)
 print(p.returncode if p.returncode >= 0 else 128 - p.returncode)
 PYEOF
-recrc "a closed stderr still ends in a block, not rc=141"           2 "$("$PY" "$T/pipe.py" "$GUARD" "$T/pipe.json" "$ROOT")"
+recrc "a closed stderr still ends in a block, not rc=141"           2 "$("$PY" "$T/pipe.py" "$GUARD" "$T/pipe.json" "$ROOT" "$BASH_FOR_PY")"
+out=$(printf '%s' "$(j Edit "$C" old_string='Child body.' new_string='Owned.')" | (cd "$T/relcwd" && PATH="relbin:/usr/bin:/bin" CLAUDE_PROJECT_DIR="$ROOT" "$BASH_BIN" "$GUARD") 2>&1); rc=$?
+record "a relative PATH entry's python3 is not used"                2 "$rc" "$out"
+out=$(printf '%s' "$(j Edit "$C" old_string='name: child' new_string='name: kid')" | PATH="$T/pyonly" CLAUDE_PROJECT_DIR="$ROOT" "$BASH_BIN" "$GUARD" 2>&1); rc=$?
+record "only the py launcher on PATH: it is used (name: edit)"       0 "$rc" "$out"
 
 echo
 echo "$PASS passed, $FAIL failed"

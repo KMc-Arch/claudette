@@ -3,14 +3,15 @@
 # allowlisted frontmatter keys may change.
 #
 # SCOPE: any write target named CLAUDE.md (case-insensitive; a trailing dot or
-# space, or a ":stream" suffix, is ignored — Windows resolves those to the same
-# file), or a hardlink to the CLAUDE.md in the same directory. Anywhere, not just
-# the session root: a parent session editing a child's CLAUDE.md is held to
-# exactly the rule the child's own session is. As referenced: a symlink is its
-# own file, and a hardlink in ANOTHER directory is not detected — making either
-# needs Bash or a human (BDRY-10). An existing CLAUDE.md must be addressed by its
-# exact on-disk spelling: on a case-insensitive filesystem the tool would
-# otherwise rename it (it writes a temp file and renames it onto the given name).
+# space, a ":stream" suffix, or an invisible formatting character is ignored —
+# Windows and HFS+ resolve those to the same file), or a hardlink to the
+# CLAUDE.md in the same directory. Anywhere, not just the session root: a parent
+# session editing a child's CLAUDE.md is held to exactly the rule the child's own
+# session is. As referenced: a symlink is its own file, and a hardlink in ANOTHER
+# directory is not detected — making either needs Bash or a human (BDRY-10). An
+# existing CLAUDE.md must be addressed by its exact on-disk spelling: on a
+# case-insensitive filesystem the tool would otherwise rename it (it writes a
+# temp file and renames it onto the given name).
 #
 # RULE — judged by the RESULT, never by where the edit lands. The guard computes
 # the file as it will be after the tool runs, drops the allowlisted frontmatter
@@ -20,6 +21,14 @@
 # the exact form `<key>: <value>` for an allowlisted key, at column 0, inside the
 # leading frontmatter block, may be added, changed, moved or removed — and a
 # moved line is re-checked like a changed one.
+#
+# WHERE THE BLOCK ENDS. Claude Code itself strips frontmatter with a regex that
+# stops at the FIRST "---" anywhere in the text, and injects the rest as
+# instructions; the codex readers stop at the first line that is exactly "---".
+# So the guard ends the block at the first line containing "---" and requires
+# that line to be exactly "---" — otherwise the readers disagree and the file is
+# human-only. A block that ends past 64 KiB is refused too: containment-guard
+# reads only that much.
 #
 # MODELLING THE TOOL. The result is the guard's own computation, so where Claude
 # Code's Edit tool is known to transform text, the guard checks EVERY result the
@@ -31,10 +40,14 @@
 #   - Line endings: the tool rewrites CRLF/LF across the whole file. Rather than
 #     model that, a file or result containing a CR, a BOM, or any other character
 #     str.splitlines() breaks on (VT, FF, FS/GS/RS, NEL, U+2028, U+2029) is
-#     refused outright. That also keeps every frontmatter reader in the codex
-#     agreeing on where the block ends, since they all split on LF.
-#   - A frontmatter block that ends past 64 KiB is refused: containment-guard
-#     reads only that much, so an edit there could change what it decides.
+#     refused outright.
+#   - Paths: on POSIX a backslash is an ordinary filename character (Claude Code
+#     keeps it), so a path containing one that names a CLAUDE.md either way is
+#     refused as ambiguous; on Windows every file call goes through the literal
+#     extended-length form (\\?\), as Claude Code's runtime does, so trailing
+#     dots and long paths mean the same thing to both.
+#   - A CLAUDE.md under .state/memory/ is refused: the tools re-stamp frontmatter
+#     of .md files in the auto-memory directory.
 #
 # WHY A KEY ALLOWLIST, not "frontmatter is fair game": root: sets the containment
 # ceiling ^ — containment-guard re-reads it on every write, so flipping a child's
@@ -55,13 +68,11 @@
 # (KMc, 2026-09-11). See frontmatter.md.
 #
 # FAILS CLOSED on anything it cannot vet: undecodable input or file, a path it
-# cannot stat cleanly (only a clean not-found counts as absent), no leading
-# frontmatter block, an Edit whose old_string is not found verbatim (the Edit
-# tool can match curly quotes loosely, which the guard does not reproduce), a
-# device-namespace or drive-relative path, a drive path under a POSIX
-# interpreter, a /proc or /dev/fd path (it would resolve in the hook process, not
-# the tool), a Windows path too long to vet, a missing interpreter, or any
-# unexpected error.
+# cannot stat cleanly, no leading frontmatter block, an Edit whose old_string is
+# not found verbatim (the Edit tool can match curly quotes loosely, which the
+# guard does not reproduce), device-namespace, drive-relative and /proc paths, a
+# drive path under a POSIX interpreter, a Windows path too long to vet, a missing
+# or hanging interpreter, or any unexpected error.
 #
 # NOT COVERED: Bash writes (sed -i, redirection, interpreters). This hook sees
 # Write/Edit only — the same limit as every Write/Edit guard here (BDRY-10). Two
@@ -75,26 +86,35 @@
 
 trap '' PIPE    # a closed stderr must not turn the final echo into rc=141 (non-blocking)
 
+TO=$(command -v timeout || command -v gtimeout || true)
+case "$TO" in *[Ss][Yy][Ss][Tt][Ee][Mm]32*) TO= ;; esac   # Windows timeout.exe pauses, it does not limit
+
 GUARD_PY=
+GUARD_PY_PRE=
 while IFS= read -r c; do
-    [ -n "$c" ] || continue
+    case "$c" in /*) ;; *) continue ;; esac   # a relative PATH entry would resolve inside the project
     case "$c" in
         */[Ww][Ii][Nn][Dd][Oo][Ww][Ss][Aa][Pp][Pp][Ss]/*)
             # An App Execution Alias: a real Store Python, or the stub that only
             # offers to install one. Keep it only if it actually runs.
-            "$c" -I -c "" >/dev/null 2>&1 </dev/null || continue ;;
+            ${TO:+"$TO" 10} "$c" -I -c "" >/dev/null 2>&1 </dev/null || continue ;;
     esac
     GUARD_PY=$c
     break
 done <<EOF
 $(type -ap python3 python 2>/dev/null)
 EOF
+if [ -z "$GUARD_PY" ] && c=$(command -v py 2>/dev/null) && [ "${c#/}" != "$c" ] \
+   && ${TO:+"$TO" 10} "$c" -3 -I -c "" >/dev/null 2>&1 </dev/null; then
+    GUARD_PY=$c                                  # the Windows launcher, when no python is on PATH
+    GUARD_PY_PRE=-3
+fi
 if [ -z "$GUARD_PY" ]; then
     echo "BLOCKED: no python interpreter available for the CLAUDE.md guard (fail closed)." >&2
     exit 2
 fi
 
-"$GUARD_PY" -I -X utf8 -c 'import json, os, posixpath, re, sys, unicodedata
+${TO:+"$TO" 60} "$GUARD_PY" $GUARD_PY_PRE -I -X utf8 -c 'import json, ntpath, os, posixpath, re, sys, unicodedata
 
 # Frontmatter keys Claude may add, change or remove — the ONLY list; everything
 # else is human-only. Each key needs a value grammar in VALUE (a key without one
@@ -104,7 +124,7 @@ fi
 ALLOWED = ("name", "orchestrator")
 VALUE = {
     "name": re.compile(r"[ \t]{1,8}[^ \t\[\]{}&*!|>%@`].{0,199}"),
-    "orchestrator": re.compile(r"[ \t]*(true|false)[ \t]*", re.I),
+    "orchestrator": re.compile(r"[ \t]{1,8}(true|false)[ \t]{0,8}"),
 }
 LINE = re.compile("(" + "|".join(re.escape(k) for k in ALLOWED) + r"):([^\n]*)\n")
 MAX_BYTES = 1048576
@@ -113,6 +133,7 @@ BAD_CATEGORIES = ("Cc", "Cf", "Cs", "Co", "Cn", "Zl", "Zp")
 DRIVE = re.compile(r"^[A-Za-z]:/")
 DRIVE_RELATIVE = re.compile(r"^[A-Za-z]:(?!/)")
 NL = chr(10)
+BS = chr(92)
 # Every line break str.splitlines() honours other than LF — CR, VT, FF, FS, GS,
 # RS, NEL, U+2028, U+2029 — plus the BOM.
 UNVETTABLE = "".join(chr(c) for c in (13, 11, 12, 28, 29, 30, 133, 8232, 8233, 65279))
@@ -161,9 +182,41 @@ if target is None:
         die("BLOCKED: file_path/notebook_path is present but not a string (fail closed).")
     sys.exit(0)                        # no path parameter: not a file write
 
+
 # ---- is it a CLAUDE.md? --------------------------------------------------------
-raw = target.replace(chr(92), "/")
-device = raw[:4] in ("//./", "//?/")   # Windows device / long-path namespace
+def marker_name(b):
+    # Windows opens CLAUDE.md for "CLAUDE.md.", "CLAUDE.md " and "CLAUDE.md::$DATA";
+    # HFS+ ignores invisible formatting characters in names.
+    if DRIVE_RELATIVE.match(b):
+        b = b[2:]
+    b = b.split(":", 1)[0]
+    b = "".join(c for c in b if unicodedata.category(c) != "Cf")
+    return b.rstrip(". ").casefold() == "claude.md"
+
+
+def fs(path):
+    # The path to hand the OS. On Windows: the literal extended-length form, as
+    # Claude Code runtime uses — no stripping of trailing dots, no MAX_PATH limit.
+    if not WIN:
+        return path
+    w = path.replace("/", BS)
+    if w.startswith(BS + BS):
+        return BS + BS + "?" + BS + "UNC" + w[1:]
+    return BS + BS + "?" + BS + w
+
+
+def last(path):
+    return path.rstrip("/").rsplit("/", 1)[-1]
+
+
+if not WIN and BS in target:
+    # On POSIX a backslash is an ordinary filename character — Claude Code keeps
+    # it — but read as a separator it names a different file. If either reading
+    # is a CLAUDE.md, refuse rather than guess.
+    if marker_name(last(posixpath.normpath(target))) or marker_name(last(posixpath.normpath(target.replace(BS, "/")))):
+        die("BLOCKED: a path containing a backslash that names a CLAUDE.md is ambiguous on POSIX (fail closed).")
+
+raw = target.replace(BS, "/") if WIN else target
 p = raw
 if not (p.startswith("/") or DRIVE.match(p) or DRIVE_RELATIVE.match(p)):
     # Claude Code resolves a relative path against the session working directory,
@@ -171,18 +224,18 @@ if not (p.startswith("/") or DRIVE.match(p) or DRIVE_RELATIVE.match(p)):
     anchor = doc.get("cwd")
     if not (isinstance(anchor, str) and anchor.strip()):
         anchor = os.environ.get("CLAUDE_PROJECT_DIR") or ""
-    anchor = anchor.strip().replace(chr(92), "/")
-    if anchor:
+    if anchor.strip():
+        anchor = anchor.replace(BS, "/") if WIN else anchor
         p = anchor.rstrip("/") + "/" + p
-p = posixpath.normpath(p)
-base = p.rsplit("/", 1)[-1]
+device = p[:4] in ("//./", "//?/")    # Windows device / long-path namespace
+if WIN:
+    p = ntpath.normpath(p).replace(BS, "/")    # keeps the drive and trailing dots
+else:
+    if p.startswith("//"):
+        p = "/" + p.lstrip("/")        # POSIX: // is /
+    p = posixpath.normpath(p)
+base = last(p)
 anchored = p.startswith("/") or bool(DRIVE.match(p))
-
-
-def marker_name(b):
-    # Windows opens CLAUDE.md for "CLAUDE.md.", "CLAUDE.md " and "CLAUDE.md::$DATA".
-    b = b.split(":", 1)[0] if DRIVE_RELATIVE.match(b) is None else b[2:]
-    return b.rstrip(". ").casefold() == "claude.md"
 
 
 def same_file_as_marker(path):
@@ -190,8 +243,8 @@ def same_file_as_marker(path):
     # it; see frontmatter.md), but a hardlink to the marker IS the marker.
     d = path.rsplit("/", 1)[0] if "/" in path else "."
     try:
-        a = os.lstat(path)
-        b = os.lstat((d or "/") + "/CLAUDE.md")
+        a = os.lstat(fs(path))
+        b = os.lstat(fs((d or "/") + "/CLAUDE.md"))
     except (OSError, ValueError):
         return False
     return a.st_ino != 0 and (a.st_dev, a.st_ino) == (b.st_dev, b.st_ino)
@@ -202,21 +255,23 @@ if not marker_name(base):
         sys.exit(0)                    # not a CLAUDE.md: this guard has no opinion
 if device:
     die("BLOCKED: a device-namespace path (//./ or //?/ form) to a CLAUDE.md cannot be vetted (fail closed).")
-if not anchored:                       # relative with no CLAUDE_PROJECT_DIR, or drive-relative (C:name)
+if not anchored:                       # relative with no cwd / CLAUDE_PROJECT_DIR, or drive-relative (C:name)
     die("BLOCKED: a relative or drive-relative CLAUDE.md path cannot be vetted (fail closed).")
 if DRIVE.match(p) and not WIN:
     die("BLOCKED: a Windows drive path to a CLAUDE.md cannot be vetted under a POSIX interpreter (fail closed).")
 if not WIN and (p == "/proc" or p.startswith("/proc/") or p.startswith("/dev/fd/")):
     die("BLOCKED: a /proc or /dev/fd path to a CLAUDE.md would resolve in the hook process, not the tool (fail closed).")
-if WIN and len(p) > WIN_PATH_MAX:
+if WIN and len(p.encode("utf-16-le")) // 2 > WIN_PATH_MAX:
     die("BLOCKED: this CLAUDE.md path is too long to vet reliably on Windows (fail closed).")
+if "/.state/memory/" in "/" + p.casefold():
+    die("BLOCKED: a CLAUDE.md in the auto-memory directory is re-stamped by the tools, so it cannot be vetted.")
 
 # ---- the resulting text(s) -------------------------------------------------------
 if tool not in ("Write", "Edit"):
     die("BLOCKED: CLAUDE.md may only be changed through Write or Edit (tool: " + str(tool) + ").")
 
 try:
-    os.lstat(p)
+    os.lstat(fs(p))
     exists = True
 except FileNotFoundError:
     exists = False
@@ -227,16 +282,19 @@ if not exists:
         die("BLOCKED: creating a CLAUDE.md is human-only — its text loads as instructions into this and other sessions.",
             "  Scaffold with the command that owns it (/new-project, /bundle), or give the user the text to create.")
     die("BLOCKED: Edit targets a CLAUDE.md that does not exist (fail closed).")
+folder = p.rsplit("/", 1)[0] or "/"
+if re.fullmatch(r"[A-Za-z]:", folder):
+    folder += "/"                      # "D:" alone would be the current folder on D:
 try:
-    names = os.listdir(p.rsplit("/", 1)[0] or "/")
+    names = os.listdir(fs(folder))
 except OSError as e:
     die("BLOCKED: cannot list the directory of the CLAUDE.md target (fail closed).", "  " + str(e))
 if base not in names:
     die("BLOCKED: address this CLAUDE.md by its exact on-disk name — the tool would rename it to " + base + ".")
-if not os.path.isfile(p):
+if not os.path.isfile(fs(p)):
     die("BLOCKED: CLAUDE.md target is not a regular file (fail closed).")
 try:
-    with open(p, "rb") as fh:
+    with open(fs(p), "rb") as fh:
         raw_bytes = fh.read(MAX_BYTES + 1)
 except OSError as e:
     die("BLOCKED: cannot read CLAUDE.md to vet the change (fail closed).", "  " + str(e))
@@ -294,11 +352,14 @@ def skeleton(text, which):
             "  a CLAUDE.md without one is human-maintained in full.")
     close = None
     for i in range(1, len(lines)):
-        if lines[i].startswith("---"):  # earliest possible fence: never over-extend
+        if "---" in lines[i]:          # Claude Code ends the block at the first --- anywhere
             close = i
             break
     if close is None:
         die("BLOCKED: " + which + " CLAUDE.md frontmatter is unterminated (fail closed).")
+    if lines[close] != "---" + NL:
+        die("BLOCKED: " + which + " CLAUDE.md frontmatter has --- before a clean closing fence (a line that is exactly ---);",
+            "  readers, Claude Code included, would end the block in different places, so the file is human-maintained.")
     if len("".join(lines[:close + 1]).encode("utf-8", "surrogatepass")) > SCAN_CAP:
         die("BLOCKED: " + which + " CLAUDE.md frontmatter runs past 64 KiB, where the containment guard stops reading (fail closed).")
     kept, keys, loose = [lines[0]], {}, set()
@@ -321,7 +382,7 @@ def skeleton(text, which):
 
 def valid(key, val):
     if "---" in val:
-        return False                   # line-unanchored readers would end the block here
+        return False                   # it would end the block for Claude Code and cboot
     if any(unicodedata.category(c) in BAD_CATEGORIES and c != chr(9) for c in val):
         return False
     return VALUE[key].fullmatch(val) is not None
@@ -345,7 +406,8 @@ for new in results:
     for k in changed:
         if k in new_keys and not valid(k, new_keys[k][0]):
             die("BLOCKED: invalid value for " + k + ": in CLAUDE.md frontmatter.",
-                "  orchestrator: takes true or false; name: takes one line of printable text (max 200, no ---).")
+                "  orchestrator: takes 1-8 blanks then true or false. name: takes 1-8 blanks, then one line of",
+                "  printable text (max 200) that does not start with [ ] { } & * ! | > % @ or a backtick and has no ---.")
 sys.exit(0)
 '
 rc=$?

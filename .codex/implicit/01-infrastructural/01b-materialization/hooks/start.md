@@ -36,7 +36,7 @@ PreToolUse hooks provide **structural enforcement** — they block violations be
 | State gravity | `gravity-guard.sh` | Blocks `.state/` writes outside `^` |
 | Push / remote | `remote-guard.sh` | Blocks main/master pushes, force-pushes, and GitHub API writes in Bash |
 | Audit immutability | `audit-immutability-guard.sh` | Blocks writes to existing audit run folders |
-| CLAUDE.md immutability | `claude-md-immutability-guard.sh` | Every CLAUDE.md: body and structural keys (`root:`, `apex-root:`, `codex:`) human-only |
+| CLAUDE.md immutability | `claude-md-immutability-guard.sh` | Every CLAUDE.md: creation, the body and every key but `name:`/`orchestrator:` human-only |
 
 ## Adjacent scripts (NOT registered hooks)
 
