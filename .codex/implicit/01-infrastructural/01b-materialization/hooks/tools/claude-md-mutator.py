@@ -81,9 +81,14 @@ def validate_value(key, value):
         value.encode("utf-8")
     except UnicodeEncodeError:
         die("REFUSED: a %s: value is not encodable as UTF-8 (fail closed)." % key)
-    if "\n" in value or "\r" in value:
+    # Reject a line break of ANY kind — not just LF/CR but the Unicode line and
+    # paragraph separators and NEL that str.splitlines() and YAML-1.1 recognise
+    # (a trailing break included). Otherwise the value could inject a second
+    # frontmatter line under a splitlines-based reader.
+    if value != "".join(value.splitlines()):
         die("REFUSED: a %s: value may not contain a line break." % key)
-    if any(ord(c) < 0x20 or ord(c) == 0x7F for c in value):
+    # Controls: C0 (<0x20), DEL (0x7F) and the C1 block (0x80-0x9F).
+    if any(ord(c) < 0x20 or 0x7F <= ord(c) <= 0x9F for c in value):
         die("REFUSED: a %s: value may not contain control characters." % key)
     if value != value.strip():
         die("REFUSED: a %s: value may not have leading or trailing whitespace "
@@ -91,6 +96,12 @@ def validate_value(key, value):
     if key == "name":
         if not (1 <= len(value) <= 200):
             die("REFUSED: name: must be 1..200 characters (got %d)." % len(value))
+        if value[0] in "\"'" or value[-1] in "\"'":
+            die("REFUSED: name: may not begin or end with a quote (a reader "
+                "strips edge quotes, so the file would not match the value).")
+        if "---" in value:
+            die("REFUSED: name: may not contain '---' (a reader that closes the "
+                "frontmatter on a '---' substring would truncate the value).")
         return value
     if key == "orchestrator":
         if value not in ("true", "false"):
@@ -183,10 +194,11 @@ def apply_set(lines, close, key, value):
     newline = "%s: %s" % (key, value)
     if hits:
         i = hits[0]
-        rest = lines[i][len(key) + 1:]  # text after "key:"
-        if re.match(r"^[ \t]*[>|]", rest):
-            die("REFUSED: %r has a block-scalar value (%r); edit it by hand."
-                % (key, lines[i]))
+        # Refuse a genuine multi-line value — a block scalar or a wrapped
+        # collection, signalled by an indented continuation line — rather than
+        # replace only the key line and orphan the rest. A single-line value that
+        # merely starts with > or | is a literal the readers take verbatim, so it
+        # stays editable (and re-editable, once written).
         if i + 1 < close and re.match(r"^[ \t]", lines[i + 1]):
             die("REFUSED: %r has a multi-line value (the next line is indented); "
                 "edit it by hand." % key)
@@ -209,7 +221,7 @@ def canonical_target(path):
     if base in entries:
         return path
     for entry in entries:
-        if entry.lower() == base.lower():
+        if entry.lower() == base.lower() and os.path.isfile(os.path.join(d, entry)):
             return os.path.join(d, entry)
     return path
 
@@ -242,7 +254,12 @@ def main(argv=None):
 
     if os.path.basename(args.path).lower() != "claude.md":
         die("REFUSED: target basename is not CLAUDE.md: %r." % args.path)
+    if os.path.islink(args.path):
+        die("REFUSED: %r is a symlink; edit the real file directly "
+            "(a symlink target is outside this mutator's scope)." % args.path)
     if not os.path.isfile(args.path):
+        if os.path.exists(args.path):
+            die("REFUSED: %r exists but is not a regular file (fail closed)." % args.path)
         die("REFUSED: %r does not exist. This mutator edits an existing "
             "CLAUDE.md; creating one is /new-project's job." % args.path)
 
