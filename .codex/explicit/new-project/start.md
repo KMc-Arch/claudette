@@ -54,14 +54,16 @@ Every child is scaffolded with `~inbox/` and `~outbox/` per the apex **Exchange 
 **Before running the script**, get a one-line description of what the project is about. If the creation request already gives the purpose, use it; otherwise ask the user.
 
 ```
-python .codex/explicit/new-project/bootstrap-child.py "<name>" --description "<one line>" --project-root ^
+python .codex/explicit/new-project/bootstrap-child.py '<name>' --description '<one line>' --project-root ^
 ```
 
-The description must go in at scaffold time. Once a `CLAUDE.md` exists, its body is immutable to Claude (`claude-md-immutability-guard.sh`), so it cannot be added with an Edit afterwards. If the user declines to give one, scaffold without `--description`; adding it later is a human edit.
+Pass the name and the description in **single quotes**, writing any `'` inside them as `'\''`. Double quotes let the shell run backtick and `$(...)` text and expand `$VAR` — and a mangled description cannot be repaired afterwards.
+
+The description must go in at scaffold time. Once a `CLAUDE.md` exists, its body is immutable to Claude (`claude-md-immutability-guard.sh`), so it cannot be added with an Edit afterwards. If the user declines to give one, scaffold without `--description`; adding it later is a human edit. The script refuses a name containing a line break, and a name or description that cannot be encoded as UTF-8, before it copies anything.
 
 ## Post-Creation
 
-If the script flagged a parent-rename opportunity, surface it and offer to update the parent's `name:` with a ` Group` suffix. Non-blocking — the user may choose to keep the parent as a non-group. (`name:` is an allowlisted frontmatter key, so that Edit is permitted.)
+If the script flagged a parent-rename opportunity, surface it and offer to update the parent's `name:` with a ` Group` suffix. Non-blocking — the user may choose to keep the parent as a non-group. `name:` is an agent-editable frontmatter key, so the Edit is normally permitted. Add or change only the `name:` line itself. The guard refuses the Edit when the parent's CLAUDE.md has CRLF line endings, a BOM, or an indented or quoted `name:` line, or when the new value breaks the `name:` grammar (see `01a-resolution/frontmatter.md`). In those cases the rename is a human edit: tell the user the exact line to set.
 
 ## Spec
 

@@ -10,7 +10,7 @@ scaffolding), then fills `name:` (and, with --description, the one-line body
 description) and flags any parent-group-promotion opportunity.
 
 Usage:
-    python bootstrap-child.py "<name>" [--description "<one line>"] [--project-root <path>]
+    python bootstrap-child.py '<name>' [--description '<one line>'] [--project-root <path>]
 """
 
 import argparse
@@ -224,6 +224,20 @@ def main() -> int:
 
     if not name:
         print("  Error: name is empty.")
+        return 1
+    # Both land in CLAUDE.md, whose body and structural keys Claude can never
+    # repair afterwards (claude-md-immutability-guard.sh) — so refuse bad input
+    # before anything is copied. A line break in the name would inject lines into
+    # the frontmatter; text that cannot be encoded makes write_text leave an
+    # empty CLAUDE.md (it truncates before encoding).
+    if len(name.splitlines()) > 1:
+        print("  Error: name contains a line break.")
+        return 1
+    try:
+        name.encode("utf-8")
+        description.encode("utf-8")
+    except UnicodeEncodeError as e:
+        print(f"  Error: name or description cannot be encoded as UTF-8 ({e}).")
         return 1
 
     try:

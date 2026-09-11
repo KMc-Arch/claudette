@@ -345,11 +345,20 @@ def _cm_fixture() -> Path:
     return d / "CLAUDE.md"
 
 
+def _cm_blocked(t: HookTestRunner, test_name: str, label: str, code: int, err: str):
+    # rc=2 alone is also bash's own error exit: a guard that never ran would pass.
+    # A block must also say so on stderr.
+    if code == 2 and "BLOCKED:" in err:
+        t.ok(test_name, f"{label} (exit 2, BLOCKED:)")
+    else:
+        t.fail(test_name, label, f"Expected exit 2 with a BLOCKED: line, got {code}. stderr: {err[:200]}")
+
+
 @register_test("claude-md-immutability-guard.sh")
 def test_claude_md_blocks_root_claude_md(t: HookTestRunner):
     target = str(t.root / "CLAUDE.md")
     code, out, err = t.run_hook("claude-md-immutability-guard.sh", write_tool(target))
-    t.assert_exit("CM01", "Blocks an unvettable Write to root CLAUDE.md", code, 2, err)
+    _cm_blocked(t, "CM01", "Blocks an unvettable Write to root CLAUDE.md", code, err)
 
 @register_test("claude-md-immutability-guard.sh")
 def test_claude_md_allows_other_files(t: HookTestRunner):
@@ -373,7 +382,7 @@ def test_claude_md_blocks_existing_body_edit(t: HookTestRunner):
                                                    old_string="Fixture body.", new_string="Changed."))
     finally:
         shutil.rmtree(target.parent, ignore_errors=True)
-    t.assert_exit("CM04", "Blocks a body edit of any existing CLAUDE.md", code, 2, err)
+    _cm_blocked(t, "CM04", "Blocks a body edit of any existing CLAUDE.md", code, err)
 
 @register_test("claude-md-immutability-guard.sh")
 def test_claude_md_allows_allowlisted_key(t: HookTestRunner):
@@ -396,7 +405,7 @@ def test_claude_md_blocks_root_flip(t: HookTestRunner):
                                                    old_string="root: true", new_string="root: false"))
     finally:
         shutil.rmtree(target.parent, ignore_errors=True)
-    t.assert_exit("CM06", "Blocks changing root: (a protected key)", code, 2, err)
+    _cm_blocked(t, "CM06", "Blocks changing root: (a protected key)", code, err)
 
 
 # -- boot-inject.py --
