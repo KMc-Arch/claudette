@@ -6,10 +6,11 @@ frontmatter verbatim. The folder name is derived from it per the Naming
 Convention in .codex/specs/child-project.md.
 
 Copies the child template from .templates/child/ (CLAUDE.md + full .state/
-scaffolding), then fills `name:` and flags any parent-group-promotion opportunity.
+scaffolding), then fills `name:` (and, with --description, the one-line body
+description) and flags any parent-group-promotion opportunity.
 
 Usage:
-    python bootstrap-child.py "<name>" [--project-root <path>]
+    python bootstrap-child.py "<name>" [--description "<one line>"] [--project-root <path>]
 """
 
 import argparse
@@ -145,6 +146,25 @@ def fill_name_in_claude_md(target: Path, name: str) -> None:
     claude_md.write_text(new_text, encoding="utf-8")
 
 
+READ_LINE = re.compile(r"^(Read `\.state/start\.md`\.)[ \t]*$", re.MULTILINE)
+
+
+def fill_description_in_claude_md(target: Path, description: str) -> None:
+    """Write the one-line description into the body, above the `Read .state/start.md` line.
+
+    This happens here, at scaffold time, because claude-md-immutability-guard.sh
+    makes the body of an existing CLAUDE.md immutable to Claude: the description
+    cannot be added with an Edit once the file exists.
+    """
+    claude_md = target / "CLAUDE.md"
+    text = claude_md.read_text(encoding="utf-8")
+    new_text, n = READ_LINE.subn(lambda m: f"{description}\n\n{m.group(1)}", text, count=1)
+    if n == 0:
+        raise RuntimeError(f"Could not place the description in {claude_md}: "
+                           f"no `Read .state/start.md` line")
+    claude_md.write_text(new_text, encoding="utf-8")
+
+
 def find_apex(start: Path) -> Path | None:
     """Walk up from `start` looking for a CLAUDE.md with `apex-root: true`.
 
@@ -190,10 +210,17 @@ def main() -> int:
         default=Path.cwd(),
         help="Parent project root (default: cwd)",
     )
+    parser.add_argument(
+        "--description",
+        default=None,
+        help="One-line project description, written into the CLAUDE.md body at scaffold time",
+    )
     args = parser.parse_args()
 
     parent = args.project_root.resolve()
     name = args.name.strip()
+    # One line: collapse any whitespace run (incl. newlines) to a single space.
+    description = " ".join((args.description or "").split())
 
     if not name:
         print("  Error: name is empty.")
@@ -213,6 +240,13 @@ def main() -> int:
     if not template_dir.exists():
         print(f"  Error: Child template not found at {template_dir}")
         return 1
+    # Check the description has somewhere to go BEFORE copying anything: a
+    # scaffold left without it cannot be fixed by Claude afterwards.
+    if description and not READ_LINE.search(
+            (template_dir / "CLAUDE.md").read_text(encoding="utf-8")):
+        print(f"  Error: template CLAUDE.md has no `Read .state/start.md` line "
+              f"to place --description above.")
+        return 1
 
     target, suffix = resolve_folder_path(parent, folder_base)
 
@@ -221,8 +255,10 @@ def main() -> int:
     # would otherwise abort the whole copy.
     copy_tree_tolerant(template_dir, target)
 
-    # Fill name: in CLAUDE.md
+    # Fill name: (frontmatter) and the description (body) in CLAUDE.md
     fill_name_in_claude_md(target, name)
+    if description:
+        fill_description_in_claude_md(target, description)
 
     # Note: .claude/settings.local.json (autoMemoryDirectory + perms), settings.json,
     # skill shims, and prefs-resolved.json are all created by the materialization

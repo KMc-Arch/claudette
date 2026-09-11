@@ -28,6 +28,19 @@ them at mutated copies.
   `guard-core` markers) is byte-identical in both guards.
   Run: `bash test_guards_identical.sh` — exit 0 = identical.
 
+- `test_claude_md_guard.sh` — `claude-md-immutability-guard.sh`: EVERY CLAUDE.md
+  (case-insensitive name, hardlink / short-name alias, any depth — a parent
+  session is held to the child's rule) has an immutable body, fences and
+  structural keys; only `name:` / `orchestrator:` lines with valid values may
+  change; the edit is judged by its result (Edit, `replace_all`, full Write);
+  creating a new CLAUDE.md is allowed; every unvettable input fails **closed**.
+  Run: `bash test_claude_md_guard.sh` — exit 0 = all pass.
+
+- `mutate_claude_md_guard.sh` — the mutation proof for the suite above: 30
+  mutants, each reverting one hardening, each required to turn the suite red;
+  the three equivalent mutants it deliberately skips are named in its header.
+  Run: `bash mutate_claude_md_guard.sh` — exit 0 = every mutant caught. ~3 minutes.
+
 - `mutate_guards.sh` — the mutation proof. Reverts each hardening one at a time
   and requires the suites above to go **red**. This is what makes them evidence
   rather than decoration; run it after any change to a guard or a suite.

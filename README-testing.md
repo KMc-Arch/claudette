@@ -55,7 +55,7 @@ Feeds mock tool-call JSON to each hook script via stdin and validates exit codes
 | containment-guard.sh | CG01-CG04 | Blocks writes outside project root, allows inside, handles relative paths |
 | gravity-guard.sh | GG01-GG03 | Blocks `.state/` writes to parent project, allows local state writes |
 | audit-immutability-guard.sh | AI01-AI03 | Blocks edits to existing audit findings, allows decisions.md and non-audit writes |
-| claude-md-immutability-guard.sh | CM01-CM03 | Blocks root CLAUDE.md edits, allows child CLAUDE.md and other files |
+| claude-md-immutability-guard.sh | CM01-CM06 | Blocks body and protected-key changes to any CLAUDE.md; allows agent-editable keys, creating a new CLAUDE.md, and other files (full matrix + mutation proof: `hooks/tests/test_claude_md_guard.sh`, `mutate_claude_md_guard.sh`) |
 | boot-inject.py | BI01-BI03 | Outputs boot instructions with command index |
 | prefs-staleness-check.sh | PS01-PS04 | Detects missing prefs-resolved.json, no false warnings when fresh |
 | memory-redirect-check.sh | MR01-MR04 | Warns when auto-memory not configured, silent when correct |

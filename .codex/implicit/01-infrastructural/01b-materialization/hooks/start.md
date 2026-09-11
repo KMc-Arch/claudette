@@ -19,7 +19,7 @@ Boot-time hook registration. These scripts implement structural enforcement of g
 | `gravity-guard.sh` | PreToolUse | Write\|Edit | Block `.state/` writes outside `^` |
 | `remote-guard.sh` | PreToolUse | Bash | Block pushes to main/master, force-pushes, and direct GitHub API/issue/release access; feature-branch pushes and PR ops allowed (defense-in-depth behind `permissions.deny`) |
 | `audit-immutability-guard.sh` | PreToolUse | Write\|Edit | Block writes to existing audit folders (except `decisions.md`) |
-| `claude-md-immutability-guard.sh` | PreToolUse | Write\|Edit | Block writes to root CLAUDE.md |
+| `claude-md-immutability-guard.sh` | PreToolUse | Write\|Edit | Every CLAUDE.md: block body and protected-key changes (only `name:`/`orchestrator:` are agent-editable); creating a new one is allowed |
 | `codex-edit-notify.sh` | PostToolUse | Write\|Edit | Notify when codex executables are edited |
 | `trace-logger.sh` | PostToolUse | Read\|Write\|Edit\|Bash\|Glob\|Grep | Append tool calls + output size to session trace |
 | `session-close.sh` | Stop | (all) | Prompt for state-abstract + compliance + trace finalization |
@@ -36,7 +36,7 @@ PreToolUse hooks provide **structural enforcement** — they block violations be
 | State gravity | `gravity-guard.sh` | Blocks `.state/` writes outside `^` |
 | Push / remote | `remote-guard.sh` | Blocks main/master pushes, force-pushes, and GitHub API writes in Bash |
 | Audit immutability | `audit-immutability-guard.sh` | Blocks writes to existing audit run folders |
-| CLAUDE.md immutability | `claude-md-immutability-guard.sh` | Blocks writes to root CLAUDE.md |
+| CLAUDE.md immutability | `claude-md-immutability-guard.sh` | Every CLAUDE.md: body and structural keys (`root:`, `apex-root:`, `codex:`) human-only |
 
 ## Adjacent scripts (NOT registered hooks)
 

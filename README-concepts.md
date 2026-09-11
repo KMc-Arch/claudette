@@ -109,7 +109,7 @@ Most governance is directive-based -- Claude reads rules and follows them. For t
 | `gravity-guard.sh` | Writing to `.state/` in a parent project (state leaking upward) | Write, Edit |
 | `remote-guard.sh` | Pushes to main/master, force-pushes, direct GitHub API access | Bash |
 | `audit-immutability-guard.sh` | Modifying existing audit records | Write, Edit |
-| `claude-md-immutability-guard.sh` | Editing the root CLAUDE.md | Write, Edit |
+| `claude-md-immutability-guard.sh` | Changing any CLAUDE.md body or protected frontmatter key (`name:`/`orchestrator:` stay agent-editable; creating a new CLAUDE.md is allowed) | Write, Edit |
 
 There is deliberately **no API-access hook and no directive-level hold**. API cost and egress are governed out-of-band by the account-level **$0 API quota**: with no credits to spend, an API call fails regardless of call origin. This is an *admin* control — a legitimately authorized use is enabled by raising the quota, not by editing the repo — which is why it is preferred over a hard in-repo directive that would kneecap valid authorization. The former `api-guard.sh` — a bypassable command-line pattern match that also tripped on the mandated `noreply@anthropic.com` commit trailer — was retired 2026-08-09 in favor of that single, cleaner control.
 

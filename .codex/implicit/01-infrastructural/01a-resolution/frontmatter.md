@@ -89,6 +89,26 @@ See `.codex/start.md` for the full table. The keys processed during resolution:
 
 ---
 
+## Who May Change a CLAUDE.md
+
+Enforced by `claude-md-immutability-guard.sh` (PreToolUse, Write/Edit) on **every** `CLAUDE.md` at any depth — the name matched case-insensitively, plus hardlink and NTFS 8.3 short-name aliases. A parent session editing a child's `CLAUDE.md` is held to the same rule as the child's own session.
+
+- **The body, the fences, and every key not in the table below are human-maintained.** `root:` and `apex-root:` set the containment ceiling `^` — the containment guard re-reads them on every write, so a flipped `root:` would widen a session's fence to its parent. `codex:` selects which governance and hooks a project runs under.
+- **Agent-editable keys.** Claude may add, change or remove a line `<key>: <value>` at column 0 inside the leading block, for these keys only:
+
+  | Key | Value | Purpose |
+  |---|---|---|
+  | `name` | one line of printable text, max 200 chars, not starting with a YAML indicator | display name — `/new-project` offers to add ` Group` to a parent |
+  | `orchestrator` | `true` \| `false` | orchestrator designation — **reserved: no reader consumes it yet** |
+
+- **Creating** a `CLAUDE.md` that does not exist yet is allowed (scaffolding: `/new-project`, `/bundle`, `/rebuild`). A new marker can only add a root, which fences tighter, never looser.
+- The guard judges the **result** — the file as it will be after the tool runs — never where the edit lands. Anything it cannot vet (no leading block, non-UTF-8, an `old_string` not found verbatim, ...) fails closed.
+- The grammar is **line-oriented** (`key: value` per line); no reader in the codex parses frontmatter as full YAML, so moving or inserting an agent-editable line cannot change another key's meaning. A reader that adopts full YAML must revisit this.
+- To make a key agent-editable, add it to `ALLOWED` and `VALUE` in the guard and to this table.
+- **Bash writes are not covered** — the guard sees Write/Edit only (BDRY-10).
+
+---
+
 ## Rules for Readers
 
 1. **Always parse frontmatter first.** Before interpreting any body content, extract and process YAML frontmatter.

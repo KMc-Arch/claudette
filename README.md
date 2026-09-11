@@ -91,7 +91,7 @@ See [README-commands.md](README-commands.md) for detailed usage, parameters, and
 | `gravity-guard` | Writing to `.state/` in a parent project |
 | `remote-guard` | Pushes to main/master, force-pushes, direct GitHub API access |
 | `audit-immutability-guard` | Modifying existing audit records |
-| `claude-md-immutability-guard` | Editing the root CLAUDE.md |
+| `claude-md-immutability-guard` | Changing any CLAUDE.md body or protected frontmatter key (only `name:`/`orchestrator:` are agent-editable) |
 | `boot-inject` | _(not a guard)_ Injects boot instructions at session start |
 | `prefs-staleness-check` | _(not a guard)_ Warns if preferences are stale |
 | `memory-redirect-check` | _(not a guard)_ Warns if auto-memory is misconfigured |

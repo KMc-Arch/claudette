@@ -332,11 +332,24 @@ def test_audit_immutability_allows_non_audit_write(t: HookTestRunner):
 
 # -- claude-md-immutability-guard.sh --
 
+# Smoke coverage only. The full matrix (aliases, value grammar, CRLF/BOM, fail-closed
+# paths) and its mutation proof live in hooks/tests/test_claude_md_guard.sh and
+# hooks/tests/mutate_claude_md_guard.sh.
+
+_CM_FIXTURE = "---\nroot: true\nname: Fixture\ncodex: ^/^/.codex\n---\n\nFixture body.\n"
+
+
+def _cm_fixture() -> Path:
+    d = Path(tempfile.mkdtemp(prefix="chooks-cm-"))
+    (d / "CLAUDE.md").write_text(_CM_FIXTURE, encoding="utf-8", newline="")
+    return d / "CLAUDE.md"
+
+
 @register_test("claude-md-immutability-guard.sh")
 def test_claude_md_blocks_root_claude_md(t: HookTestRunner):
     target = str(t.root / "CLAUDE.md")
     code, out, err = t.run_hook("claude-md-immutability-guard.sh", write_tool(target))
-    t.assert_exit("CM01", "Blocks write to root CLAUDE.md", code, 2, err)
+    t.assert_exit("CM01", "Blocks an unvettable Write to root CLAUDE.md", code, 2, err)
 
 @register_test("claude-md-immutability-guard.sh")
 def test_claude_md_allows_other_files(t: HookTestRunner):
@@ -345,10 +358,45 @@ def test_claude_md_allows_other_files(t: HookTestRunner):
     t.assert_exit("CM02", "Allows write to non-CLAUDE.md files", code, 0, err)
 
 @register_test("claude-md-immutability-guard.sh")
-def test_claude_md_allows_child_claude_md(t: HookTestRunner):
-    target = str(t.root / "ChildProject" / "CLAUDE.md")
-    code, out, err = t.run_hook("claude-md-immutability-guard.sh", write_tool(target))
-    t.assert_exit("CM03", "Allows write to child project CLAUDE.md", code, 0, err)
+def test_claude_md_allows_new_claude_md(t: HookTestRunner):
+    target = str(t.root / "ChildProject-that-does-not-exist" / "CLAUDE.md")
+    code, out, err = t.run_hook("claude-md-immutability-guard.sh",
+                                make_tool_json("Write", file_path=target, content=_CM_FIXTURE))
+    t.assert_exit("CM03", "Allows creating a new CLAUDE.md (scaffolding)", code, 0, err)
+
+@register_test("claude-md-immutability-guard.sh")
+def test_claude_md_blocks_existing_body_edit(t: HookTestRunner):
+    target = _cm_fixture()
+    try:
+        code, out, err = t.run_hook("claude-md-immutability-guard.sh",
+                                    make_tool_json("Edit", file_path=str(target),
+                                                   old_string="Fixture body.", new_string="Changed."))
+    finally:
+        shutil.rmtree(target.parent, ignore_errors=True)
+    t.assert_exit("CM04", "Blocks a body edit of any existing CLAUDE.md", code, 2, err)
+
+@register_test("claude-md-immutability-guard.sh")
+def test_claude_md_allows_allowlisted_key(t: HookTestRunner):
+    target = _cm_fixture()
+    try:
+        code, out, err = t.run_hook("claude-md-immutability-guard.sh",
+                                    make_tool_json("Edit", file_path=str(target),
+                                                   old_string="name: Fixture\n",
+                                                   new_string="name: Fixture\norchestrator: true\n"))
+    finally:
+        shutil.rmtree(target.parent, ignore_errors=True)
+    t.assert_exit("CM05", "Allows adding an allowlisted frontmatter key", code, 0, err)
+
+@register_test("claude-md-immutability-guard.sh")
+def test_claude_md_blocks_root_flip(t: HookTestRunner):
+    target = _cm_fixture()
+    try:
+        code, out, err = t.run_hook("claude-md-immutability-guard.sh",
+                                    make_tool_json("Edit", file_path=str(target),
+                                                   old_string="root: true", new_string="root: false"))
+    finally:
+        shutil.rmtree(target.parent, ignore_errors=True)
+    t.assert_exit("CM06", "Blocks changing root: (a protected key)", code, 2, err)
 
 
 # -- boot-inject.py --
