@@ -10,11 +10,12 @@ Two independent halves:
 
   * READ side is STRICT. The existing frontmatter must be "dead flat": between
     the `---` fences, every line is blank or a column-0 `key: value` with no
-    embedded line break. Anything else — an indented line, a continuation, a
-    block scalar, a flow collection, a quoted/odd key, a stray CR/NEL — is
-    REFUSED, pointing at the offending line. We never edit around a shape we
-    cannot reason about, and we never parse the file two different ways than its
-    readers do.
+    embedded line break, and no key repeats. Anything else — an indented line, a
+    continuation, a block scalar, a wrapped/multi-line value, a quoted/odd key, a
+    duplicate key, a stray CR/NEL — is REFUSED, pointing at the offending line.
+    (A single-line flow value such as `tags: [a, b]` is one flat line and passes
+    through untouched.) We never edit around a shape we cannot reason about, and
+    we never parse the file two different ways than its readers do.
 
   * WRITE side LAUNDERS. An incoming value is down-converted to a clean, flat,
     ASCII, single-line scalar rather than rejected: Unicode-normalized, every
@@ -57,7 +58,7 @@ ALLOWED = tuple(FIELDS)
 _FRONTMATTER_READ_CAP = 64 * 1024  # the guard stops reading here; stay in step (bytes)
 _FENCE = re.compile(r"^---[ \t]*$")             # a fence: --- + optional trailing blanks
 _ENTRY = re.compile(r"^[A-Za-z0-9_.\-]+:")      # a dead-flat entry: column-0 key + colon
-_DROP = ":`|<>[]{}\"'"                           # structural / quote chars laundering removes
+_DROP = ":`|<>[]{}\"'\\"                          # structural / quote / escape chars laundering removes
 
 
 def die(*msg):
@@ -68,20 +69,27 @@ def die(*msg):
 
 def launder(value):
     """Down-convert value to a clean, flat, ASCII, single-line scalar."""
+    # Recover the real characters if argv arrived surrogate-escaped (a non-UTF-8
+    # locale), so transliteration is identical in every environment.
+    value = value.encode("utf-8", "surrogateescape").decode("utf-8", "replace")
     v = unicodedata.normalize("NFKC", value)
-    # Every line break, control char, or non-ASCII-space whitespace -> " - "
-    # (a visible separator, so nothing is silently joined or dropped).
+    # Every line break, control char, or non-space whitespace -> " - " (a visible
+    # separator, so nothing is silently joined or dropped). isspace() already
+    # covers the Unicode line/paragraph separators (U+2028/U+2029/NEL).
     v = "".join(
-        " - " if (c != " " and (c.isspace() or ord(c) < 0x20
-                                or 0x7F <= ord(c) <= 0x9F or c in "  "))
+        " - " if (c != " " and (c.isspace() or ord(c) < 0x20 or 0x7F <= ord(c) <= 0x9F
+                                or unicodedata.category(c) == "Cf"))
         else c
         for c in v
     )
     # Transliterate to ASCII (drop accents/combining marks and any non-ASCII).
     v = unicodedata.normalize("NFKD", v).encode("ascii", "ignore").decode("ascii")
-    # Neutralize the '---' substring (a reader that closes on it would truncate),
-    # then drop colons and structural/quote characters.
-    v = v.replace("---", " - ").translate({ord(c): None for c in _DROP})
+    # Drop colons and structural/quote characters FIRST, then neutralize any run
+    # of 3+ hyphens — including one the drop just formed by removing characters
+    # between hyphens — so no '---' can survive into a value a substring reader
+    # (e.g. cboot's find('---')) would close the frontmatter on.
+    v = v.translate({ord(c): None for c in _DROP})
+    v = re.sub(r"-{3,}", " - ", v)
     # Collapse the " - " separators we introduced (bare hyphens are preserved),
     # tidy internal spaces, drop empty segments, trim.
     parts = [re.sub(r" {2,}", " ", p).strip() for p in v.split(" - ")]
@@ -145,6 +153,7 @@ def split_frontmatter(text):
             break
     if close is None:
         die("REFUSED: frontmatter block is never closed by a --- fence (fail closed).")
+    keys = []
     for k in range(1, close):
         ln = lines[k]
         if ln.strip() == "":
@@ -152,6 +161,11 @@ def split_frontmatter(text):
         if len(ln.splitlines()) > 1 or not _ENTRY.match(ln):
             die("REFUSED: frontmatter is not flat — line %d is not a plain "
                 "'key: value': %r. Edit it by hand." % (k + 1, ln))
+        keys.append(ln.split(":", 1)[0])
+    dupes = sorted({k for k in keys if keys.count(k) > 1})
+    if dupes:
+        die("REFUSED: frontmatter has duplicate key(s) %s; ambiguous — edit by hand."
+            % ", ".join(dupes))
     return lines, close
 
 
@@ -208,6 +222,13 @@ def atomic_write(path, text):
 
 
 def main(argv=None):
+    # Force UTF-8 on the console streams so the block echo and notes never raise
+    # UnicodeEncodeError under an ASCII locale (LANG=C) after a successful write.
+    for _s, _errs in ((sys.stdout, "strict"), (sys.stderr, "backslashreplace")):
+        try:
+            _s.reconfigure(encoding="utf-8", errors=_errs)
+        except (AttributeError, ValueError):
+            pass
     ap = argparse.ArgumentParser(add_help=True, description=__doc__)
     ap.add_argument("path", help="path to an existing CLAUDE.md")
     ap.add_argument("--set", dest="sets", action="append", default=[],
@@ -241,7 +262,7 @@ def main(argv=None):
     for key, value in setters:
         final = process_value(key, value)
         if final != value:
-            sys.stderr.write("note: laundered %s %r -> %r\n" % (key, value, final))
+            sys.stderr.write("note: %s %r -> %r\n" % (key, value, final))
         close = apply_set(lines, close, key, final)
     new_text = "\n".join(lines)
 
