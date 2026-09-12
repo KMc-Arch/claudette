@@ -111,6 +111,51 @@ class Launder(unittest.TestCase):
         with self.assertRaises(SystemExit):
             clmd.process_value("description", "short")   # 5 chars < 10
 
+    def test_control_chars_neutralized(self):
+        # non-whitespace controls (which isspace misses) must become " - ", not survive
+        for ch in ("\x00", "\x01", "\x08", "\x0e", "\x1f", "\x7f", "\x85", "\x9f"):
+            self.assertEqual(clmd.launder("A" + ch + "B"), "A - B", repr(ch))
+
+    def test_format_chars_not_silently_joined(self):
+        for ch in ("​", "­", "⁠", "﻿"):   # Cf category
+            self.assertEqual(clmd.launder("A" + ch + "B"), "A - B", repr(ch))
+
+    def test_triple_dash_regenerated_after_drop(self):
+        # dropping chars between hyphens must not leave a '---' a substring reader closes on
+        v = clmd.launder("Team-'-'-Xray")
+        self.assertNotIn("---", v)
+        self.assertEqual(v, "Team - Xray")
+        self.assertNotIn("---", clmd.launder("abc-:-:-def"))
+
+    def test_surrogateescape_recovered(self):
+        s = b"Caf\xc3\xa9 Team".decode("ascii", "surrogateescape")  # LANG=C-style argv
+        self.assertEqual(clmd.launder(s), "Cafe Team")
+
+    def test_backslash_dropped(self):
+        self.assertEqual(clmd.launder("a\\b path"), "ab path")
+
+    def test_each_structural_char_dropped(self):
+        for c in "`|<>[]{}\"'\\:":
+            self.assertEqual(clmd.launder("a" + c + "b"), "ab", repr(c))
+
+    def test_orchestrator_whitespace_tolerated(self):
+        self.assertEqual(clmd.process_value("orchestrator", "  true  "), "true")
+
+    def test_name_min_boundary(self):
+        self.assertEqual(clmd.process_value("name", "abcde"), "abcde")   # exactly 5
+        with self.assertRaises(SystemExit):
+            clmd.process_value("name", "abcd")                            # 4
+
+    def test_description_min_boundary(self):
+        self.assertEqual(clmd.process_value("description", "x" * 10), "x" * 10)
+        with self.assertRaises(SystemExit):
+            clmd.process_value("description", "x" * 9)
+
+    def test_truncation_leaves_no_trailing_junk(self):
+        v = clmd.process_value("name", "x" * 198 + " - " + "y" * 20)
+        self.assertLessEqual(len(v), 200)
+        self.assertFalse(v.endswith((" ", "-")))
+
 
 class Base(unittest.TestCase):
     def setUp(self):
@@ -144,7 +189,7 @@ class Happy(Base):
         self.assertEqual(rc, 0, err)
         self.assertIn("name: Cafe New Team\n", rd(p))
         self.assertIn("name: Cafe New Team", out)        # whole block on stdout
-        self.assertIn("note: laundered name", err)       # note on stderr
+        self.assertIn("note: name", err)                 # note on stderr
         self.no_litter()
 
     def test_stdout_is_the_whole_block(self):
@@ -197,6 +242,16 @@ class Happy(Base):
         self.assertEqual(rc, 0, err)
         self.assertEqual(stat.S_IMODE(os.stat(p).st_mode), 0o640)
 
+    def test_ascii_locale_block_no_crash(self):
+        # a preserved non-ASCII line + an ASCII locale must not crash the block echo
+        p = self.write("---\nroot: true\ndescription: Café bar review here\nname: Old Name\n---\nbody\n")
+        env = dict(os.environ, LC_ALL="C", PYTHONUTF8="0", PYTHONCOERCECLOCALE="0")
+        r = subprocess.run([sys.executable, MUT, p, "--set", "name=Renamed Group"],
+                           capture_output=True, env=env)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn(b"Renamed Group", r.stdout)
+        self.assertIn(b"description:", r.stdout)   # the non-ASCII line is echoed, not crashed
+
 
 class DeadFlatRefuse(Base):
     def _refuse(self, path, *sets):
@@ -235,6 +290,10 @@ class DeadFlatRefuse(Base):
 
     def test_duplicate_key(self):
         self._refuse(self.write("---\nname: A here\nname: B here\n---\nb\n"), "name=New Name")
+
+    def test_duplicate_of_a_non_set_key(self):
+        # a duplicate of a key we're NOT setting is still ambiguous -> refuse
+        self._refuse(self.write("---\nroot: true\nroot: false\nname: X here\n---\nb\n"), "name=New Name")
 
 
 class WriteRefuse(Base):
