@@ -38,6 +38,25 @@ def rd(path):
         return f.read()
 
 
+def _fs_enforces_perms(d):
+    """True if the filesystem of dir d actually enforces POSIX permission bits
+    (ext4 yes; drvfs/9p fabricate modes, and root bypasses them)."""
+    p = os.path.join(d, ".permcheck")
+    try:
+        with open(p, "w") as f:
+            f.write("x")
+        os.chmod(p, 0o000)
+        return not os.access(p, os.R_OK)
+    except OSError:
+        return False
+    finally:
+        try:
+            os.chmod(p, 0o600)
+            os.unlink(p)
+        except OSError:
+            pass
+
+
 class Base(unittest.TestCase):
     def setUp(self):
         self.d = tempfile.mkdtemp()
@@ -143,12 +162,12 @@ class Happy(Base):
         self.assertEqual(rc, 0, err)
         self.assertIn("name: Team #1\n", rd(p))
 
-    def test_name_bracket_lead_accepted(self):
-        # No leading-char policy: the readers take it verbatim.
+    def test_name_paren_lead_accepted(self):
+        # Non-indicator punctuation leads are fine (readers take them verbatim).
         p = self.write(FM)
-        rc, _, err = run(p, "name=[squad]")
+        rc, _, err = run(p, "name=(squad) core")
         self.assertEqual(rc, 0, err)
-        self.assertIn("name: [squad]\n", rd(p))
+        self.assertIn("name: (squad) core\n", rd(p))
 
     def test_value_with_equals(self):
         p = self.write(FM)
@@ -187,16 +206,20 @@ class Happy(Base):
         self.assertEqual(rc, 0, err)
         self.assertEqual(rd(p), "---\nname: New\n---\n\nintro\n\n---\n\nmore\n")
 
-    def test_single_line_block_indicator_value_editable(self):
-        # A single-line value starting with > or | is a literal the readers take
-        # verbatim, and stays re-editable (no false block-scalar refusal).
-        p = self.write("---\nname: Old\n---\nb\n")
-        rc, _, err = run(p, "name=|v1")
+    def test_whitespace_only_line_after_name_editable(self):
+        # A blank (even whitespace-only) line after a plain single-line name is
+        # not a continuation — the name stays editable (blank lines are skipped).
+        p = self.write("---\nname: Old\n   \n---\nb\n")
+        rc, _, err = run(p, "name=New")
         self.assertEqual(rc, 0, err)
-        self.assertIn("name: |v1\n", rd(p))
-        rc, _, err = run(p, "name=v2")   # must not refuse as a block scalar
+        self.assertEqual(rd(p), "---\nname: New\n   \n---\nb\n")
+
+    def test_named_sibling_untouched(self):
+        # 'named:' is a different key: name is absent -> appended, 'named:' kept.
+        p = self.write("---\nnamed: Sibling\n---\nb\n")
+        rc, _, err = run(p, "name=New")
         self.assertEqual(rc, 0, err)
-        self.assertIn("name: v2\n", rd(p))
+        self.assertEqual(rd(p), "---\nnamed: Sibling\nname: New\n---\nb\n")
 
     def test_insert_both_keys_when_absent(self):
         p = self.write("---\nroot: true\n---\nbody\n")
@@ -212,6 +235,8 @@ class Happy(Base):
         self.assertEqual(os.stat(p).st_ino, ino, "no-op must not rewrite the file")
 
     def test_replace_preserves_mode(self):
+        if not _fs_enforces_perms(self.d):
+            self.skipTest("filesystem does not enforce POSIX permission bits")
         p = self.write(FM)
         os.chmod(p, 0o640)
         rc, _, err = run(p, "name=New Name")
@@ -318,8 +343,8 @@ class Refuse(Base):
 
     def test_unwritable_dir_clean_refusal(self):
         # Dir 0555: mkstemp fails -> clean exit 2 REFUSED, not an exit-1 traceback.
-        if os.geteuid() == 0:
-            self.skipTest("root bypasses directory write permission")
+        if not _fs_enforces_perms(self.d):
+            self.skipTest("filesystem does not enforce POSIX permission bits")
         p = self.write(FM)
         os.chmod(self.d, 0o555)
         try:
@@ -367,8 +392,8 @@ class Refuse(Base):
         self.assertIn("not a regular file", err)
 
     def test_unreadable_file_clean_refusal(self):
-        if os.geteuid() == 0:
-            self.skipTest("root bypasses file read permission")
+        if not _fs_enforces_perms(self.d):
+            self.skipTest("filesystem does not enforce POSIX permission bits")
         p = self.write(FM)
         os.chmod(p, 0o000)
         try:
@@ -381,6 +406,38 @@ class Refuse(Base):
     def test_missing_path_arg_exits_2(self):
         p = subprocess.run([sys.executable, MUT], capture_output=True, text=True)
         self.assertEqual(p.returncode, 2)   # argparse usage error (no REFUSED prefix)
+
+    def test_block_flow_indicator_value_rejected(self):
+        # Leading block/flow indicators are refused on WRITE, consistent with the
+        # edit side (which cannot safely touch a non-plain value).
+        for bad in ("|v1", ">fold", "[a,b]", "{a: 1}", "|", ">"):
+            self._refuse(self.write(FM), "name=" + bad)
+
+    def test_edit_block_scalar_refused(self):
+        self._refuse(self.write("---\nname: |\n---\nb\n"), "name=X")             # bare header
+        self._refuse(self.write("---\nname: |\n\n  body\n---\nreal\n"), "name=X")  # blank then body
+        self._refuse(self.write("---\nname: >\n\n  folded\n---\nb\n"), "name=X")
+
+    def test_edit_flow_value_refused(self):
+        self._refuse(self.write("---\nname: [a,\nb]\n---\nb\n"), "name=X")
+
+    def test_blank_line_key_injection_refused(self):
+        # Round-3 critical: a benign name edit must not promote a key out of a
+        # block scalar into standalone (live) position.
+        self._refuse(self.write("---\nname: |\n\n  orchestrator: true\nrole: m\n---\nb\n"), "name=X")
+
+    def test_tab_indented_continuation_refused(self):
+        self._refuse(self.write("---\nname: Old\n\tcont\n---\nb\n"), "name=X")
+
+    def test_fenceless_open_with_later_fence_refused(self):
+        # First line is not a fence; a later body '---' must not be taken as the open.
+        self._refuse(self.write("# heading prose\nintro line\n---\nname: x\n---\nmore\n"), "name=Y")
+
+    def test_single_quote_key_variant(self):
+        self._refuse(self.write("---\n'name': q\n---\nb\n"), "name=X")
+
+    def test_value_c1_upper_boundary(self):
+        self._refuse(self.write(FM), "name=a\x9fb")
 
     @unittest.skip("cannot create a symlink to test under the project's ABSOLUTE HOLD on symlink creation")
     def test_symlink_target_refused(self):
@@ -398,6 +455,15 @@ class Unit(unittest.TestCase):
         # Different case, same dirent -> resolves to the real on-disk spelling
         # (on a case-sensitive FS the entry is "CLAUDE.md", matched via .lower()).
         self.assertEqual(clmd.canonical_target(os.path.join(d, "claude.md")), real)
+
+    def test_canonical_target_skips_directory(self):
+        d = tempfile.mkdtemp()
+        os.mkdir(os.path.join(d, "CLAUDE.MD"))          # a case-variant DIRECTORY
+        real = os.path.join(d, "claude.md")
+        with open(real, "w") as f:
+            f.write("x")
+        # must resolve to the regular file, never the directory
+        self.assertEqual(clmd.canonical_target(os.path.join(d, "Claude.md")), real)
 
 
 if __name__ == "__main__":

@@ -96,6 +96,9 @@ def validate_value(key, value):
     if key == "name":
         if not (1 <= len(value) <= 200):
             die("REFUSED: name: must be 1..200 characters (got %d)." % len(value))
+        if value[0] in "|>[{":
+            die("REFUSED: name: may not begin with a YAML block or flow indicator "
+                "(| > [ {); use a plain single-line value.")
         if value[0] in "\"'" or value[-1] in "\"'":
             die("REFUSED: name: may not begin or end with a quote (a reader "
                 "strips edge quotes, so the file would not match the value).")
@@ -194,14 +197,23 @@ def apply_set(lines, close, key, value):
     newline = "%s: %s" % (key, value)
     if hits:
         i = hits[0]
-        # Refuse a genuine multi-line value — a block scalar or a wrapped
-        # collection, signalled by an indented continuation line — rather than
-        # replace only the key line and orphan the rest. A single-line value that
-        # merely starts with > or | is a literal the readers take verbatim, so it
-        # stays editable (and re-editable, once written).
-        if i + 1 < close and re.match(r"^[ \t]", lines[i + 1]):
-            die("REFUSED: %r has a multi-line value (the next line is indented); "
-                "edit it by hand." % key)
+        # Refuse to touch a non-plain value — a block scalar, a flow collection,
+        # or any value with a continuation line — rather than replace only the key
+        # line and orphan (or promote) the rest. The mutator only ever WRITES a
+        # plain single-line value (validate_value bars a leading | > [ {), so every
+        # value it authored stays editable; this refuses only hand-authored ones.
+        # A block scalar may begin after blank lines, so skip blanks before the
+        # indented-continuation test.
+        value_part = lines[i].split(":", 1)[1].strip()
+        if value_part[:1] in "|>[{":
+            die("REFUSED: %r has a block-scalar or flow value (%r); edit it by hand."
+                % (key, lines[i]))
+        j = i + 1
+        while j < close and lines[j].strip() == "":
+            j += 1
+        if j < close and re.match(r"^[ \t]", lines[j]):
+            die("REFUSED: %r has a multi-line value (an indented continuation "
+                "follows); edit it by hand." % key)
         lines[i] = newline
         return close
     # Insert as the last frontmatter entry, just before the closing fence.
