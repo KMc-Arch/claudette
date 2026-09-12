@@ -1,44 +1,39 @@
 #!/usr/bin/env python3
 """The approved mutator for CLAUDE.md frontmatter.
 
-This is the SOLE authorized writer of allowlisted frontmatter keys in an
-existing CLAUDE.md (per the "updating any CLAUDE.md" ABSOLUTE HOLD in the apex
-CLAUDE.md). The claude-md guard hook deliberately denies every Write/Edit to a
-CLAUDE.md-shaped path; the precision the hook does not carry lives HERE instead:
-a fixed key allowlist, structural value validation, and an atomic write. The
-hook never sees this script — it edits by direct file IO, not a tool call.
+The SOLE authorized writer of allowlisted frontmatter keys in an existing
+CLAUDE.md (per the "updating any CLAUDE.md" ABSOLUTE HOLD in the apex CLAUDE.md).
+The claude-md guard hook denies every Write/Edit to a CLAUDE.md; the precision
+lives here, and the hook never sees this — it edits by direct file IO.
 
-It matches how this repo's CLAUDE.md readers actually parse frontmatter — every
-one (cboot, the containment/gravity guards, boot-inject, child_propagate) is a
-tolerant, line-oriented parser: the block is `---`…`---` where a fence is a line
-of `---` with optional trailing blanks (`^---[ \\t]*$`), and a key's value is
-everything after the first colon, taken verbatim (no YAML). So the mutator does
-NOT police YAML-scalar aesthetics (a colon or `#` in a name round-trips fine and
-/new-project already inserts names verbatim); it only guarantees the value stays
-a single, clean, UTF-8 line so it cannot inject structure or drift on round-trip.
+Two independent halves:
 
-Scope, on purpose:
-  * EDIT ONLY. The target must already exist and already carry a leading
-    frontmatter block. Creating a CLAUDE.md is /new-project's job, not this.
-  * Allowlisted keys ONLY: name, orchestrator. Nothing else — not the body,
-    not any other frontmatter key.
-  * Not a security boundary. Path containment / gravity are other guards' job;
-    this refuses only what it cannot mutate cleanly. It does insist the target
-    basename is CLAUDE.md so it cannot be repurposed as a general file writer,
-    and it writes to the file's real on-disk spelling so a case-insensitive
-    mount's dirent is never silently case-flipped.
+  * READ side is STRICT. The existing frontmatter must be "dead flat": between
+    the `---` fences, every line is blank or a column-0 `key: value` with no
+    embedded line break. Anything else — an indented line, a continuation, a
+    block scalar, a flow collection, a quoted/odd key, a stray CR/NEL — is
+    REFUSED, pointing at the offending line. We never edit around a shape we
+    cannot reason about, and we never parse the file two different ways than its
+    readers do.
+
+  * WRITE side LAUNDERS. An incoming value is down-converted to a clean, flat,
+    ASCII, single-line scalar rather than rejected: Unicode-normalized, every
+    line break / control / irregular whitespace turned into " - ", transliterated
+    to ASCII, colons / `---` / structural & quote characters stripped, whitespace
+    collapsed. The result must clear a per-field minimum length AFTER laundering
+    (that is how a name that laundered to nothing — e.g. an all-non-Latin name —
+    is refused). `orchestrator` is not laundered: it is case-folded to
+    true/false or refused.
+
+On success the whole post-edit frontmatter block is written to stdout (the total
+net state the caller can read back), and any value the laundering changed is
+noted on stderr. Exit 0 = written or already-equal no-op; exit 2 = fail-closed
+refusal (reason on stderr, REFUSED: prefix). argparse usage errors also exit 2.
 
 Usage:
     claude-md-mutator.py <path-to-CLAUDE.md> --set KEY=VALUE [--set KEY=VALUE ...]
-
     claude-md-mutator.py ./child/CLAUDE.md --set name="Child Group"
-    claude-md-mutator.py ./CLAUDE.md --set orchestrator=true
-
-Exit codes: 0 = written (or already equal, a no-op); 2 = refused (nothing
-written), reason on stderr with a REFUSED: prefix. Every refusal — bad target,
-bad value, unreadable/unwritable file, ambiguous frontmatter — is fail-closed:
-on any doubt it writes nothing. (argparse usage errors also exit 2, without the
-REFUSED: prefix; they too write nothing.)
+    claude-md-mutator.py ./CLAUDE.md --set orchestrator=true --set description="…"
 """
 
 import argparse
@@ -47,20 +42,22 @@ import re
 import shutil
 import sys
 import tempfile
+import unicodedata
 
-# The ONLY keys this mutator may change. Widening this is a change to the
-# mutator itself — human-only under the ABSOLUTE HOLD; suggest, do not self-edit.
-ALLOWED = ("name", "orchestrator")
+# Allowlisted keys -> (min, max) post-laundering length, or None for the boolean
+# orchestrator. Widening this is a change to the mutator itself — human-only
+# under the ABSOLUTE HOLD; suggest, do not self-edit.
+FIELDS = {
+    "name": (5, 200),
+    "description": (10, 300),
+    "orchestrator": None,
+}
+ALLOWED = tuple(FIELDS)
 
-# The guard stops reading frontmatter at this many bytes; stay in step (bytes,
-# not characters — the readers are byte-oriented).
-_FRONTMATTER_READ_CAP = 64 * 1024
-
-# A frontmatter fence: `---` with only optional trailing blanks. Mirrors the
-# readers (`^---[ \t]*$`). A CR (CRLF file) is deliberately NOT matched, so a
-# CRLF CLAUDE.md fails closed (refused) rather than being risk-edited — this
-# repo is LF, and the readers tolerate what we decline to touch.
-_FENCE = re.compile(r"^---[ \t]*$")
+_FRONTMATTER_READ_CAP = 64 * 1024  # the guard stops reading here; stay in step (bytes)
+_FENCE = re.compile(r"^---[ \t]*$")             # a fence: --- + optional trailing blanks
+_ENTRY = re.compile(r"^[A-Za-z0-9_.\-]+:")      # a dead-flat entry: column-0 key + colon
+_DROP = ":`|<>[]{}\"'"                           # structural / quote chars laundering removes
 
 
 def die(*msg):
@@ -69,154 +66,107 @@ def die(*msg):
     sys.exit(2)
 
 
-def validate_value(key, value):
-    """Structural validation only — return the value or die().
+def launder(value):
+    """Down-convert value to a clean, flat, ASCII, single-line scalar."""
+    v = unicodedata.normalize("NFKC", value)
+    # Every line break, control char, or non-ASCII-space whitespace -> " - "
+    # (a visible separator, so nothing is silently joined or dropped).
+    v = "".join(
+        " - " if (c != " " and (c.isspace() or ord(c) < 0x20
+                                or 0x7F <= ord(c) <= 0x9F or c in "  "))
+        else c
+        for c in v
+    )
+    # Transliterate to ASCII (drop accents/combining marks and any non-ASCII).
+    v = unicodedata.normalize("NFKD", v).encode("ascii", "ignore").decode("ascii")
+    # Neutralize the '---' substring (a reader that closes on it would truncate),
+    # then drop colons and structural/quote characters.
+    v = v.replace("---", " - ").translate({ord(c): None for c in _DROP})
+    # Collapse the " - " separators we introduced (bare hyphens are preserved),
+    # tidy internal spaces, drop empty segments, trim.
+    parts = [re.sub(r" {2,}", " ", p).strip() for p in v.split(" - ")]
+    return " - ".join(p for p in parts if p)
 
-    The readers take the value verbatim after the first colon, so the only real
-    hazards are (a) breaking the single-line structure (a newline would inject a
-    second frontmatter line) and (b) a value that does not round-trip (control
-    chars, non-UTF-8, or surrounding whitespace the readers strip).
-    """
-    try:
-        value.encode("utf-8")
-    except UnicodeEncodeError:
-        die("REFUSED: a %s: value is not encodable as UTF-8 (fail closed)." % key)
-    # Reject a line break of ANY kind — not just LF/CR but the Unicode line and
-    # paragraph separators and NEL that str.splitlines() and YAML-1.1 recognise
-    # (a trailing break included). Otherwise the value could inject a second
-    # frontmatter line under a splitlines-based reader.
-    if value != "".join(value.splitlines()):
-        die("REFUSED: a %s: value may not contain a line break." % key)
-    # Controls: C0 (<0x20), DEL (0x7F) and the C1 block (0x80-0x9F).
-    if any(ord(c) < 0x20 or 0x7F <= ord(c) <= 0x9F for c in value):
-        die("REFUSED: a %s: value may not contain control characters." % key)
-    if value != value.strip():
-        die("REFUSED: a %s: value may not have leading or trailing whitespace "
-            "(the readers strip it, so the file would not match the value)." % key)
-    if key == "name":
-        if not (1 <= len(value) <= 200):
-            die("REFUSED: name: must be 1..200 characters (got %d)." % len(value))
-        if value[0] in "|>[{":
-            die("REFUSED: name: may not begin with a YAML block or flow indicator "
-                "(| > [ {); use a plain single-line value.")
-        if value[0] in "\"'" or value[-1] in "\"'":
-            die("REFUSED: name: may not begin or end with a quote (a reader "
-                "strips edge quotes, so the file would not match the value).")
-        if "---" in value:
-            die("REFUSED: name: may not contain '---' (a reader that closes the "
-                "frontmatter on a '---' substring would truncate the value).")
-        return value
-    if key == "orchestrator":
-        if value not in ("true", "false"):
-            die("REFUSED: orchestrator: must be exactly 'true' or 'false' (got %r)." % value)
-        return value
-    die("REFUSED: %r is not an allowlisted key; only %s may be changed."
-        % (key, " / ".join(ALLOWED)))
+
+def process_value(key, raw):
+    """Return the value to write for key, or die() fail-closed."""
+    spec = FIELDS[key]
+    if spec is None:  # orchestrator
+        v = raw.strip().lower()
+        if v not in ("true", "false"):
+            die("REFUSED: orchestrator must be true or false (got %r)." % raw)
+        return v
+    lo, hi = spec
+    v = launder(raw)
+    if len(v) > hi:
+        v = v[:hi].strip().strip("-").strip()
+    if len(v) < lo:
+        die("REFUSED: %s laundered to %r (%d chars), below the %d-char minimum."
+            % (key, v, len(v), lo))
+    return v
 
 
 def parse_setters(pairs):
-    """--set KEY=VALUE pairs -> ordered [(key, value)], validated, no dupes."""
+    """--set KEY=VALUE -> ordered [(key, raw)], allowlist-checked, no dupes."""
     out = []
     seen = set()
     for raw in pairs:
         if "=" not in raw:
             die("REFUSED: --set expects KEY=VALUE, got %r." % raw)
         key, value = raw.split("=", 1)
-        key = key.strip()
         if key not in ALLOWED:
             die("REFUSED: %r is not an allowlisted key; only %s may be changed."
                 % (key, " / ".join(ALLOWED)))
         if key in seen:
             die("REFUSED: key %r given more than once." % key)
         seen.add(key)
-        out.append((key, validate_value(key, value)))
+        out.append((key, value))
     if not out:
         die("REFUSED: nothing to do — pass at least one --set KEY=VALUE.")
     return out
 
 
 def split_frontmatter(text):
-    """Return (lines, close_index) for the leading `---`…`---` block.
-
-    Fences are matched leniently (`^---[ \t]*$`), the same as every reader, so a
-    trailing-whitespace fence closes the block here exactly where it closes it
-    for them. Fail closed on any file that does not open with a fence or whose
-    block never closes, or whose frontmatter exceeds the byte cap.
-    """
+    """Return (lines, close_index) for a DEAD-FLAT leading frontmatter block, or
+    die() fail-closed on any file that does not open with a fence, never closes,
+    exceeds the byte cap, or whose block is not entirely blank / column-0
+    `key: value` lines free of embedded breaks."""
     lines = text.split("\n")
     if not lines or not _FENCE.match(lines[0]):
-        die("REFUSED: the file has no leading frontmatter block "
-            "(first line is not a --- fence).")
+        die("REFUSED: no leading frontmatter block (first line is not a --- fence).")
     close = None
     consumed = len(lines[0].encode("utf-8")) + 1
     for i in range(1, len(lines)):
         consumed += len(lines[i].encode("utf-8")) + 1
         if consumed > _FRONTMATTER_READ_CAP:
-            die("REFUSED: frontmatter exceeds %d bytes, where the guard stops "
-                "reading (fail closed)." % _FRONTMATTER_READ_CAP)
+            die("REFUSED: frontmatter exceeds %d bytes (fail closed)." % _FRONTMATTER_READ_CAP)
         if _FENCE.match(lines[i]):
             close = i
             break
     if close is None:
-        die("REFUSED: the frontmatter block is never closed by a --- fence "
-            "(fail closed).")
+        die("REFUSED: frontmatter block is never closed by a --- fence (fail closed).")
+    for k in range(1, close):
+        ln = lines[k]
+        if ln.strip() == "":
+            continue
+        if len(ln.splitlines()) > 1 or not _ENTRY.match(ln):
+            die("REFUSED: frontmatter is not flat — line %d is not a plain "
+                "'key: value': %r. Edit it by hand." % (k + 1, ln))
     return lines, close
 
 
-# A top-level key line: KEY at column 0 immediately followed by ':'. Matches
-# `name:`, `name: X`, and `name:X` (no space) alike; NOT `named:`.
-def _key_line_re(key):
-    return re.compile(r"^" + re.escape(key) + r":")
-
-
-# Variants we refuse to touch rather than risk a second, conflicting entry:
-# indented (nested), quoted, or a space before the colon.
-def _suspicious_variant(line, key):
-    stripped = line.lstrip()
-    if stripped != line and re.match(r"^" + re.escape(key) + r"\s*:", stripped):
-        return "indented"
-    if re.match(r"""^["']""" + re.escape(key) + r"""["']\s*:""", line):
-        return "quoted"
-    if re.match(r"^" + re.escape(key) + r"\s+:", line):
-        return "space before ':'"
-    return None
-
-
 def apply_set(lines, close, key, value):
-    """Replace or append `key: value` within lines[1:close]. Returns new close."""
-    kre = _key_line_re(key)
+    """Replace or append `key: value`. Dead-flat guarantees each key sits on a
+    single flat line, so a straight replace can never orphan a continuation."""
+    kre = re.compile(r"^" + re.escape(key) + r":")
     hits = [i for i in range(1, close) if kre.match(lines[i])]
-    for i in range(1, close):
-        variant = _suspicious_variant(lines[i], key)
-        if variant and not kre.match(lines[i]):
-            die("REFUSED: %r appears in a form this mutator will not touch (%s): "
-                "%r. Fix the frontmatter by hand." % (key, variant, lines[i]))
     if len(hits) > 1:
         die("REFUSED: %r appears on %d lines in the frontmatter; ambiguous "
             "(fail closed)." % (key, len(hits)))
     newline = "%s: %s" % (key, value)
     if hits:
-        i = hits[0]
-        # Refuse to touch a non-plain value — a block scalar, a flow collection,
-        # or any value with a continuation line — rather than replace only the key
-        # line and orphan (or promote) the rest. The mutator only ever WRITES a
-        # plain single-line value (validate_value bars a leading | > [ {), so every
-        # value it authored stays editable; this refuses only hand-authored ones.
-        # A block scalar may begin after blank lines, so skip blanks before the
-        # indented-continuation test.
-        value_part = lines[i].split(":", 1)[1].strip()
-        if value_part[:1] in "|>[{":
-            die("REFUSED: %r has a block-scalar or flow value (%r); edit it by hand."
-                % (key, lines[i]))
-        j = i + 1
-        while j < close and lines[j].strip() == "":
-            j += 1
-        if j < close and re.match(r"^[ \t]", lines[j]):
-            die("REFUSED: %r has a multi-line value (an indented continuation "
-                "follows); edit it by hand." % key)
-        lines[i] = newline
+        lines[hits[0]] = newline
         return close
-    # Insert as the last frontmatter entry, just before the closing fence.
     lines.insert(close, newline)
     return close + 1
 
@@ -245,7 +195,7 @@ def atomic_write(path, text):
         with os.fdopen(fd, "w", encoding="utf-8", newline="") as f:
             f.write(text)
         try:
-            shutil.copymode(path, tmp)  # preserve mode (portability; a no-op on metadata-less drvfs)
+            shutil.copymode(path, tmp)
         except OSError:
             pass
         os.replace(tmp, path)
@@ -289,17 +239,20 @@ def main(argv=None):
 
     lines, close = split_frontmatter(text)
     for key, value in setters:
-        close = apply_set(lines, close, key, value)
+        final = process_value(key, value)
+        if final != value:
+            sys.stderr.write("note: laundered %s %r -> %r\n" % (key, value, final))
+        close = apply_set(lines, close, key, final)
     new_text = "\n".join(lines)
 
-    if new_text == text:
-        # Already equal — a no-op success, so callers can be idempotent.
-        return 0
-    target = canonical_target(args.path)
-    try:
-        atomic_write(target, new_text)
-    except OSError as e:
-        die("REFUSED: cannot write %r: %s (fail closed)." % (target, e))
+    if new_text != text:
+        target = canonical_target(args.path)
+        try:
+            atomic_write(target, new_text)
+        except OSError as e:
+            die("REFUSED: cannot write %r: %s (fail closed)." % (target, e))
+    # Return the whole post-edit frontmatter block: the total net state.
+    sys.stdout.write("\n".join(lines[:close + 1]) + "\n")
     return 0
 
 
