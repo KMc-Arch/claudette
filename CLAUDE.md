@@ -44,6 +44,19 @@ A CONFIRMED HOLD on [X] means:
   `npm install`, `python -m venv` — are outside any hold's reach and are covered by
   the on-demand egress detector, not this rule.)
 
+- **CONFIRMED HOLD: working around a guard.** Producing an effect a hook has
+  denied — via another tool, the shell, a subagent, or an alias of the same
+  target. The denial binds the target, not the means.
+
+- **ABSOLUTE HOLD: updating any `CLAUDE.md`, save through /new-project or the approved mutator
+  (`<script path — set when it lands>`).** Every route — Write/Edit, shell,
+  interpreter, subagent — and every part of the file: body, frontmatter,
+  creation. The script and /new-project are the sole exceptions.
+
+- **ABSOLUTE HOLD: modifying, replacing, or deleting the mutator or the
+  /new-project scaffolder.** They are the two exceptions to the hold above, so
+  both are human-maintained. Suggest changes to the user to apply manually.
+
 ## Naming Conventions
 
 | Prefix | Meaning | Enforcement |
