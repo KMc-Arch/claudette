@@ -21,8 +21,14 @@ case "$CMD" in
         # Use Python for robust argument parsing — avoids bash edge cases
         # with flags, refspecs, and branch names containing special chars.
         if [ -z "$PY" ]; then
-            echo "WARN: remote-guard: no python interpreter — push argument parsing skipped." >&2
-            exit 0
+            # Fail CLOSED: this guard blocks force-pushes and pushes to
+            # main/shared state; without Python it cannot parse the push args to
+            # make that call, so it refuses rather than waving the push through
+            # (exit 2 blocks; the Python-error path below fails closed the same
+            # way via `|| exit 2`). Python 3.10+ is a platform requirement.
+            echo "BLOCKED: remote-guard: no python interpreter — cannot parse push args; failing closed." >&2
+            echo "  Install Python 3.10+ (a platform requirement) and retry. See backlog BL-PY-INTERP." >&2
+            exit 2
         fi
         echo "$CMD" | "$PY" -c '
 import subprocess, sys
