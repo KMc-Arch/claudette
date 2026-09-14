@@ -13,8 +13,15 @@ export CLAUDE_HOOK_INPUT="$INPUT"
 # python3 as fallback (Unix PEP 394 canonical). See backlog BL-PY-INTERP.
 PY=$(command -v python || command -v python3)
 if [ -z "$PY" ]; then
-    echo "WARN: claude-md-immutability-guard: no python interpreter found — guard inactive." >&2
-    exit 0
+    # Fail CLOSED: this guard protects a CLAUDE.md under an ABSOLUTE HOLD, whose
+    # default is refusal. Without Python it cannot tell whether the target is a
+    # CLAUDE.md, so it refuses the Write/Edit (exit 2 blocks; a generic non-zero
+    # would only warn and let it through). Python 3.10+ is a hard platform
+    # requirement — if it is absent, cboot/the mutator/new-project are dead too.
+    echo "BLOCKED: claude-md-immutability-guard: no python interpreter found — failing closed." >&2
+    echo "  Cannot verify this Write/Edit without Python, so it is refused." >&2
+    echo "  Install Python 3.10+ (a platform requirement) and retry. See backlog BL-PY-INTERP." >&2
+    exit 2
 fi
 
 "$PY" - "$CLAUDE_PROJECT_DIR" <<'PY'
