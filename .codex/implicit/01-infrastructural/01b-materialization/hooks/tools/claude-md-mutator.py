@@ -20,8 +20,10 @@ Two independent halves:
   * WRITE side LAUNDERS. An incoming value is down-converted to a clean, flat,
     ASCII, single-line scalar rather than rejected: Unicode-normalized, every
     line break / control / irregular whitespace turned into " - ", transliterated
-    to ASCII, colons / `---` / structural & quote characters stripped, whitespace
-    collapsed. The result must clear a per-field minimum length AFTER laundering
+    to ASCII (accents dropped; characters with no ASCII decomposition are
+    removed), colons / `---` / structural & quote characters and YAML indicator
+    characters (& * ! # % @) stripped, whitespace collapsed. The result must
+    clear a per-field minimum length AFTER laundering
     (that is how a name that laundered to nothing — e.g. an all-non-Latin name —
     is refused). `orchestrator` is not laundered: it is case-folded to
     true/false or refused.
@@ -34,7 +36,7 @@ refusal (reason on stderr, REFUSED: prefix). argparse usage errors also exit 2.
 Usage:
     claude-md-mutator.py <path-to-CLAUDE.md> --set KEY=VALUE [--set KEY=VALUE ...]
     claude-md-mutator.py ./child/CLAUDE.md --set name="Child Group"
-    claude-md-mutator.py ./CLAUDE.md --set orchestrator=true --set description="…"
+    claude-md-mutator.py ./CLAUDE.md --set orchestrator=true --set description="A short summary"
 """
 
 import argparse
@@ -56,9 +58,15 @@ FIELDS = {
 ALLOWED = tuple(FIELDS)
 
 _FRONTMATTER_READ_CAP = 64 * 1024  # the guard stops reading here; stay in step (bytes)
+_FILE_READ_CAP = 1024 * 1024       # refuse a whole file larger than this before reading it (bytes)
 _FENCE = re.compile(r"^---[ \t]*$")             # a fence: --- + optional trailing blanks
 _ENTRY = re.compile(r"^[A-Za-z0-9_.\-]+:")      # a dead-flat entry: column-0 key + colon
-_DROP = ":`|<>[]{}\"'\\"                          # structural / quote / escape chars laundering removes
+# Structural/quote/escape chars AND the YAML indicators significant at the start
+# of a plain scalar (& * ! % @) or after a space (#). Dropping these keeps a
+# laundered value from being read differently by a strict-YAML consumer (alias,
+# tag, comment, anchor, directive) than by the line/substring readers this
+# ecosystem actually uses — and neutralizes a `!!python/...` tag outright.
+_DROP = ":`|<>[]{}\"'\\&*!#%@"
 
 
 def die(*msg):
@@ -158,9 +166,15 @@ def split_frontmatter(text):
         ln = lines[k]
         if ln.strip() == "":
             continue
-        if len(ln.splitlines()) > 1 or not _ENTRY.match(ln):
+        # splitlines() splits on every Unicode line boundary (\n \r \v \f \x1c-\x1e
+        # \x85    ). `!= [ln]` therefore rejects BOTH an embedded break
+        # (2+ segments) AND a single TRAILING boundary char (splitlines drops it,
+        # yielding [content] != [content+boundary]) — a shape a YAML reader would
+        # treat as a line break but a naive check would miss.
+        if ln.splitlines() != [ln] or not _ENTRY.match(ln):
             die("REFUSED: frontmatter is not flat — line %d is not a plain "
-                "'key: value': %r. Edit it by hand." % (k + 1, ln))
+                "'key: value' (embedded/trailing line break or bad key): %r. "
+                "Edit it by hand." % (k + 1, ln))
         keys.append(ln.split(":", 1)[0])
     dupes = sorted({k for k in keys if keys.count(k) > 1})
     if dupes:
@@ -208,11 +222,27 @@ def atomic_write(path, text):
     try:
         with os.fdopen(fd, "w", encoding="utf-8", newline="") as f:
             f.write(text)
+            # Flush data to disk BEFORE the rename, so a crash between the rename's
+            # metadata commit and the data flush can't leave a truncated/empty
+            # CLAUDE.md (matters on the 9p/drvfs mount, whose rename is not durable
+            # on its own).
+            f.flush()
+            os.fsync(f.fileno())
         try:
             shutil.copymode(path, tmp)
         except OSError:
             pass
         os.replace(tmp, path)
+        # Best-effort fsync of the directory so the rename itself is durable; on
+        # filesystems that don't support directory fsync this is a harmless no-op.
+        try:
+            dfd = os.open(d, os.O_RDONLY)
+            try:
+                os.fsync(dfd)
+            finally:
+                os.close(dfd)
+        except OSError:
+            pass
     except BaseException:
         try:
             os.unlink(tmp)
@@ -247,6 +277,13 @@ def main(argv=None):
             "CLAUDE.md; creating one is /new-project's job." % args.path)
 
     setters = parse_setters(args.sets)
+
+    try:
+        if os.path.getsize(args.path) > _FILE_READ_CAP:
+            die("REFUSED: %r is larger than %d bytes; refusing to read it "
+                "(fail closed)." % (args.path, _FILE_READ_CAP))
+    except OSError as e:
+        die("REFUSED: cannot stat %r: %s (fail closed)." % (args.path, e))
 
     try:
         with open(args.path, "rb") as f:

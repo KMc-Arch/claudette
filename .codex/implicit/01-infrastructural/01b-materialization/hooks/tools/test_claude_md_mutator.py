@@ -138,6 +138,32 @@ class Launder(unittest.TestCase):
         for c in "`|<>[]{}\"'\\:":
             self.assertEqual(clmd.launder("a" + c + "b"), "ab", repr(c))
 
+    def test_yaml_indicator_chars_dropped(self):
+        # & * ! # % @ are YAML-significant at a scalar start (or, for #, after a
+        # space); dropping them keeps a laundered value from reading differently
+        # to a strict-YAML consumer than to a line reader.
+        for c in "&*!#%@":
+            self.assertEqual(clmd.launder("a" + c + "b"), "ab", repr(c))
+
+    def test_leading_yaml_indicator_dropped(self):
+        for v, expected in [
+            ("*anchor value here", "anchor value here"),
+            ("# hidden name here", "hidden name here"),
+            ("&anchor real name", "anchor real name"),
+            ("@reserved name here", "reserved name here"),
+            ("%YAML directive here", "YAML directive here"),
+        ]:
+            self.assertEqual(clmd.launder(v), expected, repr(v))
+
+    def test_mid_value_hash_dropped(self):
+        # a ` #` mid-value would start a YAML comment (truncating the scalar)
+        self.assertEqual(clmd.launder("Realname Corp #hidden tail"), "Realname Corp hidden tail")
+
+    def test_yaml_tag_neutralized(self):
+        v = clmd.launder("!!python/object apply here")
+        self.assertNotIn("!", v)
+        self.assertTrue(v.startswith("python"))
+
     def test_orchestrator_whitespace_tolerated(self):
         self.assertEqual(clmd.process_value("orchestrator", "  true  "), "true")
 
@@ -295,6 +321,13 @@ class DeadFlatRefuse(Base):
         # a duplicate of a key we're NOT setting is still ambiguous -> refuse
         self._refuse(self.write("---\nroot: true\nroot: false\nname: X here\n---\nb\n"), "name=New Name")
 
+    def test_trailing_line_boundary_refused(self):
+        # a single TRAILING line-boundary char on an otherwise-flat entry line is
+        # a break to a YAML reader; str.splitlines() drops it, so the old
+        # len(splitlines())>1 check missed it. Must now refuse, file untouched.
+        for ch in ("\r", "\x0b", "\x0c", "\x85", " ", " ", "\x1c", "\x1d", "\x1e"):
+            self._refuse(self.write("---\nname: keepone" + ch + "\n---\nb\n"), "name=New Name")
+
 
 class WriteRefuse(Base):
     def _refuse(self, path, *sets):
@@ -372,6 +405,12 @@ class FileRefuse(Base):
     def test_crlf(self):
         self._refuse(self.write(b"---\r\nname: X\r\n---\r\nbody\r\n"), "name=New Name")
 
+    def test_over_file_size_cap(self):
+        # a file larger than the whole-file cap is refused BEFORE it is read into
+        # memory, even when its frontmatter is small and flat.
+        big = "---\nname: Keep Name\n---\n" + ("x" * (1024 * 1024 + 16))
+        self._refuse(self.write(big), "name=New Name")
+
     def test_unwritable_dir(self):
         if not _fs_enforces_perms(self.d):
             self.skipTest("filesystem does not enforce POSIX permission bits")
@@ -398,9 +437,19 @@ class FileRefuse(Base):
         p = subprocess.run([sys.executable, MUT], capture_output=True, text=True)
         self.assertEqual(p.returncode, 2)   # argparse usage error
 
-    @unittest.skip("cannot create a symlink to test under the project's ABSOLUTE HOLD on symlink creation")
-    def test_symlink_target(self):
-        pass  # main() refuses os.path.islink(args.path)
+    def test_symlink_target_refused(self):
+        # A real symlink can't be created under the project's ABSOLUTE HOLD on
+        # symlink creation, so prove the guard by making os.path.islink report the
+        # target as a link: main() must refuse (exit 2) and leave the file
+        # byte-for-byte unchanged. This replaces the former asserting-nothing skip.
+        import unittest.mock as mock
+        p = self.write(FM)
+        before = self.read_bytes(p)
+        with mock.patch.object(clmd.os.path, "islink", return_value=True):
+            with self.assertRaises(SystemExit) as cm:
+                clmd.main([p, "--set", "name=New Name"])
+        self.assertEqual(cm.exception.code, 2)
+        self.assert_unchanged(p, before)
 
 
 class Unit(unittest.TestCase):
