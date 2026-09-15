@@ -1,10 +1,22 @@
 #!/usr/bin/env bash
-# H-3.9: PreToolUse (Write|Edit) — enforce apex CLAUDE.md immutability.
+# H-3.9: PreToolUse (Write|Edit|MultiEdit) — enforce CLAUDE.md immutability.
 #
-# Blocks Write operations to the apex CLAUDE.md entirely. Permits Edit
-# operations only when the change is confined to the frontmatter block
-# (between opening and closing `---` fences). Body evolution must happen
-# in start.md files downstream.
+# Denies EVERY Write/Edit tool call whose target is a CLAUDE.md — ANY CLAUDE.md
+# (apex or child), body AND frontmatter — per the "updating any CLAUDE.md"
+# ABSOLUTE HOLD. The two sanctioned routes (the approved mutator and
+# /new-project) edit by DIRECT file IO, never via the Write/Edit tool, so this
+# hook never sees them; the precision (allowlist/laundering) lives in the
+# mutator. This hook is the blunt, fail-closed backstop: identify a CLAUDE.md
+# target and refuse.
+#
+# Redesign note (feature/claude-md-guard-redesign): the previous version keyed
+# off $CLAUDE_PROJECT_DIR + a case-sensitive apex compare, and permitted
+# frontmatter Edits. That (a) failed OPEN when CLAUDE_PROJECT_DIR was empty,
+# (b) missed case-variant spellings (claude.md) on this case-insensitive mount,
+# (c) left child CLAUDE.md unguarded, and (d) let body text ride in through an
+# Edit's new_string. This version matches on the resolved BASENAME only —
+# env-independent, case-insensitive, symlink-resolved — and never carves out a
+# frontmatter exception. Exit 2 = block, exit 0 = allow.
 
 INPUT=$(cat)
 export CLAUDE_HOOK_INPUT="$INPUT"
@@ -15,96 +27,68 @@ PY=$(command -v python || command -v python3)
 if [ -z "$PY" ]; then
     # Fail CLOSED: this guard protects a CLAUDE.md under an ABSOLUTE HOLD, whose
     # default is refusal. Without Python it cannot tell whether the target is a
-    # CLAUDE.md, so it refuses the Write/Edit (exit 2 blocks; a generic non-zero
-    # would only warn and let it through). Python 3.10+ is a hard platform
-    # requirement — if it is absent, cboot/the mutator/new-project are dead too.
+    # CLAUDE.md, so it refuses (exit 2 blocks; a generic non-zero would only warn
+    # and let it through). Python 3.10+ is a hard platform requirement — if it is
+    # absent, cboot/the mutator/new-project are dead too.
     echo "BLOCKED: claude-md-immutability-guard: no python interpreter found — failing closed." >&2
     echo "  Cannot verify this Write/Edit without Python, so it is refused." >&2
     echo "  Install Python 3.10+ (a platform requirement) and retry. See backlog BL-PY-INTERP." >&2
     exit 2
 fi
 
-"$PY" - "$CLAUDE_PROJECT_DIR" <<'PY'
+"$PY" - <<'PY'
 import json
 import os
-import re
 import sys
 
-project_dir = sys.argv[1]
+raw = os.environ.get("CLAUDE_HOOK_INPUT", "")
+
+
+def is_claude_md(name):
+    return os.path.basename(name).strip().lower() == "claude.md"
+
+
+def block():
+    sys.stderr.write(
+        "BLOCKED: CLAUDE.md is immutable to Claude (ABSOLUTE HOLD: updating any CLAUDE.md).\n"
+        "  Every route and every part — body and frontmatter — is human-only, save\n"
+        "  through /new-project (creation) or the approved claude-md-mutator\n"
+        "  (allowlisted frontmatter keys), both of which edit by direct file IO and\n"
+        "  are invoked from the shell, not the Write/Edit tool.\n"
+        "  Body content evolves through start.md files downstream.\n"
+    )
+    sys.exit(2)
+
 
 try:
-    data = json.loads(os.environ["CLAUDE_HOOK_INPUT"])
-except (json.JSONDecodeError, KeyError):
+    data = json.loads(raw)
+except Exception:
+    # Cannot parse the tool call. Fail closed ONLY for the protected target: if
+    # the payload mentions a claude.md at all, refuse; otherwise this is plainly
+    # not a CLAUDE.md operation, so allow (blocking every unparseable Write/Edit
+    # would break the session on a transient glitch, and the payload is
+    # host-generated JSON that essentially never fails to parse).
+    if "claude.md" in raw.lower():
+        block()
     sys.exit(0)
 
-tool_name = data.get("tool_name", "")
-tool_input = data.get("tool_input", {})
-file_path = tool_input.get("file_path", "")
+tool_input = data.get("tool_input", {}) or {}
+file_path = tool_input.get("file_path", "") or ""
 if not file_path:
-    sys.exit(0)
+    sys.exit(0)  # not a file-targeting call
 
-# Canonicalize to POSIX absolute path for comparison
-file_path = file_path.replace("\\", "/")
-if not os.path.isabs(file_path):
-    file_path = os.path.join(project_dir, file_path)
-file_path = os.path.normpath(file_path)
-
-apex = os.path.normpath(os.path.join(project_dir, "CLAUDE.md"))
-if file_path != apex:
-    sys.exit(0)  # Not the apex — no constraint
-
-# Write operations always blocked — a full rewrite would clobber the body.
-if tool_name != "Edit":
-    print("BLOCKED: apex CLAUDE.md is immutable to Claude (design constraint #2).", file=sys.stderr)
-    print("  The body (incl. the boot-core region) is user-maintained: hand-edited", file=sys.stderr)
-    print("  by the user, or cboot-materialized (BL-15) — never agent-edited.", file=sys.stderr)
-    print("  Other body content evolves through start.md files downstream.", file=sys.stderr)
-    print("  Frontmatter-only edits are permitted via the Edit tool.", file=sys.stderr)
-    sys.exit(2)
-
-old_string = tool_input.get("old_string", "")
-new_string = tool_input.get("new_string", "")
-replace_all = bool(tool_input.get("replace_all", False))
-
+# Normalize the given spelling for a robust basename (handles a trailing slash,
+# "." / ".." segments), and independently resolve symlinks — refuse if EITHER
+# the given name or the fully-resolved target is a CLAUDE.md, so a symlink named
+# claude.md and a symlink that resolves to a CLAUDE.md are both caught.
+given = file_path.replace("\\", "/")
+candidates = [os.path.normpath(given)]
 try:
-    with open(file_path, encoding="utf-8") as f:
-        content = f.read()
+    candidates.append(os.path.realpath(given))
 except OSError:
-    sys.exit(0)  # Let the tool raise the real error
-
-# Locate frontmatter: `---\n ... \n---\n`
-m = re.match(r"^---\n(.*?\n)?---\n", content, re.DOTALL)
-if not m:
-    print("BLOCKED: apex CLAUDE.md has no parseable frontmatter; edit denied.", file=sys.stderr)
-    sys.exit(2)
-
-fm_end = m.end()
-
-# Require old_string to be entirely within the frontmatter block.
-# replace_all touches EVERY occurrence, so every occurrence must qualify —
-# checking only the first would let body edits slip through.
-old_idx = content.find(old_string)
-if old_idx < 0:
-    sys.exit(0)  # Edit tool will fail on its own with a clearer error
-if replace_all:
-    idx = old_idx
-    while idx >= 0:
-        if idx + len(old_string) > fm_end:
-            print("BLOCKED: apex CLAUDE.md edits must be confined to frontmatter.", file=sys.stderr)
-            print("  replace_all matches an occurrence in the body — body is immutable.", file=sys.stderr)
-            sys.exit(2)
-        idx = content.find(old_string, idx + 1)
-    new_content = content.replace(old_string, new_string)
-else:
-    if old_idx + len(old_string) > fm_end:
-        print("BLOCKED: apex CLAUDE.md edits must be confined to frontmatter.", file=sys.stderr)
-        print("  Body is immutable — evolve via start.md files downstream.", file=sys.stderr)
-        sys.exit(2)
-    # Verify the post-edit file still has a valid frontmatter block.
-    new_content = content[:old_idx] + new_string + content[old_idx + len(old_string):]
-if not re.match(r"^---\n(.*?\n)?---\n", new_content, re.DOTALL):
-    print("BLOCKED: apex CLAUDE.md edit would break frontmatter fences.", file=sys.stderr)
-    sys.exit(2)
+    pass
+if any(is_claude_md(c) for c in candidates):
+    block()
 
 sys.exit(0)
 PY
