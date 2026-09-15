@@ -302,6 +302,15 @@ class Happy(Base):
         self.assertEqual(rc, 0, err)
         self.assertIn("tags: [a, b, c]", rd(p))
 
+    def test_double_dash_in_value_accepted(self):
+        # TWO dashes in a value are fine — only three consecutive '---' trip the
+        # substring-fence check; a real range value must not be over-refused (pins
+        # the check at '---', not an over-strict '--').
+        p = self.write("---\nroot: true\nname: Old Name\ndescription: range 1 -- 2 shipped here\n---\nbody\n")
+        rc, out, err = run(p, "name=New Name Here")
+        self.assertEqual(rc, 0, err)
+        self.assertIn("description: range 1 -- 2 shipped here", rd(p))
+
     def test_idempotent_noop_still_prints_block(self):
         p = self.write(FM)
         ino = os.stat(p).st_ino
@@ -390,9 +399,11 @@ class DeadFlatRefuse(Base):
             self._refuse(self.write("---\nname: keepone" + ch + "\n---\nb\n"), "name=New Name")
 
     def test_hyphen_leading_key_refused(self):
-        # a key beginning with '-' (e.g. an all-hyphen '---: x' line) is closed on
-        # by a find('\n---') reader; refuse rather than edit around the ambiguity.
-        self._refuse(self.write("---\nname: Keep Name\n---: x\ndescription: keep this desc here\n---\nb\n"),
+        # a key beginning with '-' is refused by _ENTRY (first char must not be '-').
+        # The fixture key '-foo' has NO '---', so _ENTRY is the SOLE trip (the later
+        # '---' check can't mask it); the all-hyphen '---: x' shape is separately
+        # covered by test_triple_dash_in_value_refused.
+        self._refuse(self.write("---\nname: Keep Name\n-foo: bar\ndescription: keep this desc here\n---\nb\n"),
                      "name=New Name")
 
     def test_triple_dash_in_value_refused(self):
