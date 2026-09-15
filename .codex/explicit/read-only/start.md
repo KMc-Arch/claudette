@@ -95,12 +95,18 @@ is subordinated and (b) can be re-injected after a context summary.
   payload, and if `read-only-<session_id>.flag` exists re-injects the hold into the fresh context.
   The flag persists on disk; the hook re-hydrates it. A brand-new session (`startup`) gets a new id,
   matches no flag, and is read-write — correct.
-  - **Known limit (honest):** it is documented that `SessionStart` fires with `source=compact`, but
-    *not* documented whether **automatic** compaction (the silent kind when context fills) fires it,
-    or only manual `/compact`. Manual `/compact`, resume, clear and fork are covered with confidence;
-    auto-compaction is very likely (same event) but unverified. If it turns out auto-compaction does
-    not fire the hook, the only stronger option is a per-action `PreToolUse` re-inject/deny hook —
-    deliberately **not** built (see the git history for `/read-only`).
+  - **Compaction coverage is documented; one link is not.** This hook *is* the hooks guide's own
+    "re-inject context after compaction" pattern — a `SessionStart` `compact` matcher whose stdout is
+    added to the post-compaction context, run "after every compaction." Automatic compaction (the
+    silent context-window-fill kind) is documented to "work the same way as `/compact`" and to run
+    `SessionStart(compact)` hooks, so **auto and manual are both covered**. `PostCompact` is *not* a
+    context-injection channel and `PreCompact` fires too early, so `SessionStart(compact)` is the only
+    supported route (a per-action `PreToolUse` enforcing hook was deliberately **not** built). The one
+    thing the docs do **not** state is whether `session_id` is stable across a compaction; compaction
+    continues the same session (and `compact` is distinct from `resume`/`fork`), so it almost
+    certainly is — but if it ever changed, this hook's `session_id` match would miss and the hold
+    would silently fail to re-inject. Confirm empirically once: engage `/read-only`, run `/compact`,
+    verify the reminder returns.
 
 ## Reporting
 
