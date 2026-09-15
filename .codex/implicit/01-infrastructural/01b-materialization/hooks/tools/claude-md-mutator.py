@@ -68,6 +68,11 @@ _ENTRY = re.compile(r"^[A-Za-z0-9_.][A-Za-z0-9_.\-]*:")  # dead-flat entry: key 
 # tag, comment, anchor, directive) than by the line/substring readers this
 # ecosystem actually uses — and neutralizes a `!!python/...` tag outright.
 _DROP = ":`|<>[]{}\"'\\&*!#%@"
+# A leading run that would stop a value being a plain YAML scalar: a comma, or a
+# "-"/"?"/":" followed by whitespace or end (a bare "-word"/"-42"/"?word" stays a
+# valid scalar and is preserved). Applied at the end of laundering AND again after
+# truncation, whose strip("-") can re-expose an indicator the hyphen shielded.
+_LEADING = re.compile(r"^(?:[,\s]|[-?:](?=\s|$))+")
 
 
 def die(*msg):
@@ -109,7 +114,7 @@ def launder(value):
     # from a control/space-led input. Other indicators are already dropped above; a
     # bare hyphen inside a word (model-selector) and a solo leading "-word" (no
     # following space) are preserved.
-    return re.sub(r"^(?:[,\s]|[-?:](?=\s|$))+", "", result)
+    return _LEADING.sub("", result)
 
 
 def process_value(key, raw):
@@ -123,7 +128,9 @@ def process_value(key, raw):
     lo, hi = spec
     v = launder(raw)
     if len(v) > hi:
-        v = v[:hi].strip().strip("-").strip()
+        # truncation's strip("-") can re-expose a leading indicator the shielding
+        # hyphen hid ("-? …" -> "? …"), so re-run the leading-indicator strip.
+        v = _LEADING.sub("", v[:hi].strip().strip("-").strip())
     if len(v) < lo:
         die("REFUSED: %s laundered to %r (%d chars), below the %d-char minimum."
             % (key, v, len(v), lo))
