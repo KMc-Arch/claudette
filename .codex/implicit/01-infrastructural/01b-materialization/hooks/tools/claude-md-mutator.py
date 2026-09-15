@@ -190,6 +190,15 @@ def split_frontmatter(text):
             die("REFUSED: frontmatter is not flat — line %d is not a plain "
                 "'key: value' (embedded/trailing line break or bad key): %r. "
                 "Edit it by hand." % (k + 1, ln))
+        # A `---` anywhere in a key/value would be treated as the closing fence by
+        # a substring reader (cboot's `text.find('---', 3)` is UNANCHORED), which
+        # closes the block early and drops every key after it. The WRITE side
+        # already strips `---` from values it emits for this reason; refuse a
+        # pre-existing one so the reader and this editor agree on the block.
+        if "---" in ln:
+            die("REFUSED: frontmatter line %d contains '---', which a substring "
+                "reader (cboot's find('---', 3)) closes the block on — truncating "
+                "the frontmatter: %r. Edit it by hand." % (k + 1, ln))
         keys.append(ln.split(":", 1)[0])
     dupes = sorted({k for k in keys if keys.count(k) > 1})
     if dupes:
