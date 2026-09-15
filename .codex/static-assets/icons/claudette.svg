@@ -1,0 +1,11 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" role="img" aria-label="Claudette Rooted Hex">
+  <title>Claudette Rooted Hex</title>
+  <path d="M128 12 L226 69 L226 187 L128 244 L30 187 L30 69 Z" fill="#FFFFFF" stroke="#454545" stroke-width="12" stroke-linejoin="round"/>
+
+  <path d="M88 91 L128 51 L168 91" fill="none" stroke="#000000" stroke-width="18" stroke-linecap="round" stroke-linejoin="round"/>
+  <path d="M103 128 L128 103 L153 128" fill="none" stroke="#6A6A6A" stroke-width="12" stroke-linecap="round" stroke-linejoin="round"/>
+  <path d="M108 157 L128 137 L148 157" fill="none" stroke="#929292" stroke-width="9" stroke-linecap="round" stroke-linejoin="round"/>
+  <path d="M114 180 L128 166 L142 180" fill="none" stroke="#B7B7B7" stroke-width="7" stroke-linecap="round" stroke-linejoin="round"/>
+  <circle cx="128" cy="196" r="5" fill="#B7B7B7"/>
+  <circle cx="128" cy="210" r="3.5" fill="#D0D0D0"/>
+</svg>
