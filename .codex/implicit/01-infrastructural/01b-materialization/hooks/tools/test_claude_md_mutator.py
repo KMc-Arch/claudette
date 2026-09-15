@@ -181,6 +181,15 @@ class Launder(unittest.TestCase):
         self.assertEqual(clmd.launder("-solo tag here now"), "-solo tag here now")
         self.assertEqual(clmd.launder("model-selector"), "model-selector")
 
+    def test_truncation_does_not_reexpose_leading_indicator(self):
+        # a leading ?/, shielded behind hyphen(s) is a valid scalar pre-truncation;
+        # once truncation's strip("-") removes the hyphens it must not surface the
+        # indicator as the first char (which a strict YAML reader would choke on).
+        for prefix in ("-? ", "-, ", "--? ", "--, "):
+            v = clmd.process_value("name", prefix + "a" * 260)
+            self.assertLessEqual(len(v), 200)
+            self.assertNotIn(v[:1], "?,-:", "re-exposed %r from %r" % (v[:1], prefix))
+
     def test_orchestrator_whitespace_tolerated(self):
         self.assertEqual(clmd.process_value("orchestrator", "  true  "), "true")
 
