@@ -294,8 +294,9 @@ class Happy(Base):
         self.assertTrue(t.endswith("# Body\n\nkeep too.\n"))
 
     def test_single_line_flow_value_accepted(self):
-        # a balanced single-line flow value is one flat line and passes untouched
-        # (the unbalanced-bracket refusal must not catch it).
+        # a single-line flow value is one flat line (the docstring blesses it) and
+        # passes untouched — a regression guard against any future over-strict
+        # value check re-refusing valid flow.
         p = self.write("---\nroot: true\ntags: [a, b, c]\nname: Old Name\ndescription: keep this description\n---\nbody\n")
         rc, out, err = run(p, "name=New Name Here")
         self.assertEqual(rc, 0, err)
@@ -393,6 +394,13 @@ class DeadFlatRefuse(Base):
         # by a find('\n---') reader; refuse rather than edit around the ambiguity.
         self._refuse(self.write("---\nname: Keep Name\n---: x\ndescription: keep this desc here\n---\nb\n"),
                      "name=New Name")
+
+    def test_triple_dash_in_value_refused(self):
+        # a value containing '---' would be read as the closing fence by cboot's
+        # unanchored find('---', 3), truncating the block; refuse it (symmetric
+        # with the write side, which strips '---' from values it emits).
+        self._refuse(self.write("---\nroot: true\nnotes: see --- section\nname: Keep Name\n---\nb\n"),
+                     "name=New Name Here")
 
 
 class WriteRefuse(Base):
