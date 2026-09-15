@@ -45,7 +45,9 @@ raw = os.environ.get("CLAUDE_HOOK_INPUT", "")
 
 
 def is_claude_md(name):
-    return os.path.basename(name).strip().lower() == "claude.md"
+    # Trailing dots/spaces are stripped by Win32/SMB path normalization, so
+    # "CLAUDE.md." and "CLAUDE.md " open the same file there — fold them too.
+    return os.path.basename(name).strip().rstrip(". ").lower() == "claude.md"
 
 
 def block():
@@ -62,33 +64,34 @@ def block():
 
 try:
     data = json.loads(raw)
+    tool_input = data.get("tool_input", {}) or {}
+    file_path = tool_input.get("file_path", "")
+    if not file_path:
+        sys.exit(0)  # not a file-targeting call
+    # A real Write/Edit file_path is a clean string; anything else (a number, a
+    # list, an embedded NUL) is malformed — treat it as an error and fall to the
+    # fail-closed handler below rather than crashing to exit 1 (which PreToolUse
+    # treats as non-blocking = ALLOW).
+    if not isinstance(file_path, str) or "\x00" in file_path:
+        raise ValueError("file_path is not a clean string")
+    # Match on the given spelling (normalized: trailing slash, "."/".." segments)
+    # AND the symlink-resolved target — so a symlink named claude.md and a symlink
+    # that resolves to a CLAUDE.md are both caught.
+    given = file_path.replace("\\", "/")
+    candidates = [os.path.normpath(given), os.path.realpath(given)]
+    if any(is_claude_md(c) for c in candidates):
+        block()
+    sys.exit(0)
+except SystemExit:
+    raise  # block() / the allow-path sys.exit(0) — let them through unchanged
 except Exception:
-    # Cannot parse the tool call. Fail closed ONLY for the protected target: if
-    # the payload mentions a claude.md at all, refuse; otherwise this is plainly
-    # not a CLAUDE.md operation, so allow (blocking every unparseable Write/Edit
-    # would break the session on a transient glitch, and the payload is
-    # host-generated JSON that essentially never fails to parse).
+    # Unparseable payload OR any unexpected post-parse shape/crash. Fail CLOSED
+    # for a plausibly-CLAUDE.md target (a real target's path contains "claude.md"),
+    # else allow — a transient glitch on an unrelated edit must not break the
+    # session, and host-generated JSON essentially never fails to parse. (This is
+    # the only inode/hardlink-blind spot's backstop too: a hardlink named
+    # otherwise is not caught here — that residual is covered out-of-band.)
     if "claude.md" in raw.lower():
         block()
     sys.exit(0)
-
-tool_input = data.get("tool_input", {}) or {}
-file_path = tool_input.get("file_path", "") or ""
-if not file_path:
-    sys.exit(0)  # not a file-targeting call
-
-# Normalize the given spelling for a robust basename (handles a trailing slash,
-# "." / ".." segments), and independently resolve symlinks — refuse if EITHER
-# the given name or the fully-resolved target is a CLAUDE.md, so a symlink named
-# claude.md and a symlink that resolves to a CLAUDE.md are both caught.
-given = file_path.replace("\\", "/")
-candidates = [os.path.normpath(given)]
-try:
-    candidates.append(os.path.realpath(given))
-except OSError:
-    pass
-if any(is_claude_md(c) for c in candidates):
-    block()
-
-sys.exit(0)
 PY
