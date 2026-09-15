@@ -34,8 +34,8 @@ A CONFIRMED HOLD on [X] means:
 
 ### Active Holds
 
-- **ABSOLUTE HOLD: creating symbolic links.** Do not *deliberately* create a
-  symlink — via `ln -s`, `cp -s`, an interpreter's symlink call (`os.symlink`,
+- **ABSOLUTE HOLD: creating symbolic links.** Do not create any
+  symlinks. Not via `ln -s`, `cp -s`, an interpreter's symlink call (`os.symlink`,
   `Path.symlink_to`, `fs.symlinkSync`, …), or any other means — except under the
   ABSOLUTE HOLD terms above. Path containment resolves paths **as referenced**, so a
   symlink inside `^` is an authorized extension of the project and a symlink pointing
@@ -49,9 +49,12 @@ A CONFIRMED HOLD on [X] means:
   target. The denial binds the target, not the means.
 
 - **ABSOLUTE HOLD: updating any `CLAUDE.md`, save through /new-project or the approved mutator
-  (`<script path — set when it lands>`).** Every route — Write/Edit, shell,
+  (`^/^/.codex/implicit/01-infrastructural/01b-materialization/hooks/tools/claude-md-mutator.py`).**
+  Every route — Write/Edit, shell,
   interpreter, subagent — and every part of the file: body, frontmatter,
-  creation. The script and /new-project are the sole exceptions.
+  creation. The two exceptions are narrow: /new-project *creates* a CLAUDE.md, and
+  the mutator edits *only* the allowlisted frontmatter keys `name` / `description` /
+  `orchestrator`. The body has no sanctioned agent editor — it is human-only.
 
 - **ABSOLUTE HOLD: modifying, replacing, or deleting the mutator or the
   /new-project scaffolder.** They are the two exceptions to the hold above, so
