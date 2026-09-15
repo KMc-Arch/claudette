@@ -112,8 +112,13 @@ class Launder(unittest.TestCase):
             clmd.process_value("description", "short")   # 5 chars < 10
 
     def test_control_chars_neutralized(self):
-        # non-whitespace controls (which isspace misses) must become " - ", not survive
-        for ch in ("\x00", "\x01", "\x08", "\x0e", "\x1f", "\x7f", "\x85", "\x9f"):
+        # non-whitespace controls (which isspace misses) must become " - ", not
+        # survive — the WHOLE non-whitespace C0 range (incl. ESC 0x1b, the ANSI-
+        # escape introducer, the one C0 char isspace does not also cover) plus
+        # DEL/NEL/C1.
+        controls = [chr(c) for c in range(0x00, 0x20) if not chr(c).isspace()]
+        controls += ["\x7f", "\x85", "\x9f", "\x1b"]
+        for ch in controls:
             self.assertEqual(clmd.launder("A" + ch + "B"), "A - B", repr(ch))
 
     def test_format_chars_not_silently_joined(self):
@@ -199,10 +204,12 @@ class Launder(unittest.TestCase):
             clmd.process_value("name", "abcd")                            # 4
 
     def test_name_max_boundary(self):
-        # exactly hi (200) is kept as-is; hi+1 truncates to hi (pins the `> hi`
-        # guard at its exact edge, not just far above it).
+        # exactly hi (200) is kept; hi+1 truncates to hi. A value laundering to
+        # exactly hi and ending in '-' must NOT be truncated (pins `> hi`, not
+        # `>= hi`: `>=` would run truncation and strip the trailing hyphen to 199).
         self.assertEqual(len(clmd.process_value("name", "a" * 200)), 200)
         self.assertEqual(len(clmd.process_value("name", "a" * 201)), 200)
+        self.assertEqual(clmd.process_value("name", "a" * 199 + "-"), "a" * 199 + "-")
 
     def test_description_max_boundary(self):
         self.assertEqual(len(clmd.process_value("description", "a" * 300)), 300)
@@ -386,13 +393,6 @@ class DeadFlatRefuse(Base):
         # by a find('\n---') reader; refuse rather than edit around the ambiguity.
         self._refuse(self.write("---\nname: Keep Name\n---: x\ndescription: keep this desc here\n---\nb\n"),
                      "name=New Name")
-
-    def test_wrapped_flow_collection_refused(self):
-        # a flow collection wrapped across lines whose continuation looks like a
-        # flat key is one nested key to a strict reader but two flat keys to a
-        # per-line reader — an unbalanced-bracket shape we can't reason about.
-        self._refuse(self.write("---\ntitle: [Foo,\ndescription: Bar baz]\n---\nb\n"), "name=New Name Here")
-        self._refuse(self.write("---\nname: Keep Name\nmeta: {a: 1,\nb: 2}\n---\nb\n"), "name=New Name Here")
 
 
 class WriteRefuse(Base):

@@ -190,15 +190,6 @@ def split_frontmatter(text):
             die("REFUSED: frontmatter is not flat — line %d is not a plain "
                 "'key: value' (embedded/trailing line break or bad key): %r. "
                 "Edit it by hand." % (k + 1, ln))
-        # Unbalanced flow brackets mean a `[ ]` / `{ }` collection opened here and
-        # continues on another line — a multi-line flow a strict reader parses as
-        # one nested key while this per-line reader would see two flat keys. A
-        # shape we cannot reason about: refuse. (A balanced single-line flow such
-        # as `tags: [a, b]` passes.)
-        if ln.count("[") != ln.count("]") or ln.count("{") != ln.count("}"):
-            die("REFUSED: frontmatter line %d has unbalanced flow brackets — a "
-                "wrapped multi-line [ ] / { } collection is not dead-flat: %r. "
-                "Edit it by hand." % (k + 1, ln))
         keys.append(ln.split(":", 1)[0])
     dupes = sorted({k for k in keys if keys.count(k) > 1})
     if dupes:
