@@ -19,7 +19,6 @@
 # frontmatter exception. Exit 2 = block, exit 0 = allow.
 
 INPUT=$(cat)
-export CLAUDE_HOOK_INPUT="$INPUT"
 
 # Resolve Python interpreter: python first (Windows convention + Linux alias),
 # python3 as fallback (Unix PEP 394 canonical). See backlog BL-PY-INTERP.
@@ -36,12 +35,18 @@ if [ -z "$PY" ]; then
     exit 2
 fi
 
-"$PY" - <<'PY'
+# Hand the tool-call JSON to Python over STDIN — never argv or an environment
+# variable. A large Write's `content` can exceed the execve argument/env size
+# limit (MAX_ARG_STRLEN, ~128 KiB); passing it via env failed the interpreter
+# launch with E2BIG and a NON-blocking exit code — i.e. fail OPEN on exactly the
+# large-payload case. Only the small constant program below travels through argv;
+# the unbounded payload rides stdin.
+GUARD_PY=$(cat <<'PY'
 import json
 import os
 import sys
 
-raw = os.environ.get("CLAUDE_HOOK_INPUT", "")
+raw = sys.stdin.read()
 
 
 def is_claude_md(name):
@@ -89,9 +94,11 @@ except Exception:
     # for a plausibly-CLAUDE.md target (a real target's path contains "claude.md"),
     # else allow — a transient glitch on an unrelated edit must not break the
     # session, and host-generated JSON essentially never fails to parse. (This is
-    # the only inode/hardlink-blind spot's backstop too: a hardlink named
+    # the inode/hardlink-blind spot's only backstop too: a hardlink named
     # otherwise is not caught here — that residual is covered out-of-band.)
     if "claude.md" in raw.lower():
         block()
     sys.exit(0)
 PY
+)
+printf '%s' "$INPUT" | "$PY" -c "$GUARD_PY"
