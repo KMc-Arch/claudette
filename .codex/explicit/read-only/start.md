@@ -2,18 +2,23 @@
 version: 1
 short-desc: Engage a session-wide read-only hold; lift with /read-only done
 writes:
-  - "^/.state/holds/"
+  - "^/.claude/skills/read-only/"
 ---
 
 # read-only
 
 Declare **this session** read-only: engage a session-wide CONFIRMED HOLD on every mutative
 operation until the user lifts it with `/read-only done`. Use it when this session is a
-**secondary / subordinate** one against the filesystem — e.g. an observer or reviewer session on a
-root a primary session already holds ([[feedback_single_session_per_root]] makes one-active-session
-the design norm; this command is how a second session runs safely against the same tree). The hold
-is a *session mode*, not a per-file setting: it stays on across the whole session, surviving context
-compaction via a marker flag, until explicitly cleared.
+**secondary / subordinate** one against the filesystem — an observer, reviewer, or assistant session
+running alongside a **primary** session that owns the write authority over the same tree. `/read-only`
+is what makes that safe: it pins this session into read-only so it cannot collide with the primary's
+work. The hold is a *session mode*, not a per-file setting: it stays on across the whole session —
+surviving context compaction via a re-injection hook — until explicitly cleared.
+
+> This deliberately relies on **two sessions sharing one tree** (a primary + a subordinated
+> secondary), which is the exception to the one-active-session-per-root norm ([[feedback_single_session_per_root]]).
+> That is exactly why the hold is **session-scoped** (see the flag below): only *this* session is
+> subordinated; the primary, with a different session id, is never affected.
 
 ## Usage
 
@@ -40,8 +45,8 @@ own reasoning:
 - **Git:** `commit`, `push`, branch/tag create or delete, `reset`, `merge`, `rebase`, `stash`,
   `add`, `checkout -B`/`switch -c`. (Read-only git — `status`, `log`, `diff`, `show`, `blame` — is
   allowed.)
-- **State & memory:** any write under `^/.state/` (backlog, memory, traces, plans, …) — **except**
-  this command's own flag machinery below.
+- **State & memory:** any write under `^/.state/` (backlog, memory, traces, plans, …). This command
+  writes exactly one thing — its own flag below.
 - **Outward-facing sends:** publishing an Artifact or writing its DB/assets, `SendMessage` /
   `SendUserFile` / `PushNotification` delivery, cron create/delete, MCP writes, any network
   POST/PUT/DELETE, Gmail/Calendar/Drive writes. (An outward *send* publishes — held.)
@@ -67,26 +72,35 @@ This is a genuine **CONFIRMED HOLD** (apex governance), not a blanket black-hole
 Blanket or implied mutations ("clean this up", "go ahead") do **not** satisfy this — the instruction
 must name the specific operation. The wholesale lift is only `/read-only done`.
 
-## Marker flag (survives context compaction)
+## Session-scoped flag + how it survives compaction
 
-The active state is recorded on disk so it is re-derivable after a context summary and visible to
-other tooling. This flag is the **sole write** this command performs while the hold is engaged.
+The active state is recorded on disk, keyed to **this session**, so it (a) identifies which session
+is subordinated and (b) can be re-injected after a context summary.
 
-- **Path:** `^/.state/holds/read-only.<sid>.flag`, where `<sid>` is this session's id (the UUID
-  segment of the scratchpad path, or the Claude Code session id). Session-discriminated so a
-  secondary read-only session never clears a different session's flag. `mkdir -p ^/.state/holds/`
-  if needed (infrastructure — do not ask).
-- **Contents:** the engaging session id, an ISO-8601 `engaged_at` timestamp, and the declaration
-  text above.
-- **On engage:** write the flag (creating the dir), then report.
-- **On `/read-only done`:** remove **only this session's** flag, then report the lift. If the flag
-  is absent, report that the session was not under the hold.
-- **On resume / after compaction:** if you find a flag matching this session's id, the hold is in
-  force — treat this file as authoritative and re-report on next relevant action. Also carry the
-  hold as a top-priority session fact independent of the flag.
-
-An orphaned flag from a crashed session is harmless; boot-time reaping of stale `holds/*.flag` is a
-separate enhancement (backlog), not this command's job.
+- **Path:** `^/.claude/skills/read-only/read-only-<sid>.flag`.
+  - `<sid>` = **this session's id**: the UUID segment of your scratchpad directory path
+    (`…/<UUID>/scratchpad`), which equals the harness `session_id`. If you cannot determine `<sid>`,
+    **do NOT write a flag** — report that engage failed. A flag with the wrong/absent id would never
+    match and the hold would silently fail to persist.
+  - `.claude/` is git-ignored and instance-local; `cboot`'s shim generation does not delete files
+    here, so the flag survives boot/resume. `mkdir -p` the directory if needed (infrastructure — do
+    not ask).
+  - **Contents:** the session id, an ISO-8601 `engaged_at` timestamp, and the declaration text.
+- **On engage:** write the flag, then report.
+- **On `/read-only done`:** remove **only this session's** flag (`read-only-<sid>.flag`), then report
+  the lift. If it is absent, report that this session was not under the hold. Never touch another
+  session's flag.
+- **Compaction survival is the hook, not the flag alone.** `read-only-reinject.py` runs on every
+  `SessionStart` (startup, resume, clear, compact, fork), reads the `session_id` from the hook
+  payload, and if `read-only-<session_id>.flag` exists re-injects the hold into the fresh context.
+  The flag persists on disk; the hook re-hydrates it. A brand-new session (`startup`) gets a new id,
+  matches no flag, and is read-write — correct.
+  - **Known limit (honest):** it is documented that `SessionStart` fires with `source=compact`, but
+    *not* documented whether **automatic** compaction (the silent kind when context fills) fires it,
+    or only manual `/compact`. Manual `/compact`, resume, clear and fork are covered with confidence;
+    auto-compaction is very likely (same event) but unverified. If it turns out auto-compaction does
+    not fire the hook, the only stronger option is a per-action `PreToolUse` re-inject/deny hook —
+    deliberately **not** built (see the git history for `/read-only`).
 
 ## Reporting
 
