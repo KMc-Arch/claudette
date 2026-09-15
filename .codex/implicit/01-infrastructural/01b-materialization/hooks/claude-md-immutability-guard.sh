@@ -20,9 +20,11 @@
 
 INPUT=$(cat)
 
-# Resolve Python interpreter: python first (Windows convention + Linux alias),
-# python3 as fallback (Unix PEP 394 canonical). See backlog BL-PY-INTERP.
-PY=$(command -v python || command -v python3)
+# Resolve Python interpreter: python3 FIRST (PEP 394 canonical, and it avoids
+# preferring a broken Windows `python` stub that WSL PATH interop can surface —
+# such a stub would run and exit non-zero, i.e. fail OPEN); `python` as fallback.
+# See backlog BL-PY-INTERP.
+PY=$(command -v python3 || command -v python)
 if [ -z "$PY" ]; then
     # Fail CLOSED: this guard protects a CLAUDE.md under an ABSOLUTE HOLD, whose
     # default is refusal. Without Python it cannot tell whether the target is a
@@ -46,7 +48,10 @@ import json
 import os
 import sys
 
-raw = sys.stdin.read()
+# Read raw bytes and decode with surrogateescape so a non-UTF-8 or truncated
+# payload can NEVER raise here (which, before the try, would exit 1 = a
+# non-blocking ALLOW). host JSON is always valid UTF-8; this only hardens the edge.
+raw = sys.stdin.buffer.read().decode("utf-8", "surrogateescape")
 
 
 def is_claude_md(name):
@@ -102,3 +107,12 @@ except Exception:
 PY
 )
 printf '%s' "$INPUT" | "$PY" -c "$GUARD_PY"
+rc=$?
+# The program above returns exactly 0 (allow) or 2 (block). Anything else means
+# the interpreter did not run it to a verdict — a broken/stub interpreter, a
+# launch failure, or a fatal signal. That is not a clean allow, so fail CLOSED.
+if [ "$rc" -ne 0 ] && [ "$rc" -ne 2 ]; then
+    echo "BLOCKED: claude-md-immutability-guard: interpreter returned rc=$rc (no clean verdict) — failing closed." >&2
+    exit 2
+fi
+exit "$rc"
