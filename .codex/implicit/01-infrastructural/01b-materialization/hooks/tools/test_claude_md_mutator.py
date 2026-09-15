@@ -198,6 +198,16 @@ class Launder(unittest.TestCase):
         with self.assertRaises(SystemExit):
             clmd.process_value("name", "abcd")                            # 4
 
+    def test_name_max_boundary(self):
+        # exactly hi (200) is kept as-is; hi+1 truncates to hi (pins the `> hi`
+        # guard at its exact edge, not just far above it).
+        self.assertEqual(len(clmd.process_value("name", "a" * 200)), 200)
+        self.assertEqual(len(clmd.process_value("name", "a" * 201)), 200)
+
+    def test_description_max_boundary(self):
+        self.assertEqual(len(clmd.process_value("description", "a" * 300)), 300)
+        self.assertEqual(len(clmd.process_value("description", "a" * 301)), 300)
+
     def test_description_min_boundary(self):
         self.assertEqual(clmd.process_value("description", "x" * 10), "x" * 10)
         with self.assertRaises(SystemExit):
@@ -275,6 +285,14 @@ class Happy(Base):
         t = rd(p)
         self.assertIn("root: true\n", t)
         self.assertTrue(t.endswith("# Body\n\nkeep too.\n"))
+
+    def test_single_line_flow_value_accepted(self):
+        # a balanced single-line flow value is one flat line and passes untouched
+        # (the unbalanced-bracket refusal must not catch it).
+        p = self.write("---\nroot: true\ntags: [a, b, c]\nname: Old Name\ndescription: keep this description\n---\nbody\n")
+        rc, out, err = run(p, "name=New Name Here")
+        self.assertEqual(rc, 0, err)
+        self.assertIn("tags: [a, b, c]", rd(p))
 
     def test_idempotent_noop_still_prints_block(self):
         p = self.write(FM)
@@ -369,6 +387,13 @@ class DeadFlatRefuse(Base):
         self._refuse(self.write("---\nname: Keep Name\n---: x\ndescription: keep this desc here\n---\nb\n"),
                      "name=New Name")
 
+    def test_wrapped_flow_collection_refused(self):
+        # a flow collection wrapped across lines whose continuation looks like a
+        # flat key is one nested key to a strict reader but two flat keys to a
+        # per-line reader — an unbalanced-bracket shape we can't reason about.
+        self._refuse(self.write("---\ntitle: [Foo,\ndescription: Bar baz]\n---\nb\n"), "name=New Name Here")
+        self._refuse(self.write("---\nname: Keep Name\nmeta: {a: 1,\nb: 2}\n---\nb\n"), "name=New Name Here")
+
 
 class WriteRefuse(Base):
     def _refuse(self, path, *sets):
@@ -427,10 +452,20 @@ class FileRefuse(Base):
         self.assertIn("not a regular file", err)
 
     def test_no_frontmatter(self):
-        self._refuse(self.write("# heading\nprose\n---\nname: x here\n---\n"), "name=New Name")
+        # all-flat body but NO opening --- fence: the missing fence must be the
+        # SOLE reason for refusal (fixture has no incidental non-flat line), so
+        # this actually pins the opening-fence guard.
+        self._refuse(self.write("name: real name\ndescription: a real value here\n---\nbody\n"), "name=New Name")
 
     def test_unterminated(self):
-        self._refuse(self.write("---\nname: X here\nno close\n"), "name=New Name")
+        # all-flat frontmatter with NO closing fence: the missing close must be
+        # the sole reason for refusal, pinning the never-closed guard.
+        self._refuse(self.write("---\nname: Real Name\ndescription: some description here\n"), "name=New Name")
+
+    def test_fence_four_dashes_not_a_fence(self):
+        # a "----" line is not a fence (fence is exactly three dashes) — it is read
+        # as a body/key line and refused, pinning _FENCE to `^---[ \t]*$`.
+        self._refuse(self.write("---\nname: Keep Name\n----\ndescription: v here now\n---\nb\n"), "name=New Name")
 
     def test_non_utf8_file(self):
         self._refuse(self.write(b"---\nname: X\n---\n\n\xff\xfe\n"), "name=New Name")
