@@ -164,6 +164,23 @@ class Launder(unittest.TestCase):
         self.assertNotIn("!", v)
         self.assertTrue(v.startswith("python"))
 
+    def test_leading_block_indicator_stripped(self):
+        # "- "/"? "/", " at the start would make a strict YAML parser reject the
+        # whole frontmatter (sequence / complex-key / flow); strip the prefix.
+        for v, expected in [
+            ("- A tool for diagrams", "A tool for diagrams"),
+            ("? complex key here now", "complex key here now"),
+            (", flow mark value here", "flow mark value here"),
+            ("\t- synth bullet here now", "synth bullet here now"),  # synthesized "- "
+        ]:
+            self.assertEqual(clmd.launder(v), expected, repr(v))
+
+    def test_solo_leading_hyphen_word_preserved(self):
+        # "-word" (no following space) is a valid plain scalar — keep it; and keep
+        # bare hyphens inside a word.
+        self.assertEqual(clmd.launder("-solo tag here now"), "-solo tag here now")
+        self.assertEqual(clmd.launder("model-selector"), "model-selector")
+
     def test_orchestrator_whitespace_tolerated(self):
         self.assertEqual(clmd.process_value("orchestrator", "  true  "), "true")
 
@@ -278,6 +295,15 @@ class Happy(Base):
         self.assertIn(b"Renamed Group", r.stdout)
         self.assertIn(b"description:", r.stdout)   # the non-ASCII line is echoed, not crashed
 
+    def test_bom_prefixed_file_accepted(self):
+        # a UTF-8 BOM (a Windows editor may add one) must not lock out the sole
+        # editor: decode strips it, matching boot-inject / bootstrap-child.
+        p = self.write("﻿---\nroot: true\nname: Old Name\ndescription: keep this description\n---\n\nbody\n")
+        rc, out, err = run(p, "name=Renamed Group")
+        self.assertEqual(rc, 0, err)
+        self.assertIn("name: Renamed Group", out)
+        self.assertIn("name: Renamed Group\n", rd(p))
+
 
 class DeadFlatRefuse(Base):
     def _refuse(self, path, *sets):
@@ -327,6 +353,12 @@ class DeadFlatRefuse(Base):
         # len(splitlines())>1 check missed it. Must now refuse, file untouched.
         for ch in ("\r", "\x0b", "\x0c", "\x85", " ", " ", "\x1c", "\x1d", "\x1e"):
             self._refuse(self.write("---\nname: keepone" + ch + "\n---\nb\n"), "name=New Name")
+
+    def test_hyphen_leading_key_refused(self):
+        # a key beginning with '-' (e.g. an all-hyphen '---: x' line) is closed on
+        # by a find('\n---') reader; refuse rather than edit around the ambiguity.
+        self._refuse(self.write("---\nname: Keep Name\n---: x\ndescription: keep this desc here\n---\nb\n"),
+                     "name=New Name")
 
 
 class WriteRefuse(Base):
@@ -410,6 +442,16 @@ class FileRefuse(Base):
         # memory, even when its frontmatter is small and flat.
         big = "---\nname: Keep Name\n---\n" + ("x" * (1024 * 1024 + 16))
         self._refuse(self.write(big), "name=New Name")
+
+    def test_file_size_cap_exact_boundary(self):
+        # a file of EXACTLY the cap is accepted; one byte over is refused (proves
+        # the boundary is `>`, not `>=`).
+        base = "---\nname: Keep Name\n---\n"
+        at = base + ("x" * (1024 * 1024 - len(base.encode("utf-8"))))
+        self.assertEqual(len(at.encode("utf-8")), 1024 * 1024)
+        rc, out, err = run(self.write(at), "name=New Name Here")
+        self.assertEqual(rc, 0, err)                       # exactly at cap: accepted
+        self._refuse(self.write(at + "y"), "name=New Name Here")  # one over: refused
 
     def test_unwritable_dir(self):
         if not _fs_enforces_perms(self.d):

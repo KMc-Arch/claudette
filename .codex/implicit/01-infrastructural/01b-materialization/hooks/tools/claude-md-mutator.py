@@ -3,8 +3,9 @@
 
 The SOLE authorized writer of allowlisted frontmatter keys in an existing
 CLAUDE.md (per the "updating any CLAUDE.md" ABSOLUTE HOLD in the apex CLAUDE.md).
-The claude-md guard hook denies every Write/Edit to a CLAUDE.md; the precision
-lives here, and the hook never sees this — it edits by direct file IO.
+The claude-md guard hook denies Write/Edit tool calls whose target name resolves
+to a CLAUDE.md (it is name/symlink-based, not inode-based); the precision lives
+here, and the hook never sees this mutator — it edits by direct file IO.
 
 Two independent halves:
 
@@ -60,7 +61,7 @@ ALLOWED = tuple(FIELDS)
 _FRONTMATTER_READ_CAP = 64 * 1024  # the guard stops reading here; stay in step (bytes)
 _FILE_READ_CAP = 1024 * 1024       # refuse a whole file larger than this before reading it (bytes)
 _FENCE = re.compile(r"^---[ \t]*$")             # a fence: --- + optional trailing blanks
-_ENTRY = re.compile(r"^[A-Za-z0-9_.\-]+:")      # a dead-flat entry: column-0 key + colon
+_ENTRY = re.compile(r"^[A-Za-z0-9_.][A-Za-z0-9_.\-]*:")  # dead-flat entry: key (no leading '-') + colon
 # Structural/quote/escape chars AND the YAML indicators significant at the start
 # of a plain scalar (& * ! % @) or after a space (#). Dropping these keeps a
 # laundered value from being read differently by a strict-YAML consumer (alias,
@@ -101,7 +102,14 @@ def launder(value):
     # Collapse the " - " separators we introduced (bare hyphens are preserved),
     # tidy internal spaces, drop empty segments, trim.
     parts = [re.sub(r" {2,}", " ", p).strip() for p in v.split(" - ")]
-    return " - ".join(p for p in parts if p)
+    result = " - ".join(p for p in parts if p)
+    # Neutralize a leading YAML block/flow indicator so the value stays a valid
+    # PLAIN scalar to a strict reader: a comma, or a "- " / "? " / ": " (sequence /
+    # complex-key / mapping) prefix — including one this laundering synthesized
+    # from a control/space-led input. Other indicators are already dropped above; a
+    # bare hyphen inside a word (model-selector) and a solo leading "-word" (no
+    # following space) are preserved.
+    return re.sub(r"^(?:[,\s]|[-?:](?=\s|$))+", "", result)
 
 
 def process_value(key, raw):
@@ -291,7 +299,10 @@ def main(argv=None):
     except OSError as e:
         die("REFUSED: cannot read %r: %s (fail closed)." % (args.path, e))
     try:
-        text = raw.decode("utf-8")
+        # utf-8-sig strips a leading BOM if present (a Windows editor may add one),
+        # matching the ecosystem readers (boot-inject lstrips it, bootstrap-child
+        # reads utf-8-sig); a BOM-less file decodes identically.
+        text = raw.decode("utf-8-sig")
     except UnicodeDecodeError:
         die("REFUSED: %r is not valid UTF-8 (fail closed)." % args.path)
 
