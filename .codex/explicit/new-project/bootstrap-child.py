@@ -7,7 +7,8 @@ frontmatter. The folder name is derived from it per the Naming Convention in
 .codex/specs/child-project.md.
 
 Copies the child template from .templates/child/ (CLAUDE.md, .state/ scaffolding,
-and the ~inbox/ ~outbox/ mailboxes), then fills the laundered `name:`.
+and the ~inbox/ ~outbox/ mailboxes), fills the laundered `name:`, and materializes
+the child's settings / skill shims / resolved prefs via child_propagate.
 
 Usage:
     python bootstrap-child.py "<name>" [--project-root <path>]
@@ -201,8 +202,9 @@ def main() -> int:
 
     # Launder + validate the name BEFORE anything is created on disk, so a failure
     # here strands no half-made child. Same dead-flat down-convert the CLAUDE.md
-    # mutator applies (drops ':' / '#' / control chars, transliterates, single-
-    # lines), so the name cannot corrupt the child's frontmatter. NOT the mutator's
+    # mutator applies (drops ':' / '#' / structural chars, turns control chars and
+    # line breaks into a ' - ' separator, transliterates, single-lines), so the name
+    # cannot corrupt the child's frontmatter. NOT the mutator's
     # length GATE: short names like "ACT" stay legal (no 5-char floor); only its
     # 200-char ceiling is applied.
     try:

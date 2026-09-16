@@ -21,7 +21,7 @@ Create a new child project following the Child Project Spec.
 
 `new-project <name>` — create a child project with the given canonical name.
 
-`<name>` goes into the CLAUDE.md `name:` field, laundered to a dead-flat single-line scalar (the same down-convert the `claude-md-mutator` applies) so it cannot corrupt frontmatter — colons and control characters are dropped, non-ASCII is transliterated. Quote the name if it contains spaces.
+`<name>` goes into the CLAUDE.md `name:` field, laundered to a dead-flat single-line scalar (the same down-convert the `claude-md-mutator` applies) so it cannot corrupt frontmatter — colons and structural characters are dropped, control characters and line breaks become a ` - ` separator, and non-ASCII is transliterated. Quote the name if it contains spaces.
 
 The folder name is **derived** from `<name>` per the Naming Convention in `.codex/specs/child-project.md`.
 
