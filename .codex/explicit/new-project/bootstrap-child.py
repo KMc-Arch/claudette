@@ -220,10 +220,18 @@ def main() -> int:
 
     target, suffix = resolve_folder_path(parent, folder_base)
 
-    # Copy template tree. copy_tree_tolerant copies contents but swallows EPERM
-    # on metadata ops (chmod/copystat), which v9fs (WSL mounts) raise and which
-    # would otherwise abort the whole copy.
-    copy_tree_tolerant(template_dir, target)
+    # Copy template tree. copy_tree_tolerant swallows EPERM on metadata ops
+    # (chmod/copystat) which v9fs (WSL mounts) raise, but a non-EPERM OSError from
+    # the content copy itself (ENOSPC / EIO / EACCES, or a flaky v9fs write) mid-tree
+    # would otherwise traceback and strand a PARTIAL child. A partial copy is not
+    # recoverable by `cboot --project`, so warn and abort cleanly, pointing at the
+    # incomplete folder for manual removal.
+    try:
+        copy_tree_tolerant(template_dir, target)
+    except OSError as e:
+        print(f"  Error: template copy failed ({e}). "
+              f"Remove the incomplete {target.name}/ and retry.")
+        return 1
 
     # Fill the (already-laundered) name into the copied CLAUDE.md. Guard this write
     # the same way the materialize step below does: on the v9fs/drvfs mount a
