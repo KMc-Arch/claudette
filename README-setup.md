@@ -33,8 +33,11 @@ The repository uses an inverted `.gitignore` -- everything is ignored by default
 Running `cboot.py` when nothing has changed is harmless -- it validates and reports, creating only what's missing.
 
 ```
-python cboot.py
+python3 cboot.py     # Linux / WSL / macOS
+python cboot.py      # native Windows (PowerShell or cmd)
 ```
+
+Throughout this guide, `python cboot.py` is shorthand for your platform's Python 3 command above -- `python3` on Linux / WSL / macOS, `python` on native Windows.
 
 `cboot.py` performs these steps in order:
 

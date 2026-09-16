@@ -19,7 +19,7 @@ Claude Code ships hooks, CLAUDE.md hierarchy, skills, and commands -- but no pre
 ```
 git clone https://github.com/KMc-Arch/claudette.git my-project
 cd my-project
-python cboot.py --argsForClaude
+python3 cboot.py --argsForClaude     # Linux / WSL / macOS; native Windows: python cboot.py
 ```
 
 Three commands. `cboot.py` scaffolds directories, generates settings, configures memory, registers hooks, and launches Claude Code. See [README-setup.md](README-setup.md) for prerequisites, first-boot details, and troubleshooting.
