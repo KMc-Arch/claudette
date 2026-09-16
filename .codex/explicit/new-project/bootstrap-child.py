@@ -68,6 +68,11 @@ def derive_folder_name(name: str) -> str:
     s = re.sub(r"[^a-z0-9-]", "", s)
     # 6. Collapse hyphens, strip edges
     s = re.sub(r"-+", "-", s).strip("-")
+    # 7. Cap to a filesystem-safe length (the frontmatter name stays uncapped;
+    #    only the on-disk folder needs bounding).
+    MAX_FOLDER = 64
+    if len(s) > MAX_FOLDER:
+        s = s[:MAX_FOLDER].rstrip("-")
     if not s:
         raise ValueError(f"Name derives to empty folder: {name!r}")
     return s
@@ -160,27 +165,6 @@ def find_apex(start: Path) -> Path | None:
     return None
 
 
-def parent_is_root_without_group(parent: Path) -> tuple[bool, str | None]:
-    """Return (should_flag, current_parent_name).
-
-    should_flag is True if the parent has a CLAUDE.md declaring `root: true`
-    (or `apex-root: true`) whose `name:` value does NOT end with ' Group'.
-    """
-    claude_md = parent / "CLAUDE.md"
-    if not claude_md.exists():
-        return (False, None)
-    _, kv, _ = read_frontmatter(claude_md)
-    is_root = (
-        kv.get("root", "").lower() == "true"
-        or kv.get("apex-root", "").lower() == "true"
-    )
-    if not is_root:
-        return (False, None)
-    parent_name = kv.get("name", "") or None
-    already_group = bool(parent_name and parent_name.endswith(" Group"))
-    return (not already_group, parent_name)
-
-
 def main() -> int:
     parser = argparse.ArgumentParser(description="Bootstrap a new Claudette2 child project")
     parser.add_argument("name", help="Canonical project name (goes into CLAUDE.md name: frontmatter verbatim)")
@@ -221,6 +205,21 @@ def main() -> int:
     # would otherwise abort the whole copy.
     copy_tree_tolerant(template_dir, target)
 
+    # Down-convert the name to a dead-flat scalar the SAME way the CLAUDE.md
+    # mutator launders its frontmatter values, so a ':' / '#' / control char in
+    # the name cannot corrupt the child's frontmatter (symmetry with the mutator).
+    try:
+        mutator = _load_module(apex / ".codex" / "implicit" / "01-infrastructural"
+                               / "01b-materialization" / "hooks" / "tools"
+                               / "claude-md-mutator.py")
+        name = mutator.launder(name)
+    except OSError as e:
+        print(f"  Error: cannot load the frontmatter laundering tool ({e}).")
+        return 1
+    if not name:
+        print("  Error: name laundered to empty.")
+        return 1
+
     # Fill name: in CLAUDE.md
     fill_name_in_claude_md(target, name)
 
@@ -240,14 +239,6 @@ def main() -> int:
     print(f"  {len(dirs)} directories, {len(files)} files")
     for f in sorted(files):
         print(f"    {f.relative_to(target)}")
-
-    # Flag parent-group-promotion if applicable
-    should_flag, parent_name = parent_is_root_without_group(parent)
-    if should_flag:
-        print()
-        print(f"  [FLAG] Parent '{parent_name or parent.name}' is now a group "
-              f"(contains this new root). Consider renaming its name: to "
-              f"'{parent_name or parent.name} Group'. Non-blocking.")
 
     # Materialize the child (settings.json, settings.local.json, skill shims,
     # prefs-resolved.json) via the single shared per-child path — the same engine
