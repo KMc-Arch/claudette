@@ -1629,6 +1629,43 @@ def _root_is_gone(rel):
 
 # ── Opt-in decisions (interactive) ───────────────────────────────────
 
+def _framework_rel_paths():
+    """Rel-paths (casefolded) of every root the APEX git repo tracks — the
+    "framework-level" roots.
+
+    A clean clone of claudette contains exactly the tracked tree, so these are the
+    roots an audience sees on a fresh clone. They are categorically excluded from
+    @name opt-in: a fresh clone must never prompt anyone to name a shipped
+    framework directory (e.g. `Testing`). Child projects live under the inverted
+    .gitignore's `*` and are untracked, so they are unaffected and stay offerable.
+
+    Returns a set holding every tracked path AND every ancestor directory of one,
+    all casefolded (the mount is case-insensitive and `Testing`/`testing` share an
+    inode). A root is framework-level iff git tracks anything at or under it.
+
+    Returns None when git cannot answer — no repo, git absent, dubious ownership.
+    The caller then excludes nothing, preserving the prior behaviour: a suppression
+    only ever follows a POSITIVE tracking confirmation, never a git failure.
+    """
+    try:
+        proc = subprocess.run(
+            ["git", "-C", str(ROOT), "ls-files", "-z"],
+            capture_output=True, timeout=30, check=False)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if proc.returncode != 0:
+        return None
+    tracked = set()
+    for raw in proc.stdout.split(b"\0"):
+        if not raw:
+            continue
+        rel = raw.decode("utf-8", "surrogateescape")
+        parts = rel.split("/")
+        for i in range(1, len(parts) + 1):
+            tracked.add("/".join(parts[:i]).casefold())
+    return tracked
+
+
 def decide_agent_optin(report, rows):
     """Detect first-touch roots and, at a terminal, decide them — through the module.
 
@@ -1659,7 +1696,10 @@ def decide_agent_optin(report, rows):
     sqlite_factory = _load_module(CODEX / "reactive" / "sqlite" / "sqlite.py")
     db_path = STATE / "roots.db"
 
-    candidates = [r for r in rows if not r["is_apex"]]   # the apex is never an agent
+    framework = _framework_rel_paths() or set()
+    candidates = [r for r in rows
+                  if not r["is_apex"]                              # the apex is never an agent
+                  and r["rel_path"].casefold() not in framework]  # nor is any git-tracked framework root
     if not candidates:
         return
 
