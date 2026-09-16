@@ -225,8 +225,17 @@ def main() -> int:
     # would otherwise abort the whole copy.
     copy_tree_tolerant(template_dir, target)
 
-    # Fill the (already-laundered) name into the copied CLAUDE.md.
-    fill_name_in_claude_md(target, name)
+    # Fill the (already-laundered) name into the copied CLAUDE.md. Guard this write
+    # the same way the materialize step below does: on the v9fs/drvfs mount a
+    # metadata-triggered write_text can fail, and the child is already on disk, so
+    # warn + point at the fix rather than abort with a traceback that strands a
+    # half-made child. (RuntimeError covers a drifted template with no fillable
+    # `name:` line.)
+    try:
+        fill_name_in_claude_md(target, name)
+    except (OSError, RuntimeError) as e:
+        print(f"  [WARN] Could not fill name: into {target.name}/CLAUDE.md ({e}). "
+              f"Set the name: field manually (human-editable) before using the project.")
 
     # Note: .claude/settings.local.json (autoMemoryDirectory + perms), settings.json,
     # skill shims, and prefs-resolved.json are all created by the materialization
@@ -251,19 +260,22 @@ def main() -> int:
     # outputs; if they're absent (apex never booted), it warns and the child can
     # be materialized later with `cboot --project <folder>`.
     print("\n  Materializing child (settings, perms, shims, resolved prefs)...")
-    child_propagate = _load_module(apex / ".codex" / "implicit" / "00-preboot" / "child_propagate.py")
-    mat_report = child_propagate._CliReport()
     # cboot resolves a relative --project against the APEX, not the parent, so the
     # recovery hint must be apex-relative (these differ for nested projects).
     recover_target = target.relative_to(apex)
     try:
+        # Load the propagator INSIDE the guard: a missing/broken child_propagate.py
+        # (OSError) must degrade to the same recovery hint, not an uncaught traceback
+        # after the child is already scaffolded.
+        child_propagate = _load_module(apex / ".codex" / "implicit" / "00-preboot" / "child_propagate.py")
+        mat_report = child_propagate._CliReport()
         if child_propagate.propagate_one(apex, target, mat_report) is None:
             print(f"  [WARN] Child not materialized (apex not booted yet?). "
                   f"Run: cboot --project {recover_target}")
     except OSError as e:
-        # _propagate_one writes with write_text (no EPERM tolerance); on v9fs a
-        # metadata-triggered write can fail. Scaffold is already valid — recover
-        # by materializing later rather than aborting with a traceback.
+        # write_text (no EPERM tolerance) or the module load can fail on v9fs; the
+        # scaffold is already valid, so recover by materializing later rather than
+        # aborting with a traceback.
         print(f"  [WARN] Materialization failed ({e}). "
               f"Scaffold is intact — run: cboot --project {recover_target}")
 
