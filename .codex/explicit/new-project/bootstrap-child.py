@@ -1,12 +1,13 @@
 #!/usr/bin/env python3
 """Bootstrap a new Claudette2 child project.
 
-The user-supplied name is authoritative — it goes into CLAUDE.md's `name:`
-frontmatter verbatim. The folder name is derived from it per the Naming
-Convention in .codex/specs/child-project.md.
+The user-supplied name is laundered to a dead-flat single-line scalar (the same
+down-convert the CLAUDE.md mutator applies) and written to the child's `name:`
+frontmatter. The folder name is derived from it per the Naming Convention in
+.codex/specs/child-project.md.
 
-Copies the child template from .templates/child/ (CLAUDE.md + full .state/
-scaffolding), then fills `name:` and flags any parent-group-promotion opportunity.
+Copies the child template from .templates/child/ (CLAUDE.md, .state/ scaffolding,
+and the ~inbox/ ~outbox/ mailboxes), then fills the laundered `name:`.
 
 Usage:
     python bootstrap-child.py "<name>" [--project-root <path>]
@@ -167,7 +168,7 @@ def find_apex(start: Path) -> Path | None:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="Bootstrap a new Claudette2 child project")
-    parser.add_argument("name", help="Canonical project name (goes into CLAUDE.md name: frontmatter verbatim)")
+    parser.add_argument("name", help="Canonical project name (laundered to a dead-flat scalar, then written to CLAUDE.md name:)")
     parser.add_argument(
         "--project-root",
         type=Path,
@@ -198,16 +199,12 @@ def main() -> int:
         print(f"  Error: Child template not found at {template_dir}")
         return 1
 
-    target, suffix = resolve_folder_path(parent, folder_base)
-
-    # Copy template tree. copy_tree_tolerant copies contents but swallows EPERM
-    # on metadata ops (chmod/copystat), which v9fs (WSL mounts) raise and which
-    # would otherwise abort the whole copy.
-    copy_tree_tolerant(template_dir, target)
-
-    # Down-convert the name to a dead-flat scalar the SAME way the CLAUDE.md
-    # mutator launders its frontmatter values, so a ':' / '#' / control char in
-    # the name cannot corrupt the child's frontmatter (symmetry with the mutator).
+    # Launder + validate the name BEFORE anything is created on disk, so a failure
+    # here strands no half-made child. Same dead-flat down-convert the CLAUDE.md
+    # mutator applies (drops ':' / '#' / control chars, transliterates, single-
+    # lines), so the name cannot corrupt the child's frontmatter. NOT the mutator's
+    # length GATE: short names like "ACT" stay legal (no 5-char floor); only its
+    # 200-char ceiling is applied.
     try:
         mutator = _load_module(apex / ".codex" / "implicit" / "01-infrastructural"
                                / "01b-materialization" / "hooks" / "tools"
@@ -219,8 +216,16 @@ def main() -> int:
     if not name:
         print("  Error: name laundered to empty.")
         return 1
+    name = name[:200].strip()
 
-    # Fill name: in CLAUDE.md
+    target, suffix = resolve_folder_path(parent, folder_base)
+
+    # Copy template tree. copy_tree_tolerant copies contents but swallows EPERM
+    # on metadata ops (chmod/copystat), which v9fs (WSL mounts) raise and which
+    # would otherwise abort the whole copy.
+    copy_tree_tolerant(template_dir, target)
+
+    # Fill the (already-laundered) name into the copied CLAUDE.md.
     fill_name_in_claude_md(target, name)
 
     # Note: .claude/settings.local.json (autoMemoryDirectory + perms), settings.json,

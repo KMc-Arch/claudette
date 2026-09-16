@@ -29,7 +29,7 @@ The folder name is **derived** from `<name>` per the Naming Convention in `.code
 
 Runs `bootstrap-child.py` which:
 
-1. Derives the folder name from `<name>` (transliterate → lowercase → strip trailing ` Group` → space-to-hyphen → cleanup).
+1. Derives the folder name from `<name>` (transliterate → lowercase → strip trailing ` Group` → space-to-hyphen → cleanup → cap at 64 chars).
 2. Resolves folder collisions with a numeric suffix (case-insensitive check, `max(N)+1` over existing versioned siblings).
 3. Copies the apex `^/^/.templates/child/` tree into the resolved folder. Template is always resolved from the apex (`apex-root: true` ancestor), not from `--project-root`, so nested children work.
 4. Fills the empty `name:` field in the copied CLAUDE.md with the user-provided name, laundered to a dead-flat scalar (see Usage).
