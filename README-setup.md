@@ -33,8 +33,11 @@ The repository uses an inverted `.gitignore` -- everything is ignored by default
 Running `cboot.py` when nothing has changed is harmless -- it validates and reports, creating only what's missing.
 
 ```
-python cboot.py
+python3 cboot.py     # Linux / WSL / macOS
+python cboot.py      # native Windows (PowerShell or cmd)
 ```
+
+Throughout this guide, `python cboot.py` is shorthand for your platform's Python 3 command above -- `python3` on Linux / WSL / macOS, `python` on native Windows.
 
 `cboot.py` performs these steps in order:
 
@@ -43,9 +46,9 @@ python cboot.py
 3. **Structure check** -- counts hooks, commands, reactive/reflexive modules. Verifies every codex directory has a `start.md` manifest.
 4. **Skill shims** -- generates `.claude/skills/<name>/SKILL.md` for each command in `.codex/explicit/`, so Claude Code recognizes them as slash commands.
 5. **Preference resolution** -- merges the preference cascade (schema defaults, codex-level, instance-level) into a single `.state/prefs-resolved.json`.
-6. **Settings assembly** -- builds `.claude/settings.json` from `.codex/settings.json`, registering all 13 hook scripts.
+6. **Settings assembly** -- builds `.claude/settings.json` from `.codex/settings.json`, registering all 12 hook scripts.
 7. **Auto-memory configuration** -- sets `autoMemoryDirectory` in `.claude/settings.local.json` to point to `.state/memory/`. This redirects Claude Code's built-in auto-memory away from the default location (`~/.claude/projects/<hash>/memory/`) into the project's own state directory.
-8. **Git hooks** -- if a pre-push hook script exists at `.codex/explicit/scrub/hooks/pre-push`, sets `core.hooksPath` to point there. (Note: this hook script does not exist yet in the current version. The scrub command works as a manual protocol. Automated pre-push enforcement is planned for a future release.)
+8. **Git hooks** -- points `core.hooksPath` at `.codex/explicit/scrub/hooks/`, where the fail-closed pre-push hook lives (BDRY-03). It blocks a push whose diff trips the scrub scan; `scrub` also runs as a manual protocol.
 9. **Trace marker** -- writes a session-start entry to today's trace file.
 10. **Hook coverage** -- verifies every hook script has corresponding tests in `chooks.py`.
 11. **Report** -- writes results to `.state/tests/boot/` and prints to terminal.

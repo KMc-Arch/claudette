@@ -22,6 +22,7 @@ import os
 import re
 import sqlite3
 import stat
+import subprocess
 import sys
 import tempfile
 from pathlib import Path
@@ -55,6 +56,7 @@ COVERED = {
     # (.codex/reactive/agent-ownership) but are covered here because cboot and
     # purge are the only two callers and they must never diverge.
     "decide_agent_optin",
+    "_framework_rel_paths",
     "generate_agents",
     "_write_agent_file",
     "suffixed",
@@ -797,6 +799,58 @@ def _():
         eq(n, 0, "no decision recorded without a human")
         truthy(any("awaiting a decision" in w for w in rep.warnings),
                "undecided roots reported: %r" % (rep.warnings,))
+
+
+@test("AG-13b", "decide_agent_optin")
+def _():
+    """A git-tracked framework root is categorically excluded from @name opt-in;
+    an untracked child is still offered.
+
+    A clean clone of claudette contains only the tracked tree, so cboot must never
+    prompt an audience to name a shipped framework directory (e.g. `Testing`)."""
+    with scratch_apex([("Testing", "Framework harness.\n"),
+                       ("drawio", "A tool.\n")]) as apex:
+        subprocess.run(["git", "init", "-q"], cwd=apex, check=True,
+                       capture_output=True)
+        # Track ONLY the framework child; drawio stays untracked, exactly as the
+        # inverted .gitignore leaves every real child.
+        subprocess.run(["git", "add", "Testing/CLAUDE.md"], cwd=apex, check=True,
+                       capture_output=True)
+        rep = cboot.BootReport()
+        rows = cboot.build_root_inventory(rep)
+        cboot.decide_agent_optin(rep, rows)     # stdin is not a tty under the runner
+        optin_w = [w for w in rep.warnings if "awaiting a decision" in w]
+        truthy(optin_w, "an opt-in warning is present: %r" % (rep.warnings,))
+        joined = " ".join(optin_w)
+        truthy("drawio" in joined,
+               "the untracked child is still offered: %r" % (optin_w,))
+        truthy("Testing" not in joined,
+               "the git-tracked framework root must NOT be offered: %r" % (optin_w,))
+        truthy("1 project(s)" in joined,
+               "exactly one undecided root, the framework one excluded: %r" % (optin_w,))
+
+
+@test("AG-13c", "_framework_rel_paths")
+def _():
+    """git failure (unusable cwd) returns None so the caller excludes nothing; a
+    tracked repo returns tracked paths + their ancestor dirs, casefolded."""
+    saved = cboot.ROOT
+    cboot.ROOT = Path(tempfile.gettempdir()) / "cb-nonesuch-framework-xyz"
+    try:
+        eq(cboot._framework_rel_paths(), None, "unusable cwd → None (fail open)")
+    finally:
+        cboot.ROOT = saved
+    with scratch_apex([("Testing", "x\n")]) as apex:
+        subprocess.run(["git", "init", "-q"], cwd=apex, check=True,
+                       capture_output=True)
+        subprocess.run(["git", "add", "Testing/CLAUDE.md"], cwd=apex, check=True,
+                       capture_output=True)
+        fw = cboot._framework_rel_paths()
+        truthy(fw is not None, "a tracked repo returns a set, not None")
+        truthy("testing" in (fw or set()),
+               "the tracked root dir is present, casefolded: %r" % (sorted(fw or []),))
+        truthy("drawio" not in (fw or set()),
+               "an untracked child is absent from the framework set")
 
 
 @test("AG-14", "claims_for")

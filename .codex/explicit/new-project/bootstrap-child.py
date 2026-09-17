@@ -1,12 +1,14 @@
 #!/usr/bin/env python3
 """Bootstrap a new Claudette2 child project.
 
-The user-supplied name is authoritative — it goes into CLAUDE.md's `name:`
-frontmatter verbatim. The folder name is derived from it per the Naming
-Convention in .codex/specs/child-project.md.
+The user-supplied name is laundered to a dead-flat single-line scalar (the same
+down-convert the CLAUDE.md mutator applies) and written to the child's `name:`
+frontmatter. The folder name is derived from it per the Naming Convention in
+.codex/specs/child-project.md.
 
-Copies the child template from .templates/child/ (CLAUDE.md + full .state/
-scaffolding), then fills `name:` and flags any parent-group-promotion opportunity.
+Copies the child template from .templates/child/ (CLAUDE.md, .state/ scaffolding,
+and the ~inbox/ ~outbox/ mailboxes), fills the laundered `name:`, and materializes
+the child's settings / skill shims / resolved prefs via child_propagate.
 
 Usage:
     python bootstrap-child.py "<name>" [--project-root <path>]
@@ -68,6 +70,11 @@ def derive_folder_name(name: str) -> str:
     s = re.sub(r"[^a-z0-9-]", "", s)
     # 6. Collapse hyphens, strip edges
     s = re.sub(r"-+", "-", s).strip("-")
+    # 7. Cap to a filesystem-safe length (the frontmatter name stays uncapped;
+    #    only the on-disk folder needs bounding).
+    MAX_FOLDER = 64
+    if len(s) > MAX_FOLDER:
+        s = s[:MAX_FOLDER].rstrip("-")
     if not s:
         raise ValueError(f"Name derives to empty folder: {name!r}")
     return s
@@ -160,30 +167,9 @@ def find_apex(start: Path) -> Path | None:
     return None
 
 
-def parent_is_root_without_group(parent: Path) -> tuple[bool, str | None]:
-    """Return (should_flag, current_parent_name).
-
-    should_flag is True if the parent has a CLAUDE.md declaring `root: true`
-    (or `apex-root: true`) whose `name:` value does NOT end with ' Group'.
-    """
-    claude_md = parent / "CLAUDE.md"
-    if not claude_md.exists():
-        return (False, None)
-    _, kv, _ = read_frontmatter(claude_md)
-    is_root = (
-        kv.get("root", "").lower() == "true"
-        or kv.get("apex-root", "").lower() == "true"
-    )
-    if not is_root:
-        return (False, None)
-    parent_name = kv.get("name", "") or None
-    already_group = bool(parent_name and parent_name.endswith(" Group"))
-    return (not already_group, parent_name)
-
-
 def main() -> int:
     parser = argparse.ArgumentParser(description="Bootstrap a new Claudette2 child project")
-    parser.add_argument("name", help="Canonical project name (goes into CLAUDE.md name: frontmatter verbatim)")
+    parser.add_argument("name", help="Canonical project name (laundered to a dead-flat scalar, then written to CLAUDE.md name:)")
     parser.add_argument(
         "--project-root",
         type=Path,
@@ -214,15 +200,52 @@ def main() -> int:
         print(f"  Error: Child template not found at {template_dir}")
         return 1
 
+    # Launder + validate the name BEFORE anything is created on disk, so a failure
+    # here strands no half-made child. Same dead-flat down-convert the CLAUDE.md
+    # mutator applies (drops ':' / '#' / structural chars, turns control chars and
+    # line breaks into a ' - ' separator, transliterates, single-lines), so the name
+    # cannot corrupt the child's frontmatter. NOT the mutator's
+    # length GATE: short names like "ACT" stay legal (no 5-char floor); only its
+    # 200-char ceiling is applied.
+    try:
+        mutator = _load_module(apex / ".codex" / "implicit" / "01-infrastructural"
+                               / "01b-materialization" / "hooks" / "tools"
+                               / "claude-md-mutator.py")
+        name = mutator.launder(name)
+    except OSError as e:
+        print(f"  Error: cannot load the frontmatter laundering tool ({e}).")
+        return 1
+    if not name:
+        print("  Error: name laundered to empty.")
+        return 1
+    name = name[:200].strip()
+
     target, suffix = resolve_folder_path(parent, folder_base)
 
-    # Copy template tree. copy_tree_tolerant copies contents but swallows EPERM
-    # on metadata ops (chmod/copystat), which v9fs (WSL mounts) raise and which
-    # would otherwise abort the whole copy.
-    copy_tree_tolerant(template_dir, target)
+    # Copy template tree. copy_tree_tolerant swallows EPERM on metadata ops
+    # (chmod/copystat) which v9fs (WSL mounts) raise, but a non-EPERM OSError from
+    # the content copy itself (ENOSPC / EIO / EACCES, or a flaky v9fs write) mid-tree
+    # would otherwise traceback and strand a PARTIAL child. A partial copy is not
+    # recoverable by `cboot --project`, so warn and abort cleanly, pointing at the
+    # incomplete folder for manual removal.
+    try:
+        copy_tree_tolerant(template_dir, target)
+    except OSError as e:
+        print(f"  Error: template copy failed ({e}). "
+              f"Remove the incomplete {target.name}/ and retry.")
+        return 1
 
-    # Fill name: in CLAUDE.md
-    fill_name_in_claude_md(target, name)
+    # Fill the (already-laundered) name into the copied CLAUDE.md. Guard this write
+    # the same way the materialize step below does: on the v9fs/drvfs mount a
+    # metadata-triggered write_text can fail, and the child is already on disk, so
+    # warn + point at the fix rather than abort with a traceback that strands a
+    # half-made child. (RuntimeError covers a drifted template with no fillable
+    # `name:` line.)
+    try:
+        fill_name_in_claude_md(target, name)
+    except (OSError, RuntimeError) as e:
+        print(f"  [WARN] Could not fill name: into {target.name}/CLAUDE.md ({e}). "
+              f"Set the name: field manually (human-editable) before using the project.")
 
     # Note: .claude/settings.local.json (autoMemoryDirectory + perms), settings.json,
     # skill shims, and prefs-resolved.json are all created by the materialization
@@ -241,33 +264,28 @@ def main() -> int:
     for f in sorted(files):
         print(f"    {f.relative_to(target)}")
 
-    # Flag parent-group-promotion if applicable
-    should_flag, parent_name = parent_is_root_without_group(parent)
-    if should_flag:
-        print()
-        print(f"  [FLAG] Parent '{parent_name or parent.name}' is now a group "
-              f"(contains this new root). Consider renaming its name: to "
-              f"'{parent_name or parent.name} Group'. Non-blocking.")
-
     # Materialize the child (settings.json, settings.local.json, skill shims,
     # prefs-resolved.json) via the single shared per-child path — the same engine
     # full boot and `cboot --project` use. Reads the apex's already-generated
     # outputs; if they're absent (apex never booted), it warns and the child can
     # be materialized later with `cboot --project <folder>`.
     print("\n  Materializing child (settings, perms, shims, resolved prefs)...")
-    child_propagate = _load_module(apex / ".codex" / "implicit" / "00-preboot" / "child_propagate.py")
-    mat_report = child_propagate._CliReport()
     # cboot resolves a relative --project against the APEX, not the parent, so the
     # recovery hint must be apex-relative (these differ for nested projects).
     recover_target = target.relative_to(apex)
     try:
+        # Load the propagator INSIDE the guard: a missing/broken child_propagate.py
+        # (OSError) must degrade to the same recovery hint, not an uncaught traceback
+        # after the child is already scaffolded.
+        child_propagate = _load_module(apex / ".codex" / "implicit" / "00-preboot" / "child_propagate.py")
+        mat_report = child_propagate._CliReport()
         if child_propagate.propagate_one(apex, target, mat_report) is None:
             print(f"  [WARN] Child not materialized (apex not booted yet?). "
                   f"Run: cboot --project {recover_target}")
     except OSError as e:
-        # _propagate_one writes with write_text (no EPERM tolerance); on v9fs a
-        # metadata-triggered write can fail. Scaffold is already valid — recover
-        # by materializing later rather than aborting with a traceback.
+        # write_text (no EPERM tolerance) or the module load can fail on v9fs; the
+        # scaffold is already valid, so recover by materializing later rather than
+        # aborting with a traceback.
         print(f"  [WARN] Materialization failed ({e}). "
               f"Scaffold is intact — run: cboot --project {recover_target}")
 

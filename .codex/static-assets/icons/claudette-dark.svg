@@ -1,0 +1,15 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" role="img" aria-label="Claudette Rooted Hex dark treatment">
+  <title>Claudette Rooted Hex dark treatment</title>
+  <path d="M128 12 L226 69 L226 187 L128 244 L30 187 L30 69 Z"
+        fill="#3F3F3F" stroke="#D9D9D9" stroke-width="12" stroke-linejoin="round"/>
+  <path d="M88 91 L128 51 L168 91"
+        fill="none" stroke="#FFFFFF" stroke-width="18" stroke-linecap="round" stroke-linejoin="round"/>
+  <path d="M103 128 L128 103 L153 128"
+        fill="none" stroke="#D0D0D0" stroke-width="12" stroke-linecap="round" stroke-linejoin="round"/>
+  <path d="M108 157 L128 137 L148 157"
+        fill="none" stroke="#AFAFAF" stroke-width="9" stroke-linecap="round" stroke-linejoin="round"/>
+  <path d="M114 180 L128 166 L142 180"
+        fill="none" stroke="#8E8E8E" stroke-width="7" stroke-linecap="round" stroke-linejoin="round"/>
+  <circle cx="128" cy="196" r="5" fill="#777777"/>
+  <circle cx="128" cy="210" r="3.5" fill="#666666"/>
+</svg>

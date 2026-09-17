@@ -1,14 +1,45 @@
+# ── Child project .gitignore ──
+# WHOLE BY DEFAULT. A child tracks everything it contains — source, docs, and its
+# own .state knowledge. Ignore ONLY: (a) framework artifacts that cboot generates
+# or that are Claude-internal, (b) near-certain secrets, (c) compiled bytecode that
+# is never hand-authored. A NAMED directory or extension that could be real content
+# (build/, dist/, node_modules/, *.log) is YOURS — do NOT add stack-convention ignores.
+
+# ── Claude-internal / invisible ──
 _*
+
+# ── Framework-generated (cboot regenerates these; they carry machine-absolute
+#    paths, so they are never source) ──
 .claude/
+.state/prefs-resolved.json
+.state/roots.db
+.state/roots.db-wal
+.state/roots.db-shm
+
+# ── Disposable scratch (keep the manifest) ──
 .tmp/*
 !.tmp/start.md
+
+# ── Compiled bytecode (never source; regenerated on run) ──
+*.py[cod]
+
+# ── Near-certain secrets ──
+.env*
+*.env
+*.key
+*.pem
+*.p12
+*.pfx
+id_rsa
+id_dsa
+id_ecdsa
+id_ed25519
+
+# ── OS junk ──
 .DS_Store
 Thumbs.db
 desktop.ini
-.env*
-*.key
-*.pem
 
-# scrub output: pre-push artifact, and a failing report embeds the matched
-# line verbatim -- never track it.
+# ── scrub output: a failing report embeds the matched secret line verbatim,
+#    so tracking it would leak — never track it. ──
 **/.state/tests/explicit/scrub/
