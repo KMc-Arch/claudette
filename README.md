@@ -6,13 +6,13 @@ Claudette is a governance framework for Claude Code. It replaces hand-managed CL
 
 Claude Code ships hooks, CLAUDE.md hierarchy, skills, and commands -- but no pre-built governance. Claudette assembles these primitives into a tested system:
 
-**Structural enforcement.** 13 hook scripts execute at the tool-call level and block violations before Claude acts -- file containment, visibility guards, state gravity between parent/child projects, audit immutability, remote-push limits. Shell-level gates, not directives.
+**Structural enforcement.** 13 hook scripts execute at the tool-call level. Guards block violations before Claude acts -- file containment, visibility, state gravity between parent/child projects, audit immutability, remote-push limits -- while the rest observe and notify. Shell-level gates, not directives.
 
 **Persistent state.** Memory, work tracking (backlog, architecture debt, boundary gaps), session traces, and structured pause/unpause. All in `.state/`, persisted in your project across sessions.
 
 **Multi-project isolation.** Child projects inherit the parent's rules automatically, each as its own git repo with its own state. A gravity guard hook prevents child sessions from writing to parent state.
 
-**Self-testing.** 4-tier verification: `ctest.py` (bootstrap outputs), `chooks.py` (hook behavior via mock JSON), `test-safe` (66 structural checks inside a Claude session), `test-burn` (end-to-end command exercise).
+**Self-testing.** 4-tier verification: `ctest.py` (bootstrap outputs), `chooks.py` (hook behavior via mock JSON), `test-safe` (78 structural checks inside a Claude session), `test-burn` (end-to-end command exercise).
 
 ## Quick Start
 
@@ -35,10 +35,10 @@ Claude: I'll create a child project called "web-scraper"...
         Created web-scraper/ with CLAUDE.md, .state/, memory, and work tracking.
 
 You:    What commands do I have available?
-Claude: You have 18 built-in commands: ask, audit, backup, break-glass,
-        break-glass-qa, bundle, checkWinTasks, mileqa, milestone, new-project,
-        pause, purge, rebuild, scrub, test-bench, test-burn, test-safe,
-        unpause. [describes each]
+Claude: You have 20 built-in commands: ask, audit, backup, break-glass,
+        break-glass-qa, bundle, checkWinTasks, mileqa, milestone, move-project,
+        new-project, pause, purge, rebuild, roots, scrub, test-bench, test-burn,
+        test-safe, unpause. [describes each]
 
 You:    Let's pause here so I can pick this up tomorrow.
 Claude: [runs pause]
@@ -57,7 +57,7 @@ The next day, start a new session and say "unpause" -- Claude reads the pause fi
 | `.state/` | Memory, work tracking, test results, session traces | Structure only -- `start.md` manifests are tracked, accumulated content is not |
 | `.claude/` | Generated settings, skill shims, session files | No -- regenerated each boot |
 
-### 18 commands
+### 20 commands
 
 | Command | What It Does | Modifies State? |
 |---------|-------------|-----------------|
@@ -70,6 +70,8 @@ The next day, start a new session and say "unpause" -- Claude reads the pause fi
 | **milestone** | Persist session knowledge to durable state. | Yes |
 | **ask** | Route a request to a subproject (hard/switch). For the soft path, address the project directly as `@<name>-pj` (cboot materializes each addressable project as an `@…-pj` agent). | Per request |
 | **new-project** | Scaffold a child project with standard structure. | Creates directory |
+| **move-project** | Move a child project within the apex -- carries identity, transcripts, sessions. | Yes (dry-run by default) |
+| **roots** | Reconfigure the root inventory (agent on/off, rename, relink). | Yes (roots.db) |
 | **pause** | Save session context for later resumption. | Writes pause files |
 | **unpause** | Restore a previously paused session. | No |
 | **purge** | Clean transient files. `purge all` is destructive (requires confirmation). | Yes |
@@ -82,7 +84,7 @@ The next day, start a new session and say "unpause" -- Claude reads the pause fi
 
 See [README-commands.md](README-commands.md) for detailed usage, parameters, and workflow examples.
 
-### 13 enforcement hooks
+### 13 hooks
 
 | Hook | What It Blocks |
 |------|---------------|
