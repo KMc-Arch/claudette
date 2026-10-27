@@ -207,9 +207,14 @@ if [[ -n "$cwd" ]]; then
 
     if [[ -n "$db_path" ]]; then
         # Determine which project we're in by checking if cwd is under a project folder
-        # Get the relative path from the db root to cwd
+        # Get the relative path from the db root to cwd (empty when cwd is the db root
+        # itself -- the "/"-suffixed strip below matches nothing there)
         db_root=$(dirname "$db_path")
-        rel_path="${cwd#$db_root/}"
+        if [[ "$cwd" == "$db_root" ]]; then
+            rel_path=""
+        else
+            rel_path="${cwd#"$db_root"/}"
+        fi
 
         # Try to match: type/project or type/project/deeper
         project_id=""
