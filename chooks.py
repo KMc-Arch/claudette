@@ -64,6 +64,7 @@ HOOK_SCRIPTS = [
     "gravity-guard.sh",
     "memory-redirect-check.sh",
     "prefs-staleness-check.sh",
+    "read-only-reinject.py",
     "session-close.sh",
     "subagent-conformance.sh",
     "trace-logger.sh",
@@ -434,6 +435,49 @@ def test_memory_redirect_correct_path(t: HookTestRunner):
     else:
         t.ok("MR03", "Skipped — settings.local.json doesn't exist")
         t.ok("MR04", "Skipped — settings.local.json doesn't exist")
+
+
+# -- read-only-reinject.py --
+
+@register_test("read-only-reinject.py")
+def test_read_only_reinject_matching_flag(t: HookTestRunner):
+    """A flag matching the payload session_id -> the hold is re-injected."""
+    sid = "test-ro-sid-0001"
+    flag_dir = t.root / ".claude" / "skills" / "read-only"
+    flag_dir.mkdir(parents=True, exist_ok=True)
+    flag = flag_dir / f"read-only-{sid}.flag"
+    try:
+        flag.write_text(f"session: {sid}\nengaged_at: test\n", encoding="utf-8")
+        payload = json.dumps({"session_id": sid, "source": "compact", "cwd": str(t.root)})
+        code, out, err = t.run_hook("read-only-reinject.py", stdin_data=payload)
+        t.assert_exit("RO01", "Exits 0 with a matching flag", code, 0, err)
+        t.assert_stdout_contains("RO02", "Re-injects the hold when the flag matches",
+                                 out, "READ-ONLY HOLD ACTIVE")
+    finally:
+        try:
+            flag.unlink()
+        except OSError:
+            pass
+
+
+@register_test("read-only-reinject.py")
+def test_read_only_reinject_silent_when_unmatched(t: HookTestRunner):
+    """No matching flag, or no payload -> exit 0 and NO injection (silence ==
+    read-write). Guards the primary-session case: a session id with no flag of
+    its own must never be subordinated."""
+    # (a) well-formed payload, but no flag for this sid exists
+    payload = json.dumps({"session_id": "test-ro-absent-9999", "source": "compact",
+                          "cwd": str(t.root)})
+    code_a, out_a, err_a = t.run_hook("read-only-reinject.py", stdin_data=payload)
+    ok_a = code_a == 0 and "READ-ONLY HOLD ACTIVE" not in out_a
+    # (b) empty stdin -> no session_id -> nothing
+    code_b, out_b, err_b = t.run_hook("read-only-reinject.py", stdin_data="")
+    ok_b = code_b == 0 and out_b.strip() == ""
+    if ok_a and ok_b:
+        t.ok("RO03", "Silent (exit 0, no injection) with no matching flag or no payload")
+    else:
+        t.fail("RO03", "Silent when nothing matches",
+               f"no-flag: code={code_a} out={out_a[:80]!r}; empty: code={code_b} out={out_b[:80]!r}")
 
 
 # -- codex-edit-notify.sh --

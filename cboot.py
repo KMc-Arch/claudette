@@ -492,6 +492,7 @@ def assemble_settings(report):
                 {"type": "command", "command": hook_cmd("boot-inject.py", PYTHON_EXE)},
                 {"type": "command", "command": hook_cmd("prefs-staleness-check.sh")},
                 {"type": "command", "command": hook_cmd("memory-redirect-check.sh")},
+                {"type": "command", "command": hook_cmd("read-only-reinject.py", PYTHON_EXE)},
             ]
         }],
         "PreToolUse": [
