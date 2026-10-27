@@ -31,7 +31,7 @@ path instead; these skills are not registered.
 
 | Path | Contents |
 |---|---|
-| `skills/` | Upstream skills, **verbatim**. Never edit; adapt in `overrides/`. |
+| `skills/` | Upstream skills, **verbatim**. Never edit; adapt in `overrides/`. Exempt from cboot's every-folder-has-a-`start.md` check for that reason. |
 | `skills/LICENSE` | Upstream MIT license (© Matt Pocock). This repo is public, so the notice must ship with every copy. |
 | `overrides/` | Our conventions, layered on top of the upstream instructions. |
 | `skills-lock.json` | Upstream source and content hashes at install time. |
