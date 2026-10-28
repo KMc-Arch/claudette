@@ -4,7 +4,7 @@ All commands can be invoked by name in conversation ("audit this project", "scru
 
 ## test-safe -- Structural Validation
 
-Read-only. 66 checks across 13 categories. Safe to run anytime, makes no changes (writes only a log file).
+Read-only. 79 checks across 13 categories. Safe to run anytime, makes no changes (writes only a log file).
 
 ```
 test-safe
@@ -12,9 +12,9 @@ test-safe
 
 **What it checks:**
 - Boot chain and structure (CLAUDE.md, codex, state)
-- All 13 hook scripts exist and are registered
+- All 14 hook scripts exist and are registered
 - Hook matcher coverage (visibility-guard covers all 6 tool types, etc.)
-- All 18 command folders exist with start.md manifests
+- Every command folder has a start.md manifest and a skill shim (21 today; a core floor of 18 is mandatory)
 - Reactive and reflexive modules present
 - State structure (memory, work, tests, traces files)
 - Preference system integrity (schema, cascade, resolved output)
@@ -113,6 +113,8 @@ ask hard ~majel run the safe tests and report                 # hard
 ask switch fabriceng/pbir-composer                            # switch
 ```
 
+The commands the file runs use `python3` (the interpreter on this instance; a native-Windows instance substitutes `python`).
+
 **Modes:**
 - **soft** (default) -- shorthand for "dispatch a sub rooted at that project's folder to do X". The calling session resolves the name, packages the request with the context it needs, and dispatches one subagent that works under the Project-agent rules in `.codex/explicit/ask/start.md`. The sub's writes are bounded by the calling session's own fence: a project inside it is worked in its own folder (memory updates included); a project outside it is consulted, and its expert writes only in the caller's folder. At the apex, `@<name>-pj` is the same call precomputed at boot -- the agent files are shims pointing at the same rules.
 - **hard** -- a fresh headless worker session, rooted and guard-fenced at the project (`cboot --exec-file`). Returns the answer and a resumable `session_id`.
@@ -128,26 +130,24 @@ Creates a new child project with the standard Claudette2 structure. The names `s
 new-project my-api
 ```
 
-**Creates:**
+**Creates** (the whole `.templates/child/` tree, then the per-child materialization):
 ```
 my-api/
-    CLAUDE.md              (root: true, codex: ^/^/.codex)
+    CLAUDE.md              (root: true, name: <name>, codex: ^/^/.codex)
     .gitignore
+    ~inbox/  ~outbox/      (Exchange Surfaces mailboxes, each with a start.md)
+    .tmp/                  (scratch; start.md only)
     .claude/
+        settings.json          (hooks + permissions, from the apex)
         settings.local.json    (auto-memory configured)
+        skills/                (one shim per codex command)
     .state/
         start.md
         prefs.json
-        memory/
-            start.md
-            decisions.md
-        work/
-            start.md
-            backlog.md
-        tests/
-            start.md
-        traces/
-            start.md
+        prefs-resolved.json
+        memory/   (start.md, state-abstract.md, user.md)
+        work/     (start.md, backlog.md, architecture.md, boundaries.md, enhancements.md, platform.md)
+        tests/  traces/  plans/  pauses/  bundles/   (each with a start.md)
 ```
 
 The child inherits the parent's codex automatically. It has its own state (memory, backlog, preferences) that is isolated from the parent.

@@ -59,6 +59,9 @@ COVERED = {
     "_framework_rel_paths",
     "generate_agents",
     "_write_agent_file",
+    # Reserved project names (/ask mode words) — the two refusal predicates.
+    "reserved_name_error",     # new-project/bootstrap-child.py
+    "reserved_dest_error",     # move-project/move_project.py
     "suffixed",
     "desuffix",
     "claims_for",
@@ -417,8 +420,13 @@ def _():
         code = cboot.switch_command(need_live_child())
     line = out.getvalue().strip()
     eq(code, 0)
-    # Absolute cboot path: the printed command must run from a child session's `!` prompt too.
-    eq(line, f'python {(ROOT/"cboot.py").as_posix()} --project "{(ROOT/LIVE_CHILD).as_posix()}" --launch')
+    # The printed command must run when pasted from a child session's `!` prompt:
+    # an interpreter that exists on THIS host (PYTHON_EXE, not a bare `python`),
+    # an absolute cboot path, and every path shell-quoted.
+    import shlex as _shlex
+    eq(line, f"{_shlex.quote(cboot.PYTHON_EXE)} {_shlex.quote((ROOT/'cboot.py').as_posix())} "
+             f"--project {_shlex.quote((ROOT/LIVE_CHILD).as_posix())} --launch")
+    truthy(not line.startswith("python "), "never the bare `python` token (absent on this host)")
 
 @test("SW-04", "switch_command")
 def _():
@@ -659,45 +667,163 @@ def _():
                % sorted(p.name for p in (apex / ".claude" / "agents").iterdir()))
 
 
+def _rules_sentences():
+    """Sentences (>= 40 chars) of the LIVE Project-agent rules section — the cold
+    oracle for 'the shim copies none of the rules'. Read at test time, so a
+    re-worded partial copy is caught, not just the five August phrases."""
+    text = (ROOT / ".codex" / "explicit" / "ask" / "start.md").read_text(encoding="utf-8")
+    sec = text.split("## Project-agent rules", 1)[1]
+    sents = [s.strip() for s in re.split(r"(?<=[.!?])\s+", sec) if len(s.strip()) >= 40]
+    return sents
+
+
+def _scratch_codex(tmp, *, with_rules=True, with_section=True):
+    """A disposable CODEX holding real copies (never symlinks) of the three
+    reactive modules generate_agents imports, plus — optionally — an
+    explicit/ask/start.md with or without the Project-agent rules section."""
+    import shutil as _sh
+    cx = tmp / "scratch-codex"
+    for mod in ("sqlite", "agent-ownership", "roots-register"):
+        _sh.copytree(ROOT / ".codex" / "reactive" / mod, cx / "reactive" / mod,
+                     ignore=_sh.ignore_patterns("__pycache__"))
+    (cx / "explicit" / "ask").mkdir(parents=True)
+    if with_rules:
+        body = "---\nversion: 7\n---\n\n# ask\n\n"
+        if with_section:
+            body += "## Project-agent rules\n\nrules here\n"
+        (cx / "explicit" / "ask" / "start.md").write_text(body, encoding="utf-8")
+    return cx
+
+
 @test("AG-46", "generate_agents")
 def _():
     """The generated file is a one-paragraph SHIM at the /ask project-agent rules —
-    never a copy of them. Both roots are named (the project's and the apex as the
-    caller's), the rules file is named by path, and no sentence of the old
-    full-text brief survives (that copy is what drifted)."""
+    never a copy of them. Pins: the exact two-roots sentence (order matters: the
+    project's root is 'your root', the apex is 'the caller's root'), the ABSOLUTE
+    pointer at CODEX's command file, the read-first instruction, the output
+    prefix, and — as a cold oracle — that no sentence of the live rules section
+    appears in the shim."""
     with scratch_apex([("drawio", "A tool.\n")]) as apex:
         ag_optin(apex, [("drawio", 1, "drawio", "A tool.")])
         ag_boot(apex)
         body = (apex / ".claude" / "agents" / "drawio-pj.md").read_text(encoding="utf-8")
-        truthy("explicit/ask/start.md" in body, "shim names the /ask command file")
-        truthy("Project-agent rules" in body, "shim names the rules section")
-        truthy((apex / "drawio").as_posix() in body, "shim names the project root")
-        truthy(f"rooted at the apex, `{apex.as_posix()}`" in body, "shim names the apex as the caller's root")
-        truthy("drawio-pj: " in body, "shim keeps the output prefix")
-        for copied in ("Confinement is YOUR responsibility", "**Boot.**", "**Governance.**",
-                       "state gravity", "ABSOLUTE HOLD"):
-            truthy(copied not in body, f"rules text must not be copied into the shim: {copied!r}")
-        truthy(len(body) < 1200, f"a shim is short; got {len(body)} bytes")
+        pointer = f"read `{cboot.CODEX.as_posix()}/explicit/ask/start.md`"
+        truthy(pointer in body, f"shim names the rules file by ABSOLUTE path under CODEX: {pointer!r}")
+        truthy("Before anything else, " + pointer in body, "the pointer is the read-first instruction")
+        truthy("**Project-agent rules** section" in body, "shim names the rules section")
+        roots_sentence = (f"your root `{(apex / 'drawio').as_posix()}`, "
+                          f"the caller's root `{apex.as_posix()}` (the apex)")
+        truthy(roots_sentence in body, f"two-roots sentence verbatim, in role order: {roots_sentence!r}")
+        truthy(f"rooted at the apex, `{apex.as_posix()}`" in body, "caller's root is the apex")
+        truthy("Prefix your final answer with `drawio-pj: `" in body, "output prefix = the @ handle")
+        for s in _rules_sentences():
+            truthy(s not in body, f"a sentence of the live rules is copied into the shim: {s[:60]!r}")
+        paras = [p for p in body.split("---", 2)[2].split("\n\n") if p.strip()]
+        eq(len(paras), 4, "marker+banner, identity, pointer, prefix — four paragraphs, no more")
 
 
 @test("AG-47", "generate_agents")
 def _():
-    """Fail closed: with the /ask command file missing, no shim is written (a shim
-    would be a dangling pointer) and the boot report carries a warning."""
+    """Fail closed on a MISSING rules file, with an intact codex: no shim is
+    written, no claim is opened, and the boot report carries an ERROR (not a
+    warning). The scratch codex keeps the reactive modules, so only the one
+    file is absent — a guard that checked a different path, or the directory,
+    would let a shim through here."""
     with scratch_apex([("drawio", "A tool.\n")]) as apex:
         ag_optin(apex, [("drawio", 1, "drawio", "A tool.")])
-        rep = cboot.BootReport()
-        rows = cboot.build_root_inventory(rep)   # needs the real codex (sqlite factory)
         saved = cboot.CODEX
-        cboot.CODEX = apex / "no-such-codex"      # the rules file is now "missing"
+        cboot.CODEX = _scratch_codex(apex, with_rules=False)
         try:
-            cboot.generate_agents(rep, rows)
+            rep = ag_boot(apex)
         finally:
             cboot.CODEX = saved
         truthy(not (apex / ".claude" / "agents" / "drawio-pj.md").exists(),
                "no shim written while the rules file is missing")
-        truthy(any("agent shims not written" in w for w in rep.warnings),
-               "boot report warns: %r" % rep.warnings)
+        truthy(any("agent shims not written" in e for e in rep.errors),
+               f"boot report ERROR (not warning): errors={rep.errors!r} warnings={rep.warnings!r}")
+        conn = sqlite3.connect(f"file:{(apex / '.state' / 'roots.db').as_posix()}?immutable=1&mode=ro", uri=True)
+        try:
+            eq(conn.execute("SELECT count(*) FROM agent_registry WHERE valid_to IS NULL").fetchone()[0], 0,
+               "no claim opened for a shim that was not written")
+        finally:
+            conn.close()
+
+
+@test("AG-48", "generate_agents")
+def _():
+    """Fail closed on a rules file WITHOUT the Project-agent rules section —
+    existence alone is not enough (main's v6 file exists and has no section)."""
+    with scratch_apex([("drawio", "A tool.\n")]) as apex:
+        ag_optin(apex, [("drawio", 1, "drawio", "A tool.")])
+        saved = cboot.CODEX
+        cboot.CODEX = _scratch_codex(apex, with_rules=True, with_section=False)
+        try:
+            rep = ag_boot(apex)
+        finally:
+            cboot.CODEX = saved
+        truthy(not (apex / ".claude" / "agents" / "drawio-pj.md").exists(),
+               "no shim written while the rules section is absent")
+        truthy(any("lacks the Project-agent rules section" in e for e in rep.errors),
+               "boot report names the missing section: %r" % (rep.errors,))
+
+
+@test("AG-49", "generate_agents")
+def _():
+    """A fail-closed boot on an apex that ALREADY has a claim and a shim leaves
+    both alone AND keeps the roots mirror truthful (agent_enabled=1), so
+    test-safe T64 sub-check 6 does not go red for the duration."""
+    with scratch_apex([("drawio", "A tool.\n")]) as apex:
+        ag_optin(apex, [("drawio", 1, "drawio", "A tool.")])
+        ag_boot(apex)                                  # normal boot: claim + shim
+        shim = apex / ".claude" / "agents" / "drawio-pj.md"
+        before = shim.read_bytes()
+        saved = cboot.CODEX
+        cboot.CODEX = _scratch_codex(apex, with_rules=False)
+        try:
+            rep = ag_boot(apex)                        # rules missing this boot
+        finally:
+            cboot.CODEX = saved
+        eq(shim.read_bytes(), before, "existing shim untouched")
+        truthy(any("agent shims not written" in e for e in rep.errors), "ERROR reported")
+        conn = sqlite3.connect(f"file:{(apex / '.state' / 'roots.db').as_posix()}?immutable=1&mode=ro", uri=True)
+        try:
+            eq(conn.execute("SELECT count(*) FROM agent_registry WHERE valid_to IS NULL").fetchone()[0], 1,
+               "the one claim is still current")
+            eq(conn.execute("SELECT count(*) FROM roots WHERE agent_enabled = 1").fetchone()[0], 1,
+               "roots mirror still advertises the existing shim (T64 sub-check 6)")
+        finally:
+            conn.close()
+
+
+def _load_py(path, name):
+    spec = importlib.util.spec_from_file_location(name, path)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+@test("RN-01", "reserved_name_error")
+def _():
+    """/new-project refuses soft/hard/switch as the derived folder OR the name:,
+    case-insensitively, and does not refuse near-misses."""
+    bc = _load_py(ROOT / ".codex" / "explicit" / "new-project" / "bootstrap-child.py", "bootstrap_child")
+    for n in ("soft", "SOFT", "Switch Group", "Hard.", " hard "):
+        truthy(bc.reserved_name_error(n, bc.derive_folder_name(n)) is not None, f"{n!r} refused")
+    truthy(bc.reserved_name_error(" Soft ", "my-folder") is not None, "name branch refuses on its own")
+    for n in ("softer", "hard-copy", "Softly Group", "Soft Landing"):
+        truthy(bc.reserved_name_error(n, bc.derive_folder_name(n)) is None, f"{n!r} allowed")
+    truthy("reserved by /ask" in bc.reserved_name_error("soft", "soft"), "message names /ask")
+
+
+@test("RN-02", "reserved_dest_error")
+def _():
+    """/move-project refuses soft/hard/switch as a destination folder, case-
+    insensitively and ignoring trailing spaces/dots (Windows strips them)."""
+    mp = _load_py(ROOT / ".codex" / "explicit" / "move-project" / "move_project.py", "move_project")
+    for n in ("soft", "SOFT", "Switch", "soft ", "soft.", "hard. "):
+        truthy(mp.reserved_dest_error(n) is not None, f"{n!r} refused")
+    for n in ("softer", "hard-copy", "soft-landing"):
+        truthy(mp.reserved_dest_error(n) is None, f"{n!r} allowed")
 
 
 @test("AG-04", "generate_agents")

@@ -37,6 +37,7 @@ import importlib.util
 import json
 import os
 import re
+import shlex
 import shutil
 import subprocess
 import sys
@@ -71,6 +72,10 @@ if not _python:
     sys.stderr.write("cboot: no python interpreter on PATH (tried 'python', 'python3')\n")
     sys.exit(1)
 PYTHON_EXE = Path(_python).as_posix()
+
+# Project names /ask reads as its mode token; /new-project and /move-project refuse
+# them, the inventory warns about one that arrived out of band.
+RESERVED_PROJECT_NAMES = frozenset({"soft", "hard", "switch"})
 
 
 # ── Utilities ────────────────────────────────────────────────────────
@@ -1182,6 +1187,16 @@ def build_root_inventory(report):
         return None
 
     n = len(descendants)
+    for r in rows:
+        if r.get("is_apex"):
+            continue
+        folder = str(r.get("rel_path", "")).rstrip("/").rsplit("/", 1)[-1]
+        for value in (folder, str(r.get("name", ""))):
+            if value.strip().lower().rstrip(" .") in RESERVED_PROJECT_NAMES:
+                report.warn(f"Root inventory: {r.get('rel_path')} is named {value!r}, "
+                            "which /ask reads as a mode — unreachable by /ask until renamed",
+                            "reserved: soft, hard, switch")
+                break
     report.ok(f"Root inventory: {len(rows)} roots in .state/roots.db "
               f"(apex + {n} descendant{'' if n == 1 else 's'})")
     return RootRows(rows, excluded)
@@ -1931,11 +1946,11 @@ def _agent_brief(name, base, rel_path, abs_path, codex_dir, description, marker)
         "\n"
         f"Before anything else, read `{codex_dir}/explicit/ask/start.md` and follow "
         "its **Project-agent rules** section with those two roots — your root "
-        f"`{abs_path}`, the caller's root `{apex}` (the apex). Those rules are the "
-        "whole of your boot, confinement, governance and output contract; nothing "
-        "here overrides them.\n"
+        f"`{abs_path}`, the caller's root `{apex}` (the apex). Those rules govern "
+        "your boot, confinement, governance and output; the one value this file "
+        "supplies is the name your dispatch gives you.\n"
         "\n"
-        f"Prefix your final answer with `{name}: `.\n"
+        f"Prefix your final answer with `{name}: ` (your `@` handle).\n"
     )
 
 def _within_agents_dir(target):
@@ -2032,6 +2047,31 @@ def _unlink_orphan(target):
         pass
 
 
+ASK_RULES_FILE_REL = ".codex/explicit/ask/start.md"
+ASK_RULES_HEADING = "## Project-agent rules"
+
+
+def _ask_rules_present(report):
+    """True iff the /ask command file exists under CODEX and carries the
+    Project-agent rules section every generated shim points at. Reports an
+    ERROR (not a warning) otherwise — a dangling pointer un-governs every
+    project agent, and the boot banner must say so loudly."""
+    rules_file = CODEX / "explicit" / "ask" / "start.md"
+    try:
+        text = rules_file.read_text(encoding="utf-8-sig", errors="replace")
+    except OSError as e:
+        report.fail("Agents: /ask command file unreadable — agent shims not written or "
+                    "refreshed (every shim points at its Project-agent rules)",
+                    f"{rules_file}: {e}")
+        return False
+    if ASK_RULES_HEADING not in text:
+        report.fail("Agents: /ask command file lacks the Project-agent rules section — "
+                    "agent shims not written or refreshed (every shim points at it)",
+                    str(rules_file))
+        return False
+    return True
+
+
 def generate_agents(report, rows):
     """Materialize `^/.claude/agents/<name>.md` for every switched-on root.
 
@@ -2040,13 +2080,13 @@ def generate_agents(report, rows):
     is never propagated to a child, because a child addressing a sibling would
     break containment.
     """
-    # Fail closed: a shim that points at a missing rules file is a dangling
-    # pointer, so write nothing (and close nothing) until the file is back.
-    rules_file = CODEX / "explicit" / "ask" / "start.md"
-    if not rules_file.is_file():
-        report.warn("Agents: /ask command file missing — agent shims not written "
-                    "(every shim points at its Project-agent rules)", str(rules_file))
-        return
+    # Fail closed: every shim points at the "Project-agent rules" section of the
+    # /ask command file, so a missing file OR a file without that section would
+    # make every shim a dangling pointer. Then: write and refresh NOTHING, report
+    # it as an ERROR (existing shims stay on disk, still pointing at the gap), but
+    # still run the close pass, the staging sweep and the roots mirror below, so
+    # the inventory keeps telling the truth about the claims and files that exist.
+    rules_ok = _ask_rules_present(report)
     try:
         import sqlite3
     except ImportError:
@@ -2291,6 +2331,12 @@ def generate_agents(report, rows):
                 claims.pop(ao._key(target), None)
                 skipped += 1
                 continue
+            if not rules_ok:
+                # Rules file missing or sectionless: open no claim, write and
+                # refresh no file. Existing files stay as they are; the mirror
+                # below still reflects whatever claims and files exist.
+                skipped += 1
+                continue
             clean_desc = decision["description"] or _default_description(
                 text, root_row["name"])
             # Prepend the role uniformly at emit time so it holds even over a
@@ -2299,7 +2345,7 @@ def generate_agents(report, rows):
             # Description is DERIVED every boot and projected into the file only —
             # it is no longer versioned in agent_registry (de-durabled).
             description = f"Project agent for {rel} — {clean_desc}"
-            codex_dir = (ROOT / ".codex").as_posix()
+            codex_dir = CODEX.as_posix()   # the same CODEX the rules check stats
             # The marker names the CURRENT spine rel_path (== rel, the walked
             # location) and is interpolated, never substituted in afterwards: a
             # placeholder pass would also rewrite a description that happened to
@@ -2714,9 +2760,12 @@ def switch_command(target_arg):
     if err is not None:
         sys.stderr.write(f"cboot --switch: {err}\n")
         return 1
-    # Absolute path: the human may paste this from a CHILD session's `!` prompt,
-    # where a relative `cboot.py` does not exist.
-    print(f'python {(ROOT / "cboot.py").as_posix()} --project "{target.as_posix()}" --launch')
+    # Absolute, shell-quoted, and using the interpreter that actually exists here
+    # (PYTHON_EXE: `python` is absent on this WSL box, only `python3`). The human
+    # may paste this from a CHILD session's `!` prompt, where a relative `cboot.py`
+    # does not exist, and an apex or project path may carry spaces or `$`.
+    print(f"{shlex.quote(PYTHON_EXE)} {shlex.quote((ROOT / 'cboot.py').as_posix())} "
+          f"--project {shlex.quote(target.as_posix())} --launch")
     return 0
 
 

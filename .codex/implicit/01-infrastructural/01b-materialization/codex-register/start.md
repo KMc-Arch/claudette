@@ -7,7 +7,6 @@ reads:
   - "^/.codex/settings.json"
 writes:
   - "^/.claude/skills/"
-  - "^/.claude/agents/"
   - "^/.claude/settings.json"
 ---
 

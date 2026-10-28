@@ -218,6 +218,18 @@ class Blocked(Exception):
 RESERVED_PROJECT_NAMES = frozenset({"soft", "hard", "switch"})
 
 
+def reserved_dest_error(dest_name):
+    """The user-facing refusal if a destination folder name is reserved by /ask,
+    else None. ASCII case-folded, and trailing spaces/dots are stripped first:
+    Windows strips them from a folder name, so `"soft "` and `"soft."` would land
+    on disk as `soft`."""
+    if _fold(str(dest_name)).rstrip(" .") in RESERVED_PROJECT_NAMES:
+        return ("destination folder name %r is reserved by /ask (its modes are "
+                "soft, hard, switch) — a project with that name could never be "
+                "routed to; pick another destination" % dest_name)
+    return None
+
+
 def _rel(apex, abs_path):
     """Apex-relative POSIX rel_path (real casing), matching how boot stores it.
 
@@ -298,10 +310,9 @@ def _preflight(conn, apex, source_abs, dest_abs, home):
             raise Blocked("a path component is Claude-internal (%r, dot/underscore-"
                           "prefixed) — refusing to move framework/invisible internals"
                           % comp)
-    if _fold(dest_abs.name) in RESERVED_PROJECT_NAMES:
-        raise Blocked("destination folder name %r is reserved by /ask (its modes are "
-                      "soft, hard, switch) — a project with that name could never be "
-                      "routed to; pick another destination" % dest_abs.name)
+    reserved = reserved_dest_error(dest_abs.name)
+    if reserved:
+        raise Blocked(reserved)
 
     source_rel = _rel(apex, source_abs)
     dest_rel = _rel(apex, dest_abs)
