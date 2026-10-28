@@ -122,6 +122,10 @@ store:
   moved.
 - **Destination free:** dest must not exist; its parent must; dest must not be inside
   source.
+- **Destination name not reserved:** a destination folder named `soft`, `hard` or
+  `switch` (case-insensitive) is refused — `/ask` reads the first word of its
+  invocation as the mode, so a project called that could never be routed to.
+  `/new-project` refuses the same three at creation.
 - **Destination store free (registered):** a move is refused if a **registered**
   identity's transcript store already occupies the destination slug (a merge would
   destroy real session history — `relink()` refuses it anyway). An *unregistered*

@@ -103,9 +103,26 @@ mileqa <scope>
 
 **Output:** Per-round reports + summary in `.state/tests/mileqa/YYYYMMDD-HHMM/`; a commit at every checkpoint and round.
 
+## ask -- Route a Request to a Project
+
+Sends a one-shot request to any `root: true` project in the apex (never the apex itself), from any session -- apex or child.
+
+```
+ask drawio what is the diagram convention for a swimlane?    # soft (default)
+ask hard ~majel run the safe tests and report                 # hard
+ask switch fabriceng/pbir-composer                            # switch
+```
+
+**Modes:**
+- **soft** (default) -- shorthand for "dispatch a sub rooted at that project's folder to do X". The calling session resolves the name, packages the request with the context it needs, and dispatches one subagent that works under the Project-agent rules in `.codex/explicit/ask/start.md`. The sub's writes are bounded by the calling session's own fence: a project inside it is worked in its own folder (memory updates included); a project outside it is consulted, and its expert writes only in the caller's folder. At the apex, `@<name>-pj` is the same call precomputed at boot -- the agent files are shims pointing at the same rules.
+- **hard** -- a fresh headless worker session, rooted and guard-fenced at the project (`cboot --exec-file`). Returns the answer and a resumable `session_id`.
+- **switch** -- prints a `!` command that launches an interactive session rooted at the project.
+
+**Reserved names:** `soft`, `hard` and `switch` cannot be a project's folder name or `name:`; `new-project` and `move-project` refuse them.
+
 ## new-project -- Child Project Scaffolding
 
-Creates a new child project with the standard Claudette2 structure.
+Creates a new child project with the standard Claudette2 structure. The names `soft`, `hard` and `switch` are refused (reserved by `ask`).
 
 ```
 new-project my-api
@@ -277,7 +294,7 @@ audit my-api                 # baseline check
 ### Periodic health check
 
 ```
-test-safe                    # 66 structural checks
+test-safe                    # 79 structural checks
 ```
 
 ### Deep verification after changes

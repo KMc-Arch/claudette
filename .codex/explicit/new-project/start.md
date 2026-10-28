@@ -25,6 +25,8 @@ Create a new child project following the Child Project Spec.
 
 The folder name is **derived** from `<name>` per the Naming Convention in `.codex/specs/child-project.md`.
 
+**Reserved names.** `soft`, `hard` and `switch` are refused, as the derived folder name or as the `name:` value (case-insensitive): `/ask` reads the first word of its invocation as the mode, so a project called that could never be routed to. `/move-project` refuses the same three as a destination folder.
+
 ## What It Creates
 
 Runs `bootstrap-child.py` which:

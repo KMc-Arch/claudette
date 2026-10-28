@@ -212,6 +212,12 @@ class Blocked(Exception):
     """A preflight guard that refuses the move (message is user-facing)."""
 
 
+# Reserved by /ask: it reads the first word of its invocation as the mode, so a
+# project whose folder is one of these could never be routed to. /new-project
+# refuses the same set at creation; this is the rename/move entry point.
+RESERVED_PROJECT_NAMES = frozenset({"soft", "hard", "switch"})
+
+
 def _rel(apex, abs_path):
     """Apex-relative POSIX rel_path (real casing), matching how boot stores it.
 
@@ -292,6 +298,10 @@ def _preflight(conn, apex, source_abs, dest_abs, home):
             raise Blocked("a path component is Claude-internal (%r, dot/underscore-"
                           "prefixed) — refusing to move framework/invisible internals"
                           % comp)
+    if _fold(dest_abs.name) in RESERVED_PROJECT_NAMES:
+        raise Blocked("destination folder name %r is reserved by /ask (its modes are "
+                      "soft, hard, switch) — a project with that name could never be "
+                      "routed to; pick another destination" % dest_abs.name)
 
     source_rel = _rel(apex, source_abs)
     dest_rel = _rel(apex, dest_abs)

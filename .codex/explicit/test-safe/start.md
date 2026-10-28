@@ -1,6 +1,6 @@
 ---
 version: 7
-short-desc: Read-only structural validation (78 checks, safe anytime)
+short-desc: Read-only structural validation (79 checks, safe anytime)
 reads:
   - "^/.codex/"
   - "^/.state/"
@@ -41,7 +41,7 @@ Print results as they complete. Passing tests without sub-conditions get one lin
        [PASS] Negative: no leakage to default external location for this project
 
 ═══════════════════════════════════════
-  RESULTS: 75/78 passed, 1 failed, 1 warn, 1 skip
+  RESULTS: 76/79 passed, 1 failed, 1 warn, 1 skip
 ═══════════════════════════════════════
 ```
 
@@ -376,13 +376,16 @@ Condition: three sub-checks (a rollback below these floors silently revives pre-
 ### Category M: Worker Modes & `/ask`
 
 **T61** — `/ask` command is registered and current
-Condition: `.codex/explicit/ask/start.md` exists; its frontmatter declares `isolation: subagent`, a non-empty `short-desc`, and a `writes:` that includes `^/.tmp/` (the hard-mode out-of-band request channel T63 depends on); and the shim `.claude/skills/ask/SKILL.md` exists.
+Condition: `.codex/explicit/ask/start.md` exists; its frontmatter declares `isolation: subagent`, a non-empty `short-desc`, and a `writes:` that includes `^/.tmp/` (the hard-mode out-of-band request channel T63 depends on); the shim `.claude/skills/ask/SKILL.md` exists; and the file contains a `## Project-agent rules` section whose fence paragraph covers BOTH cases — one bullet beginning `**If your root lies inside the caller's root:**` and one beginning `**If your root lies outside the caller's root:**` (the `@…-pj` agent files are shims that point at this section, so a missing or one-sided section silently un-governs every project agent). `[FAIL]` naming whichever element is missing.
 
 **T62** — `roots.db` schema (if present)
 Condition: SKIP if `.state/roots.db` is absent — meaning the inventory has never run here. Do NOT read that absence as "a rebuildable cache is missing, no matter": the `roots`/`meta` tables are rebuilt every boot, but `agent_optin` and `agent_registry` (see T64) are **durable** — they hold decisions a human made once and the claims every file in `^/.claude/agents/` depends on, and nothing regenerates them. If present, open it STRICTLY READ-ONLY via `sqlite3.connect("file:<abs-path>?immutable=1&mode=ro", uri=True)` — `immutable=1` is the operative flag: a plain `mode=ro` open of a WAL-mode db still creates/updates the `-wal`/`-shm` side files (mode=ro governs only the main file), itself a read-only-contract breach; `mode=ro` stays as the belt because SQLite silently ignores unrecognized URI parameters. Do NOT open through the sqlite factory here: its `PRAGMA journal_mode=WAL` persists a journal-mode flip into the db file. Stated caveats: with change detection disabled the verdict is undefined if anything writes roots.db during the open, and committed-but-uncheckpointed `-wal` frames from a crashed writer are invisible (stale snapshot) — keep the connection short-lived: open, check, close. Verify the `roots` table contains AT LEAST the columns `name, abs_path, rel_path, parent_path, depth, is_apex, contains_roots` (superset semantics — the live schema also carries `id` and `generated_at`, and — once the db is migrated to the identity spine — `canonical_id`, the walk→spine link column; the superset check keeps passing across the migration) and exactly one row with `is_apex = 1`. An error opening the database read-only is a `[FAIL]` reporting the exception text.
 
 **T63** — `/ask` hard mode is injection-safe
 Condition: in `ask/start.md`, the `hard` branch delivers `<request>` **out-of-band as a file** — written with the Write tool into `.tmp/` and run via `python cboot.py … --exec-file '<reqfile>'` — so the request bytes never appear on a shell command line. FAIL if the branch puts `<request>` into shell syntax in any form: a `--exec "<request>"` interpolation, or a heredoc (`--exec - <<'…'`) whose fixed delimiter is itself a public injection vector.
+
+**T66** — `/ask` runs from a child: no apex-relative invocation in the command file
+Condition: `/ask` is propagated to every child as a skill shim, but a child has no `.codex/`, no `.state/roots.db` and no `cboot.py` of its own, so any apex-relative path in the command file breaks every mode from a child (the 2026-08 → 2026-10 breakage). Scan the FENCED code blocks of `.codex/explicit/ask/start.md` (text between ``` fences) line by line: every line that mentions `cboot.py` must have `<APEX>/` or an absolute `/…/` immediately before it, every line that mentions `roots.db` likewise, and no line may contain `sys.path.insert(0,'.codex` or `connect('.state/`. Prose outside fences is exempt. `[FAIL]` quoting each offending line. Also `[FAIL]` if the file does not define `<APEX>` (the literal token `<APEX>` must appear outside fences at least once) — the fences depend on that definition.
 
 **T64** — Addressable agents agree with the durable registry
 Condition: SKIP if `.state/roots.db` is absent, or if it is present but has no `agent_registry` table (`SELECT name FROM sqlite_master WHERE type='table' AND name='agent_registry'`) — the feature has never run here. Otherwise open the db STRICTLY READ-ONLY exactly as T62 mandates: `sqlite3.connect("file:<abs-path>?immutable=1&mode=ro", uri=True)`, NOT through the sqlite factory (its `PRAGMA journal_mode=WAL` persists a journal-mode flip into the file, and a plain `mode=ro` open of a WAL db still creates `-wal`/`-shm`). Short-lived: open, read, close. An error opening read-only is a `[FAIL]` reporting the exception text.

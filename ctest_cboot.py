@@ -417,7 +417,8 @@ def _():
         code = cboot.switch_command(need_live_child())
     line = out.getvalue().strip()
     eq(code, 0)
-    eq(line, f'python cboot.py --project "{(ROOT/LIVE_CHILD).as_posix()}" --launch')
+    # Absolute cboot path: the printed command must run from a child session's `!` prompt too.
+    eq(line, f'python {(ROOT/"cboot.py").as_posix()} --project "{(ROOT/LIVE_CHILD).as_posix()}" --launch')
 
 @test("SW-04", "switch_command")
 def _():
@@ -656,6 +657,47 @@ def _():
         truthy((apex / ".claude" / "agents" / "drawio-pj-2.md").exists(),
                "and it blocks the name: %s"
                % sorted(p.name for p in (apex / ".claude" / "agents").iterdir()))
+
+
+@test("AG-46", "generate_agents")
+def _():
+    """The generated file is a one-paragraph SHIM at the /ask project-agent rules —
+    never a copy of them. Both roots are named (the project's and the apex as the
+    caller's), the rules file is named by path, and no sentence of the old
+    full-text brief survives (that copy is what drifted)."""
+    with scratch_apex([("drawio", "A tool.\n")]) as apex:
+        ag_optin(apex, [("drawio", 1, "drawio", "A tool.")])
+        ag_boot(apex)
+        body = (apex / ".claude" / "agents" / "drawio-pj.md").read_text(encoding="utf-8")
+        truthy("explicit/ask/start.md" in body, "shim names the /ask command file")
+        truthy("Project-agent rules" in body, "shim names the rules section")
+        truthy((apex / "drawio").as_posix() in body, "shim names the project root")
+        truthy(f"rooted at the apex, `{apex.as_posix()}`" in body, "shim names the apex as the caller's root")
+        truthy("drawio-pj: " in body, "shim keeps the output prefix")
+        for copied in ("Confinement is YOUR responsibility", "**Boot.**", "**Governance.**",
+                       "state gravity", "ABSOLUTE HOLD"):
+            truthy(copied not in body, f"rules text must not be copied into the shim: {copied!r}")
+        truthy(len(body) < 1200, f"a shim is short; got {len(body)} bytes")
+
+
+@test("AG-47", "generate_agents")
+def _():
+    """Fail closed: with the /ask command file missing, no shim is written (a shim
+    would be a dangling pointer) and the boot report carries a warning."""
+    with scratch_apex([("drawio", "A tool.\n")]) as apex:
+        ag_optin(apex, [("drawio", 1, "drawio", "A tool.")])
+        rep = cboot.BootReport()
+        rows = cboot.build_root_inventory(rep)   # needs the real codex (sqlite factory)
+        saved = cboot.CODEX
+        cboot.CODEX = apex / "no-such-codex"      # the rules file is now "missing"
+        try:
+            cboot.generate_agents(rep, rows)
+        finally:
+            cboot.CODEX = saved
+        truthy(not (apex / ".claude" / "agents" / "drawio-pj.md").exists(),
+               "no shim written while the rules file is missing")
+        truthy(any("agent shims not written" in w for w in rep.warnings),
+               "boot report warns: %r" % rep.warnings)
 
 
 @test("AG-04", "generate_agents")

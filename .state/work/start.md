@@ -20,6 +20,7 @@ Work tracking captures all mutable project state — distinct from memory (knowl
 | `requirements-inventory.md` | Durable A–J requirements map for the modularization analysis (BL-05) |
 | `codex-analysis-20260801-reconciled.md` | Reconciled codex architecture analysis (2026-08-01) |
 | `spec-cross-project-orchestration.md` | Cross-project orchestration spec (BL-34) |
+| `spec-ask-v7-soft.md` | `/ask` v7 design — soft restored as the universal project-agent call (BL-99) |
 
 ---
 
