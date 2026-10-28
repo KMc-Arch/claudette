@@ -18,8 +18,10 @@ running alongside a **primary** session that owns write authority over the same 
 **The hold is behavioral.** You decline mutations because this command instructs you to. Nothing
 blocks a tool call at the harness level; the re-injection hook only restores the instruction after
 context loss. When a session is known to be secondary at launch, prefer a harness-enforced mode as
-well: Claude Code's plan mode (`claude --permission-mode plan`, or Shift+Tab mid-session). An
-enforcing guard for `/read-only` itself is backlog item BL-89.
+well: Claude Code's plan mode (`claude --permission-mode plan`, or Shift+Tab mid-session). Plan mode
+enforces nothing in a session whose permissions are bypassed (`bypassPermissions`,
+`--dangerously-skip-permissions`). An enforcing guard for `/read-only` itself is deferred backlog
+item BL-89.
 
 > Two sessions on one tree is the deliberate exception to claudette's norm of one active session per
 > `^`-root (simultaneous same-root sessions are otherwise treated as a non-scenario). That is why the
@@ -74,12 +76,15 @@ examples, never exemptions. While engaged, treat all of these as **held (must no
 - **Subagents and workers:** they do **not** inherit this hold. They get no SessionStart
   re-injection and cannot see this context. Dispatching held work through any of them launders a
   held mutation: the hold binds the effect, not the means. While engaged:
-  - dispatch only tool-restricted read-only agent types (`Explore`, `Plan`, or an agent whose
-    `tools:` allowlist excludes Write, Edit, NotebookEdit and Bash), or paste the declaration
-    verbatim into the prompt and require inline delivery;
+  - paste the declaration verbatim into **every** subagent prompt and require inline delivery.
+    `Explore` and `Plan` are not exempt: they still have Bash, and Explore's own instructions run
+    `git status` and `git diff`, which this hold treats as held. Only an agent whose `tools:`
+    allowlist excludes Write, Edit, NotebookEdit and Bash needs no pasted declaration;
   - `/ask hard`, `/break-glass`, Heartbeat, `cboot --exec`, and Workflow fan-outs start fresh
     read-write sessions that never see this hold. Each such dispatch is held, however read-only the
-    request sounds, and needs the one-off exception below.
+    request sounds, and needs the one-off exception below. Under that exception, the confirmation
+    covers only the operations you named for the worker; give it that bounded task and nothing
+    open-ended. When the one mutation is something you can perform yourself, do that instead.
 
 **Allowed freely** (non-mutative): `Read`, `Glob`, `Grep`, `ToolSearch`, `ListAgents`,
 `AskUserQuestion`, `WebFetch`/`WebSearch` (read), read-only `Artifact` actions (`read`/`list`/
@@ -89,6 +94,10 @@ examples, never exemptions. While engaged, treat all of these as **held (must no
 `ls-files`, and diffs that do not refresh the index (`git diff --cached`, `git diff <rev> <rev>`).
 Plain `git status` and working-tree `git diff` rewrite `.git/index` under `index.lock`, which can make
 the primary's commit fail, so treat them as held.
+
+**Writes hiding in reads.** Opening a SQLite database, even to read, can create `-wal`/`-shm`
+files (use `?immutable=1&mode=ro`); running Python writes `__pycache__/` (use `python3 -B` or
+`PYTHONDONTWRITEBYTECODE=1`). Avoid the write, or treat the step as held.
 
 If unsure whether an operation mutates, treat it as held and ask.
 
@@ -112,8 +121,11 @@ covers only that operation. The wholesale lift is only the user's own `/read-onl
 The hold is recorded on disk, keyed to **this session**, so it identifies which session is
 subordinated and can be re-injected after a context summary.
 
-- **Root.** `^` in this command means the session's **launch root**, `$CLAUDE_PROJECT_DIR`: the
-  directory whose `.claude/` holds the session's settings. Never a child or ancestor root.
+- **Root.** `^` is this session's root as everywhere in the codex: the nearest `root: true`
+  ancestor-or-self of the directory the session was launched in. It is the same `^` you use for
+  `.state/`, and the boot output states it (`Nearest root: true context: …`). The hook walks up from
+  the launch directory the same way. Do not read `$CLAUDE_PROJECT_DIR` from Bash: the harness does
+  not export it to the Bash tool. If you are unsure which directory is `^`, do not write a flag.
 - **Path:** `^/.claude/read-only/read-only-<sid>.flag`. It lives here because `/purge` deletes
   `.claude/skills/` in every scope but leaves other `.claude/` subdirectories alone, and cboot never
   touches them. `.tmp/` would be wrong (`purge all` wipes it), and so would `.state/` (children
@@ -124,7 +136,7 @@ subordinated and can be re-injected after a context summary.
 - **Contents:** the session id, an ISO-8601 `engaged_at` timestamp, and the declaration text. The
   hook never reads the contents; it matches the filename only.
 - **On engage:** `mkdir -p` the directory (infrastructure, do not ask), write the flag, and report its
-  absolute path. Then run `git -C "$CLAUDE_PROJECT_DIR" check-ignore -q <flag>`. If it exits
+  absolute path. Then run `git -C <^> check-ignore -q <flag>`, with `^` as an absolute path. If it exits
   non-zero, warn the user that this repo does not ignore the flag: a primary's `git add -A` would
   stage it, and `git clean` or `git stash -u` would delete it, which silently ends compaction
   survival. Some host repos track `.claude/`.
@@ -134,8 +146,9 @@ subordinated and can be re-injected after a context summary.
   this context**. Report it as engaged but not persisted: it will not survive compaction, `/clear`, or
   resume. Offer to retry the write if the user approves.
 - **On the user's `/read-only done`:** remove **only this session's** flag, then report the lift. If
-  the flag is absent but this context engaged the hold without persisting it, report it lifted in
-  context. Otherwise report that this session was not under the hold.
+  the flag is absent but this context shows the hold engaged (persisted or not), report it lifted
+  and say the flag was already missing. Report "not under the hold" only when nothing in this
+  context shows it engaged.
 
 ## What survives what
 
@@ -145,23 +158,26 @@ subordinated and can be re-injected after a context summary.
 | Plain resume (`--resume`, `--continue`, `/resume`) | same | re-injected by the hook |
 | `/clear`, `/reset`, `/new`; leaving plan mode with clear-context | **new** | **ends** |
 | Fork (`--fork-session`) | **new** | **ends** |
-| Fresh startup | new | none, which is correct |
+| Fresh startup, including `/unpause` into a new session | new | none: re-engage if needed |
 
 `read-only-reinject.py` runs on every `SessionStart`. When a flag matches the payload's
-`session_id` it re-injects the hold. When the id is new (`clear`, or a `resume` that forked) and any
-flag exists in the root, it prints a **notice** instead: the hook cannot tell whether this session was
-the held one, so the model must ask the user before any mutation and re-engage with `/read-only` if
-the answer is yes. Compaction keeps the id, so an unmatched compaction stays silent, and a fresh
-startup is never nagged.
+`session_id` it re-injects the hold. When the id is new (source `clear` or `fork`, or an unknown
+source) and any flag exists in the root, it prints a **notice** instead: the hook cannot tell whether
+this session was the held one, so the model must ask the user before any mutation and re-engage with
+`/read-only` if the answer is yes. Startup, compaction and plain resume stay silent when unmatched:
+compaction and resume keep the id, so no match means this session was never held. Flags left by
+ended sessions also trigger the notice after a `/clear`; see Orphaned flags.
 
-**Backstop.** After any context summary, if the summary shows `/read-only` was engaged and no
-`=== READ-ONLY HOLD ACTIVE ===` block is visible, check for the flag. If it exists, treat the hold as
-in force and tell the user the re-injection hook did not fire. One cause is settings materialized for
-another platform, which bake in an interpreter path that does not exist here.
+**Backstop.** After any context summary, if the summary shows `/read-only` was engaged and not
+lifted, and no `=== READ-ONLY HOLD ACTIVE (this session) ===` block is visible, the hold is **still in
+force**. Check for the flag and tell the user what you found: if it exists, the re-injection hook did
+not fire (one cause is settings materialized for another platform, with an interpreter path that
+does not exist here); if it is missing, it was deleted or never written, so offer to re-write it.
+Only the user's `/read-only done` ends the hold.
 
 **Evidence.** Compaction re-injection is the hooks guide's documented `SessionStart` `compact`
 pattern. That the id stays the same across compaction and plain resume, and changes on `/clear` and
-fork, was observed in Claude Code 2.1.31x. Re-verify after harness upgrades: engage, run `/compact`,
+fork (SessionStart source `fork`), was observed in Claude Code 2.1.31x. Re-verify after harness upgrades: engage, run `/compact`,
 and confirm the banner returns; then run `/clear` and confirm the notice appears.
 
 ## Orphaned flags
