@@ -6,7 +6,7 @@ Claudette is a governance framework for Claude Code. It replaces hand-managed CL
 
 Claude Code ships hooks, CLAUDE.md hierarchy, skills, and commands -- but no pre-built governance. Claudette assembles these primitives into a tested system:
 
-**Structural enforcement.** 13 hook scripts execute at the tool-call level. Guards block violations before Claude acts -- file containment, visibility, state gravity between parent/child projects, audit immutability, remote-push limits -- while the rest observe and notify. Shell-level gates, not directives.
+**Structural enforcement.** 14 hook scripts execute at the tool-call level. Guards block violations before Claude acts -- file containment, visibility, state gravity between parent/child projects, audit immutability, remote-push limits -- while the rest observe and notify. Shell-level gates, not directives.
 
 **Persistent state.** Memory, work tracking (backlog, architecture debt, boundary gaps), session traces, and structured pause/unpause. All in `.state/`, persisted in your project across sessions.
 
@@ -35,10 +35,10 @@ Claude: I'll create a child project called "web-scraper"...
         Created web-scraper/ with CLAUDE.md, .state/, memory, and work tracking.
 
 You:    What commands do I have available?
-Claude: You have 20 built-in commands: ask, audit, backup, break-glass,
+Claude: You have 21 built-in commands: ask, audit, backup, break-glass,
         break-glass-qa, bundle, checkWinTasks, mileqa, milestone, move-project,
-        new-project, pause, purge, rebuild, roots, scrub, test-bench, test-burn,
-        test-safe, unpause. [describes each]
+        new-project, pause, purge, read-only, rebuild, roots, scrub, test-bench,
+        test-burn, test-safe, unpause. [describes each]
 
 You:    Let's pause here so I can pick this up tomorrow.
 Claude: [runs pause]
@@ -57,7 +57,7 @@ The next day, start a new session and say "unpause" -- Claude reads the pause fi
 | `.state/` | Memory, work tracking, test results, session traces | Structure only -- `start.md` manifests are tracked, accumulated content is not |
 | `.claude/` | Generated settings, skill shims, session files | No -- regenerated each boot |
 
-### 20 commands
+### 21 commands
 
 | Command | What It Does | Modifies State? |
 |---------|-------------|-----------------|
@@ -75,6 +75,7 @@ The next day, start a new session and say "unpause" -- Claude reads the pause fi
 | **pause** | Save session context for later resumption. | Writes pause files |
 | **unpause** | Restore a previously paused session. | No |
 | **purge** | Clean transient files. `purge all` is destructive (requires confirmation). | Yes |
+| **read-only** | Hold this session read-only alongside a primary session on the same tree; only the user's `/read-only done` lifts it. Survives compaction and resume. | Writes its own session flag only |
 | **bundle** | Package a child project into a standalone copy. | Writes bundle |
 | **rebuild** | Restructure a project based on audit findings. Multi-phase, interactive. | Yes |
 | **backup** | Mirror the instance to its OneDrive backup target. | No (external mirror) |
@@ -84,7 +85,7 @@ The next day, start a new session and say "unpause" -- Claude reads the pause fi
 
 See [README-commands.md](README-commands.md) for detailed usage, parameters, and workflow examples.
 
-### 13 hooks
+### 14 hooks
 
 | Hook | What It Blocks |
 |------|---------------|
@@ -97,12 +98,13 @@ See [README-commands.md](README-commands.md) for detailed usage, parameters, and
 | `boot-inject` | _(not a guard)_ Injects boot instructions at session start |
 | `prefs-staleness-check` | _(not a guard)_ Warns if preferences are stale |
 | `memory-redirect-check` | _(not a guard)_ Warns if auto-memory is misconfigured |
+| `read-only-reinject` | _(not a guard)_ Re-injects an engaged `/read-only` hold after compaction or resume; flags a hold that a `/clear` or fork may have ended |
 | `codex-edit-notify` | _(not a guard)_ Notifies when codex executables are modified |
 | `trace-logger` | _(not a guard)_ Logs tool calls to daily trace file |
 | `session-close` | _(not a guard)_ Prompts end-of-session governance tasks |
 | `subagent-conformance` | _(not a guard)_ Checks sub-agent output on completion |
 
-Hook behavior is tested in `chooks.py` — 12 of the 13 hooks are covered; `remote-guard.sh` tests are tracked in BL-24. See [README-testing.md](README-testing.md).
+Hook behavior is tested in `chooks.py` — 13 of the 14 hooks are covered; `remote-guard.sh` tests are tracked in BL-24. See [README-testing.md](README-testing.md).
 
 ## Git Model
 

@@ -439,45 +439,231 @@ def test_memory_redirect_correct_path(t: HookTestRunner):
 
 # -- read-only-reinject.py --
 
-@register_test("read-only-reinject.py")
-def test_read_only_reinject_matching_flag(t: HookTestRunner):
-    """A flag matching the payload session_id -> the hold is re-injected."""
-    sid = "test-ro-sid-0001"
-    flag_dir = t.root / ".claude" / "skills" / "read-only"
-    flag_dir.mkdir(parents=True, exist_ok=True)
+# Every RO test runs in a throwaway launch root, never the live tree.
+RO_HOOK = "read-only-reinject.py"
+RO_SID = "0b9d4e2a-7f31-4c6e-9a10-5d2c8e4f1a01"
+RO_OTHER = "0b9d4e2a-7f31-4c6e-9a10-5d2c8e4f1a02"  # shares a long prefix with RO_SID
+
+
+def _ro_sandbox(prefix="chooks-ro-"):
+    root = Path(tempfile.mkdtemp(prefix=prefix)).resolve()
+    flag_dir = root / ".claude" / "read-only"
+    flag_dir.mkdir(parents=True)
+    return root, flag_dir
+
+
+def _ro_flag(flag_dir, sid):
     flag = flag_dir / f"read-only-{sid}.flag"
-    try:
-        flag.write_text(f"session: {sid}\nengaged_at: test\n", encoding="utf-8")
-        payload = json.dumps({"session_id": sid, "source": "compact", "cwd": str(t.root)})
-        code, out, err = t.run_hook("read-only-reinject.py", stdin_data=payload)
-        t.assert_exit("RO01", "Exits 0 with a matching flag", code, 0, err)
-        t.assert_stdout_contains("RO02", "Re-injects the hold when the flag matches",
-                                 out, "READ-ONLY HOLD ACTIVE")
-    finally:
-        try:
-            flag.unlink()
-        except OSError:
-            pass
+    flag.write_text(f"session: {sid}\nengaged_at: test\n", encoding="utf-8")
+    return flag
 
 
-@register_test("read-only-reinject.py")
-def test_read_only_reinject_silent_when_unmatched(t: HookTestRunner):
-    """No matching flag, or no payload -> exit 0 and NO injection (silence ==
-    read-write). Guards the primary-session case: a session id with no flag of
-    its own must never be subordinated."""
-    # (a) well-formed payload, but no flag for this sid exists
-    payload = json.dumps({"session_id": "test-ro-absent-9999", "source": "compact",
-                          "cwd": str(t.root)})
-    code_a, out_a, err_a = t.run_hook("read-only-reinject.py", stdin_data=payload)
-    ok_a = code_a == 0 and "READ-ONLY HOLD ACTIVE" not in out_a
-    # (b) empty stdin -> no session_id -> nothing
-    code_b, out_b, err_b = t.run_hook("read-only-reinject.py", stdin_data="")
-    ok_b = code_b == 0 and out_b.strip() == ""
-    if ok_a and ok_b:
-        t.ok("RO03", "Silent (exit 0, no injection) with no matching flag or no payload")
+def _ro_payload(sid, source="compact", cwd=None):
+    payload = {"session_id": sid, "source": source}
+    if cwd is not None:
+        payload["cwd"] = str(cwd)
+    return json.dumps(payload)
+
+
+def _ro_check(t, name, label, ok, detail=""):
+    if ok:
+        t.ok(name, label)
     else:
-        t.fail("RO03", "Silent when nothing matches",
-               f"no-flag: code={code_a} out={out_a[:80]!r}; empty: code={code_b} out={out_b[:80]!r}")
+        t.fail(name, label, detail)
+
+
+@register_test(RO_HOOK)
+def test_read_only_reinject_matching_flag(t: HookTestRunner):
+    """An exact-match flag re-injects the full hold, a sibling session's flag does
+    not change that, and the hook never writes or removes a flag."""
+    root, flag_dir = _ro_sandbox()
+    try:
+        flag = _ro_flag(flag_dir, RO_SID)
+        _ro_flag(flag_dir, RO_OTHER)
+        before = sorted(p.name for p in flag_dir.iterdir())
+        env = {"CLAUDE_PROJECT_DIR": str(root)}
+        code, out, err = t.run_hook(RO_HOOK, stdin_data=_ro_payload(RO_SID), env_overrides=env)
+        t.assert_exit("RO01", "Exits 0 with a matching flag", code, 0, err)
+        need = ["READ-ONLY HOLD ACTIVE", "/read-only CONFIRMED HOLD",
+                "Do NOT perform ANY mutative operation",
+                "Subagents do NOT inherit this hold", "One-off exception",
+                "Only the USER lifts the hold", "`/read-only done`",
+                "explicit/read-only/start.md", f"Flag: {flag.as_posix()}"]
+        missing = [s for s in need if s not in out]
+        _ro_check(t, "RO02", "Re-injects the full hold text (rules, lift rule, spec pointer, flag)",
+                  not missing, f"missing: {missing}; out={out[:200]!r}")
+        code2, out2, _ = t.run_hook(RO_HOOK, stdin_data=_ro_payload(RO_SID), env_overrides=env)
+        after = sorted(p.name for p in flag_dir.iterdir())
+        _ro_check(t, "RO03", "Never writes or removes flags; a second run injects again",
+                  code2 == 0 and "READ-ONLY HOLD ACTIVE" in out2 and before == after,
+                  f"before={before} after={after} out2={out2[:80]!r}")
+    finally:
+        shutil.rmtree(root, ignore_errors=True)
+
+
+@register_test(RO_HOOK)
+def test_read_only_reinject_silent_when_unmatched(t: HookTestRunner):
+    """Session scoping: another session's flag never holds this one. Startup and
+    compaction with no match, and an empty payload, print nothing at all."""
+    root, flag_dir = _ro_sandbox()
+    try:
+        _ro_flag(flag_dir, RO_OTHER)
+        env = {"CLAUDE_PROJECT_DIR": str(root)}
+        bad = []
+        for label, stdin in (("startup", _ro_payload(RO_SID, "startup")),
+                             ("compact", _ro_payload(RO_SID, "compact")),
+                             ("empty stdin", "")):
+            code, out, _ = t.run_hook(RO_HOOK, stdin_data=stdin, env_overrides=env)
+            if code != 0 or out.strip():
+                bad.append(f"{label}: code={code} out={out[:80]!r}")
+        _ro_check(t, "RO04", "Silent for an unmatched startup/compact and for an empty payload",
+                  not bad, "; ".join(bad))
+    finally:
+        shutil.rmtree(root, ignore_errors=True)
+
+
+@register_test(RO_HOOK)
+def test_read_only_reinject_root_resolution(t: HookTestRunner):
+    """CLAUDE_PROJECT_DIR wins over the payload cwd and the process cwd; with it
+    unset, the payload cwd is the fallback."""
+    root, flag_dir = _ro_sandbox()
+    elsewhere = Path(tempfile.mkdtemp(prefix="chooks-ro-else-")).resolve()
+    try:
+        _ro_flag(flag_dir, RO_SID)
+        code_a, out_a, _ = t.run_hook(RO_HOOK, stdin_data=_ro_payload(RO_SID, cwd=elsewhere),
+                                      env_overrides={"CLAUDE_PROJECT_DIR": str(root)})
+        code_b, out_b, _ = t.run_hook(RO_HOOK, stdin_data=_ro_payload(RO_SID, cwd=root),
+                                      env_overrides={"CLAUDE_PROJECT_DIR": ""})
+        _ro_check(t, "RO05", "Root: env var first, then payload cwd (never the process cwd)",
+                  code_a == 0 and "READ-ONLY HOLD ACTIVE" in out_a
+                  and code_b == 0 and "READ-ONLY HOLD ACTIVE" in out_b,
+                  f"env-wins out={out_a[:80]!r}; payload-fallback out={out_b[:80]!r}")
+    finally:
+        shutil.rmtree(root, ignore_errors=True)
+        shutil.rmtree(elsewhere, ignore_errors=True)
+
+
+@register_test(RO_HOOK)
+def test_read_only_reinject_non_utf8_stdout(t: HookTestRunner):
+    """A non-UTF-8 stdout codec must not swallow the injection (a non-ASCII root
+    puts a non-ASCII character in the printed flag path)."""
+    root, flag_dir = _ro_sandbox(prefix="chooks-ro-é-")
+    try:
+        _ro_flag(flag_dir, RO_SID)
+        code, out, err = t.run_hook(RO_HOOK, stdin_data=_ro_payload(RO_SID),
+                                    env_overrides={"CLAUDE_PROJECT_DIR": str(root),
+                                                   "PYTHONIOENCODING": "ascii"})
+        _ro_check(t, "RO06", "Injects under an ASCII stdout codec with a non-ASCII flag path",
+                  code == 0 and "READ-ONLY HOLD ACTIVE" in out,
+                  f"code={code} out={out[:120]!r} err={err[:120]!r}")
+    finally:
+        shutil.rmtree(root, ignore_errors=True)
+
+
+@register_test(RO_HOOK)
+def test_read_only_reinject_hostile_payloads(t: HookTestRunner):
+    """Malformed payloads and traversal session ids stay silent, even when the
+    traversal target exists and would otherwise match."""
+    root, flag_dir = _ro_sandbox()
+    try:
+        (flag_dir / "read-only-x").mkdir()
+        (root / "evil.flag").write_text("planted\n", encoding="utf-8")
+        env = {"CLAUDE_PROJECT_DIR": str(root)}
+        cases = {
+            "traversal": json.dumps({"session_id": "x/../../../evil", "source": "compact"}),
+            "dotdot": json.dumps({"session_id": "..", "source": "compact"}),
+            "backslash": json.dumps({"session_id": "a\\b", "source": "compact"}),
+            "nul": json.dumps({"session_id": "a\u0000b", "source": "compact"}),
+            "newline": json.dumps({"session_id": "a\nb", "source": "compact"}),
+            "too long": json.dumps({"session_id": "a" * 200, "source": "compact"}),
+            "list": json.dumps([RO_SID]),
+            "int sid": json.dumps({"session_id": 5}),
+            "not json": "{not json",
+        }
+        bad = []
+        for label, stdin in cases.items():
+            code, out, _ = t.run_hook(RO_HOOK, stdin_data=stdin, env_overrides=env)
+            if code != 0 or out.strip():
+                bad.append(f"{label}: code={code} out={out[:80]!r}")
+        _ro_check(t, "RO07", "Hostile or malformed payloads: exit 0, no output",
+                  not bad, "; ".join(bad))
+    finally:
+        shutil.rmtree(root, ignore_errors=True)
+
+
+@register_test(RO_HOOK)
+def test_read_only_reinject_new_id_notice(t: HookTestRunner):
+    """After an id change (/clear, a forked resume) the hold cannot be matched, so
+    the hook prints a notice naming the other flags instead of going silent. Only
+    validated flag names are echoed; with no flags at all it stays silent."""
+    root, flag_dir = _ro_sandbox()
+    try:
+        _ro_flag(flag_dir, RO_OTHER)
+        (flag_dir / "read-only-$(planted text).flag").write_text("x\n", encoding="utf-8")
+        env = {"CLAUDE_PROJECT_DIR": str(root)}
+        bad = []
+        for source in ("clear", "resume", None):
+            code, out, _ = t.run_hook(RO_HOOK, stdin_data=_ro_payload(RO_SID, source),
+                                      env_overrides=env)
+            if not (code == 0 and "READ-ONLY NOTICE" in out
+                    and f"read-only-{RO_OTHER}.flag" in out
+                    and "HOLD ACTIVE" not in out and "planted" not in out):
+                bad.append(f"source={source}: code={code} out={out[:120]!r}")
+        empty_root, _ = _ro_sandbox()
+        try:
+            code, out, _ = t.run_hook(RO_HOOK, stdin_data=_ro_payload(RO_SID, "clear"),
+                                      env_overrides={"CLAUDE_PROJECT_DIR": str(empty_root)})
+            if code != 0 or out.strip():
+                bad.append(f"no flags: code={code} out={out[:80]!r}")
+        finally:
+            shutil.rmtree(empty_root, ignore_errors=True)
+        _ro_check(t, "RO08", "New id with other flags present: notice, validated names only",
+                  not bad, "; ".join(bad))
+    finally:
+        shutil.rmtree(root, ignore_errors=True)
+
+
+@register_test(RO_HOOK)
+def test_read_only_reinject_os_error_warns(t: HookTestRunner):
+    """An OS error while checking the flag prints a WARNING instead of the old
+    silent read-write fallthrough."""
+    parent = Path(tempfile.mkdtemp(prefix="chooks-ro-err-")).resolve()
+    try:
+        too_long = parent / ("a" * 300)  # ENAMETOOLONG on stat
+        code, out, _ = t.run_hook(RO_HOOK, stdin_data=_ro_payload(RO_SID),
+                                  env_overrides={"CLAUDE_PROJECT_DIR": str(too_long)})
+        _ro_check(t, "RO09", "OS error while checking the flag: exit 0 with a WARNING",
+                  code == 0 and "WARNING [read-only-reinject]" in out,
+                  f"code={code} out={out[:120]!r}")
+    finally:
+        shutil.rmtree(parent, ignore_errors=True)
+
+
+@register_test(RO_HOOK)
+def test_read_only_reinject_binding(t: HookTestRunner):
+    """The generated settings bind the hook to SessionStart with a matcher that
+    covers compact, resume and clear."""
+    import re
+    settings = t.root / ".claude" / "settings.json"
+    try:
+        data = json.loads(settings.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as e:
+        t.fail("RO10", "Hook bound to SessionStart", f"cannot read {settings}: {e}")
+        return
+
+    def covers(matcher):
+        if matcher in ("", "*", None):
+            return True
+        try:
+            return all(re.fullmatch(matcher, s) for s in ("compact", "resume", "clear"))
+        except re.error:
+            return False
+
+    bound = any(RO_HOOK in h.get("command", "") and covers(entry.get("matcher"))
+                for entry in data.get("hooks", {}).get("SessionStart", [])
+                for h in entry.get("hooks", []))
+    _ro_check(t, "RO10", "Bound to SessionStart with a matcher covering compact/resume/clear",
+              bound, f"no qualifying SessionStart entry in {settings}")
 
 
 # -- codex-edit-notify.sh --

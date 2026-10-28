@@ -1,5 +1,5 @@
 ---
-version: 4
+version: 5
 runtime: python
 ---
 
@@ -14,6 +14,7 @@ Boot-time hook registration. These scripts implement structural enforcement of g
 | `boot-inject.py` | SessionStart | (all) | Inject hierarchy-aware boot chain + command index + warning relay mandate into Claude's context (replaces legacy `boot-inject.sh`). Honors `<!-- boot:cut -->` in governance files (eager/lazy split); does NOT emit `state-abstract.md` (lazy-read mandate instead, 2026-08-01); size-gates its own payload (`CEILING_BYTES`, env `BOOT_INJECT_CEILING`) and degrades to a loud recovery stub instead of letting the harness spill silently |
 | `prefs-staleness-check.sh` | SessionStart | (all) | Warn if prefs-resolved.json is stale |
 | `memory-redirect-check.sh` | SessionStart | (all) | Warn if autoMemoryDirectory is misconfigured (6 failure modes checked) |
+| `read-only-reinject.py` | SessionStart | (all) | Re-inject the `/read-only` CONFIRMED HOLD when `<launch root>/.claude/read-only/read-only-<session_id>.flag` matches this session (compaction and plain resume keep the id). After an id change (`/clear`, fork) with other flags present, print a notice telling the model to ask before mutating. An OS error prints a WARNING; otherwise silent. Exit 0 always; never writes or removes flags |
 | `visibility-guard.sh` | PreToolUse | Read\|Glob\|Grep\|Bash\|Write\|Edit | Block access to `_`-prefixed paths |
 | `containment-guard.sh` | PreToolUse | Write\|Edit | Block writes outside `^` |
 | `gravity-guard.sh` | PreToolUse | Write\|Edit | Block `.state/` writes outside `^` |
