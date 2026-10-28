@@ -423,14 +423,16 @@ else
 fi
 
 # --- /read-only hold indicator ---
-# Shown first, in warning colour, while THIS session's flag exists under the
-# launch root (workspace.project_dir == the hook's CLAUDE_PROJECT_DIR; cwd is
-# the fallback, as in the hook). The sid must match the hook's own pattern
+# Shown first, in warning colour, while THIS session's flag exists under ^:
+# the nearest root: true ancestor-or-self of the launch directory
+# (workspace.project_dir == the hook's CLAUDE_PROJECT_DIR; cwd is the
+# fallback), which is where the hook looks too. The sid must match the hook's own pattern
 # before it becomes a path segment. Context loss can remove the model's report
 # of the hold; this segment survives it.
 ro_label=""
 ro_sid=$(echo "$input" | jq -r '.session_id // empty')
-ro_root="${project_dir:-$cwd}"
+ro_root=$(_nearest_root "${project_dir:-$cwd}") || ro_root=""
+[[ -z "$ro_root" ]] && ro_root="${project_dir:-$cwd}"
 if [[ "$ro_sid" =~ ^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$ && -n "$ro_root" \
       && -f "$ro_root/.claude/read-only/read-only-$ro_sid.flag" ]]; then
     ro_label="${C_WARN}🔒read-only${C_GRAY} | "
