@@ -52,8 +52,10 @@ Every child is scaffolded with `~inbox/` and `~outbox/` per the apex **Exchange 
 
 ## Execution
 
+User text goes in single quotes: write every `'` inside it as `'\''` (close the quote, an escaped quote, reopen) — inside single quotes nothing else expands, so backticks, `$( )` and `$VAR` in a name or description stay literal.
+
 ```
-python3 .codex/explicit/new-project/bootstrap-child.py "<name>" --project-root ^
+python3 .codex/explicit/new-project/bootstrap-child.py '<name>' --project-root ^
 ```
 
 ## Post-Creation
@@ -61,7 +63,7 @@ python3 .codex/explicit/new-project/bootstrap-child.py "<name>" --project-root ^
 After scaffolding, ask the user what the project is about (if the creation request already gave its purpose, use that). Record it as the `description:` frontmatter key through the approved mutator — the only sanctioned agent edit of an existing `CLAUDE.md`:
 
 ```
-python3 .codex/implicit/01-infrastructural/01b-materialization/hooks/tools/claude-md-mutator.py <child>/CLAUDE.md --set description="<one line>"
+python3 .codex/implicit/01-infrastructural/01b-materialization/hooks/tools/claude-md-mutator.py <child>/CLAUDE.md --set 'description=<one line>'
 ```
 
 Never write the `CLAUDE.md` body: it is human-only (an ABSOLUTE HOLD in the apex `CLAUDE.md`), and the guard blocks the Write and Edit tools on it. If the user wants a line in the body as well, hand them the text to paste.
