@@ -166,7 +166,8 @@ def need_live_child():
 def claude_stub(out_json='{"is_error":false,"result":"ok","session_id":"stub-1",'
                          '"total_cost_usd":0.01,"duration_ms":5,"num_turns":1}'):
     """Put a fake `claude` first on PATH. It records its argv/cwd/env to a file
-    ($CBOOT_STUB_REC) and prints out_json. Yields the record-file Path."""
+    ($CBOOT_STUB_REC), its stdin to $CBOOT_STUB_REC.stdin, and prints out_json.
+    Yields the record-file Path."""
     d = Path(tempfile.mkdtemp(prefix="cboot-stub-"))
     rec = d / "rec.txt"
     stub = d / "claude"
@@ -174,6 +175,7 @@ def claude_stub(out_json='{"is_error":false,"result":"ok","session_id":"stub-1",
         "#!/usr/bin/env bash\n"
         'if [ -n "$CBOOT_STUB_REC" ]; then\n'
         '  { echo "ARGV: $*"; echo "CWD: $PWD"; echo "CPD: $CLAUDE_PROJECT_DIR"; } > "$CBOOT_STUB_REC"\n'
+        '  if [ ! -t 0 ]; then timeout 5 cat > "$CBOOT_STUB_REC.stdin"; fi\n'
         "fi\n"
         'printf "%s" "$CBOOT_STUB_OUT"\n'
     )
@@ -406,9 +408,25 @@ def _():
     finally:
         import shutil
         shutil.rmtree(d, ignore_errors=True)
+        stdin = Path(str(rec) + ".stdin").read_text()
     eq(code, 0); eq(j["kind"], "result")
     truthy(not sentinel.exists(), "file content must NOT be shell-executed")
-    truthy(str(sentinel) in argv, "prompt forwarded to worker argv literally")
+    eq(stdin, payload, "the request reaches the worker on stdin, byte for byte")
+    truthy(str(sentinel) not in argv, f"the request never sits on the worker's argv:\n{argv}")
+
+@test("EX-12", "exec_in_project")
+def _():
+    # The literal --exec form too: the prompt goes on stdin, never argv — on native
+    # Windows argv to an npm `claude.cmd` is parsed by cmd.exe (`&`, `%VAR%`, newline).
+    prompt = 'rename "Q&A" to "FAQ & Help" %PATH%\nsecond line'
+    with claude_stub() as rec:
+        code, j, _ = run_exec(need_live_child(), prompt, ["--resume", "r1"])
+        argv = rec.read_text()
+        stdin = Path(str(rec) + ".stdin").read_text()
+    eq(code, 0); eq(j["kind"], "result")
+    eq(stdin, prompt, "prompt delivered on stdin unchanged")
+    truthy("Q&A" not in argv and "%PATH%" not in argv, f"prompt text reached argv:\n{argv}")
+    truthy("ARGV: -p --output-format json --resume r1" in argv, f"argv shape:\n{argv}")
 
 
 # ── switch_command (SW) ──────────────────────────────────────────────

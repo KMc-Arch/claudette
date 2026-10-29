@@ -21,10 +21,12 @@ then propagates to the single target descendant — without touching its sibling
 PATH may be relative to the apex root or absolute; it must be a root: true
 descendant of this apex.
 
---exec runs `claude -p "PROMPT" --output-format json` with cwd=PATH and
+--exec runs `claude -p --output-format json` with cwd=PATH and
 CLAUDE_PROJECT_DIR=PATH, so the child's guards fence there — a real hard-root, not
-a soft reroot. For untrusted prompts, prefer --exec-file FILE (or --exec -): the
-prompt is read from a file/stdin so its bytes never sit on a shell command line.
+a soft reroot — and hands it the prompt on STDIN, never on its command line (on
+native Windows `claude` is often the npm `claude.cmd`, which cmd.exe would parse).
+For untrusted prompts, prefer --exec-file FILE (or --exec -): the prompt is read
+from a file/stdin so its bytes never sit on a shell command line either.
 stdout is JSON ONLY (a caller parses it); `session_id` is resumable, so pass
 `--resume <id>` through to continue a worker session (a bare, value-less --resume
 is dropped). --switch prints the interactive-launch command for a human to run; it
@@ -2710,7 +2712,11 @@ def exec_in_project(target_arg, prompt, passthrough, prompt_file=None):
     the safe form for untrusted content since bytes never touch a shell command
     line), then `prompt == "-"` (read stdin), else `prompt` as a literal string.
 
-    Runs `claude -p "<prompt>" --output-format json` with cwd=target AND
+    Runs `claude -p --output-format json` with the prompt on the worker's STDIN —
+    never on its argv: on native Windows `claude` is often the npm `claude.cmd`,
+    which CreateProcess hands to cmd.exe, and CPython does not escape arguments for
+    it (`&`/`|` would split the line, `%VAR%` expand, a newline truncate). With
+    cwd=target AND
     CLAUDE_PROJECT_DIR=target, so the child's containment/gravity guards fence at
     the child — a real hard-root, not the soft in-process reroot a subagent gets.
     Captures the result and prints a cboot envelope (session_id, result, cost) to
@@ -2767,18 +2773,20 @@ def exec_in_project(target_arg, prompt, passthrough, prompt_file=None):
             materialize_apex_inputs(rep)
         child_propagate = _load_module(PREBOOT_DIR / "child_propagate.py")
         if child_propagate.propagate_one(ROOT, target, rep) is None:
-            return emit_error("child not materialized — run a full `python cboot.py` boot first", root_info)
+            return emit_error("child not materialized — run a full `python3 cboot.py` boot first", root_info)
         sys.stderr.write(f"cboot --exec: materialized '{root_info['name']}' (was unbuilt)\n")
 
     claude_cmd = shutil.which("claude")
     if not claude_cmd:
         return emit_error("'claude' not found on PATH", root_info)
 
-    cmd = [claude_cmd, "-p", prompt, "--output-format", "json", *passthrough]
+    # The prompt goes on stdin, never argv (see the docstring: cmd.exe and .cmd).
+    cmd = [claude_cmd, "-p", "--output-format", "json", *passthrough]
     child_env = {**os.environ, "CLAUDE_PROJECT_DIR": str(target)}
     try:
-        proc = subprocess.run(cmd, cwd=str(target), capture_output=True,
-                              text=True, timeout=EXEC_TIMEOUT, env=child_env)
+        proc = subprocess.run(cmd, cwd=str(target), input=prompt, capture_output=True,
+                              text=True, encoding="utf-8", timeout=EXEC_TIMEOUT,
+                              env=child_env)
     except subprocess.TimeoutExpired:
         return emit_error(f"headless claude timed out after {EXEC_TIMEOUT}s", root_info)
     except OSError as e:
