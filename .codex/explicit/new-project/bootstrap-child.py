@@ -52,6 +52,28 @@ def copy_tree_tolerant(src: Path, dst: Path) -> None:
             raise
 
 
+# Reserved by /ask: it reads an unquoted first word of its invocation as the mode,
+# so a project with one of these as its folder name or its `name:` would be
+# reachable only quoted or by its rel_path. /move-project refuses the same set for
+# a destination folder.
+RESERVED_PROJECT_NAMES = frozenset({"soft", "hard", "switch"})
+
+
+def reserved_name_error(name: str, folder_base: str):
+    """The user-facing refusal if `name` or its derived folder is reserved by
+    /ask; None otherwise. Case-insensitive on the name (the folder is already
+    lowercase)."""
+    hit = None
+    if folder_base in RESERVED_PROJECT_NAMES:
+        hit = folder_base
+    elif name.strip().lower() in RESERVED_PROJECT_NAMES:
+        hit = name.strip()
+    if hit is None:
+        return None
+    return (f"{hit!r} is reserved by /ask (its modes are soft, hard, switch); "
+            "/ask would read it as a mode when typed bare. Pick another name.")
+
+
 def derive_folder_name(name: str) -> str:
     """Apply the Naming Convention folder-derivation rules.
 
@@ -219,6 +241,11 @@ def main() -> int:
         print("  Error: name laundered to empty.")
         return 1
     name = name[:200].strip()
+
+    reserved = reserved_name_error(name, folder_base)
+    if reserved:
+        print(f"  Error: {reserved}")
+        return 1
 
     target, suffix = resolve_folder_path(parent, folder_base)
 

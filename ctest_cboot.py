@@ -59,6 +59,9 @@ COVERED = {
     "_framework_rel_paths",
     "generate_agents",
     "_write_agent_file",
+    # Reserved project names (/ask mode words) — the two refusal predicates.
+    "reserved_name_error",     # new-project/bootstrap-child.py
+    "reserved_dest_error",     # move-project/move_project.py
     "suffixed",
     "desuffix",
     "claims_for",
@@ -163,7 +166,8 @@ def need_live_child():
 def claude_stub(out_json='{"is_error":false,"result":"ok","session_id":"stub-1",'
                          '"total_cost_usd":0.01,"duration_ms":5,"num_turns":1}'):
     """Put a fake `claude` first on PATH. It records its argv/cwd/env to a file
-    ($CBOOT_STUB_REC) and prints out_json. Yields the record-file Path."""
+    ($CBOOT_STUB_REC), its stdin to $CBOOT_STUB_REC.stdin, and prints out_json.
+    Yields the record-file Path."""
     d = Path(tempfile.mkdtemp(prefix="cboot-stub-"))
     rec = d / "rec.txt"
     stub = d / "claude"
@@ -171,6 +175,7 @@ def claude_stub(out_json='{"is_error":false,"result":"ok","session_id":"stub-1",
         "#!/usr/bin/env bash\n"
         'if [ -n "$CBOOT_STUB_REC" ]; then\n'
         '  { echo "ARGV: $*"; echo "CWD: $PWD"; echo "CPD: $CLAUDE_PROJECT_DIR"; } > "$CBOOT_STUB_REC"\n'
+        '  if [ ! -t 0 ]; then timeout 5 cat > "$CBOOT_STUB_REC.stdin"; fi\n'
         "fi\n"
         'printf "%s" "$CBOOT_STUB_OUT"\n'
     )
@@ -403,9 +408,25 @@ def _():
     finally:
         import shutil
         shutil.rmtree(d, ignore_errors=True)
+        stdin = Path(str(rec) + ".stdin").read_text()
     eq(code, 0); eq(j["kind"], "result")
     truthy(not sentinel.exists(), "file content must NOT be shell-executed")
-    truthy(str(sentinel) in argv, "prompt forwarded to worker argv literally")
+    eq(stdin, payload, "the request reaches the worker on stdin, byte for byte")
+    truthy(str(sentinel) not in argv, f"the request never sits on the worker's argv:\n{argv}")
+
+@test("EX-12", "exec_in_project")
+def _():
+    # The literal --exec form too: the prompt goes on stdin, never argv — on native
+    # Windows argv to an npm `claude.cmd` is parsed by cmd.exe (`&`, `%VAR%`, newline).
+    prompt = 'rename "Q&A" to "FAQ & Help" %PATH%\nsecond line'
+    with claude_stub() as rec:
+        code, j, _ = run_exec(need_live_child(), prompt, ["--resume", "r1"])
+        argv = rec.read_text()
+        stdin = Path(str(rec) + ".stdin").read_text()
+    eq(code, 0); eq(j["kind"], "result")
+    eq(stdin, prompt, "prompt delivered on stdin unchanged")
+    truthy("Q&A" not in argv and "%PATH%" not in argv, f"prompt text reached argv:\n{argv}")
+    truthy("ARGV: -p --output-format json --resume r1" in argv, f"argv shape:\n{argv}")
 
 
 # ── switch_command (SW) ──────────────────────────────────────────────
@@ -417,7 +438,36 @@ def _():
         code = cboot.switch_command(need_live_child())
     line = out.getvalue().strip()
     eq(code, 0)
-    eq(line, f'python cboot.py --project "{(ROOT/LIVE_CHILD).as_posix()}" --launch')
+    # The printed command must run when pasted from a child session's `!` prompt:
+    # an interpreter that exists on THIS host (PYTHON_EXE, not a bare `python`),
+    # an absolute cboot path, and every path shell-quoted.
+    import shlex as _shlex
+    eq(line, f"{_shlex.quote(cboot.PYTHON_EXE)} {_shlex.quote((ROOT/'cboot.py').as_posix())} "
+             f"--project {_shlex.quote((ROOT/LIVE_CHILD).as_posix())} --launch")
+    truthy(not line.startswith("python "), "never the bare `python` token (absent on this host)")
+
+@test("SW-02", "switch_command")
+def _():
+    """The quoting SW-01 cannot see: a root whose folder carries a space, a single
+    quote, `$` and backticks. The printed line must split back (POSIX shell rules)
+    into exactly the five intended words, and its interpreter must exist here and
+    be Python 3 — not merely equal cboot's own PYTHON_EXE."""
+    import shlex as _shlex
+    odd = "we'ird $HOME `x` dir"
+    with scratch_apex([(odd, "Odd.\n")]) as apex:
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            code = cboot.switch_command(odd)
+        line = out.getvalue().strip()
+        eq(code, 0)
+        words = _shlex.split(line)
+        eq(len(words), 5, f"five shell words: {words!r}")
+        eq(words[1], (apex / "cboot.py").as_posix(), "cboot path survives quoting")
+        eq(words[2:], ["--project", (apex / odd).as_posix(), "--launch"], "project path survives quoting")
+    truthy(Path(words[0]).is_file(), f"interpreter exists on this host: {words[0]!r}")
+    ver = subprocess.run([words[0], "-c", "import sys; print(sys.version_info[0])"],
+                         capture_output=True, text=True, timeout=30).stdout.strip()
+    eq(ver, "3", "the printed interpreter is Python 3")
 
 @test("SW-04", "switch_command")
 def _():
@@ -657,6 +707,280 @@ def _():
                "and it blocks the name: %s"
                % sorted(p.name for p in (apex / ".claude" / "agents").iterdir()))
 
+
+def _rules_sentences():
+    """Sentences (>= 40 chars) of the LIVE Project-agent rules section — the cold
+    oracle for 'the shim copies none of the rules'. Read at test time, so a
+    verbatim copy of ANY sentence of today's section is caught, not just the five
+    August phrases. (A paraphrase is not; the four-paragraph shape bound is the
+    backstop for that.)"""
+    text = (ROOT / ".codex" / "explicit" / "ask" / "start.md").read_text(encoding="utf-8")
+    sec = text.split("## Project-agent rules", 1)[1]
+    sents = [s.strip() for s in re.split(r"(?<=[.!?])\s+", sec) if len(s.strip()) >= 40]
+    return sents
+
+
+def _scratch_codex(tmp, *, with_rules=True, with_section=True, ask_text=None):
+    """A disposable CODEX holding real copies (never symlinks) of the three
+    reactive modules generate_agents imports, plus — optionally — an
+    explicit/ask/start.md: `ask_text` verbatim if given, else a stub with or
+    without the Project-agent rules section."""
+    import shutil as _sh
+    cx = tmp / "scratch-codex"
+    for mod in ("sqlite", "agent-ownership", "roots-register"):
+        _sh.copytree(ROOT / ".codex" / "reactive" / mod, cx / "reactive" / mod,
+                     ignore=_sh.ignore_patterns("__pycache__"))
+    (cx / "explicit" / "ask").mkdir(parents=True)
+    if with_rules:
+        body = "---\nversion: 7\n---\n\n# ask\n\n"
+        if with_section:
+            body += ("## Project-agent rules\n\n- **If your root lies inside the caller's root**: x\n"
+                     "- **If your root lies outside the caller's root**: y\n")
+        (cx / "explicit" / "ask" / "start.md").write_text(
+            body if ask_text is None else ask_text, encoding="utf-8")
+    return cx
+
+
+def _live_ask_variants():
+    """The LIVE command file, with its Project-agent rules section disabled in each
+    way a bare substring test would miss. Built from the real text, so the rest of
+    the file still mentions "Project-agent rules" many times over."""
+    live = (ROOT / ".codex" / "explicit" / "ask" / "start.md").read_text(encoding="utf-8")
+    head, sec = live.split("\n## Project-agent rules\n", 1)
+    return {
+        "removed":   head + "\n",
+        "demoted":   head + "\n### Project-agent rules\n" + sec,
+        "annotated": head + "\n## Project-agent rules (REMOVED)\n" + sec,
+        "fenced":    head + "\n```\n## Project-agent rules\n```\n" + sec,
+        "commented": head + "\n<!--\n## Project-agent rules\n-->\n" + sec,
+        "inline":    head + "\nSee `## Project-agent rules` elsewhere.\n" + sec,
+        "emptied":   head + "\n## Project-agent rules\n\n(moved elsewhere)\n",
+    }
+
+
+@test("AG-46", "generate_agents")
+def _():
+    """The generated file is a short pointer SHIM at the /ask project-agent rules —
+    never a copy of them. Pins: the exact two-roots sentence (order matters: the
+    project's root is 'your root', the apex is 'the caller's root'), the ABSOLUTE
+    pointer at CODEX's command file, the read-first instruction, the output
+    prefix, and — as a cold oracle — that no sentence of the live rules section
+    appears in the shim."""
+    with scratch_apex([("drawio", "A tool.\n")]) as apex:
+        ag_optin(apex, [("drawio", 1, "drawio", "A tool.")])
+        ag_boot(apex)
+        body = (apex / ".claude" / "agents" / "drawio-pj.md").read_text(encoding="utf-8")
+        pointer = f"read `{cboot.CODEX.as_posix()}/explicit/ask/start.md`"
+        truthy(pointer in body, f"shim names the rules file by ABSOLUTE path under CODEX: {pointer!r}")
+        truthy("Before anything else, " + pointer in body, "the pointer is the read-first instruction")
+        truthy("**Project-agent rules** section" in body, "shim names the rules section")
+        roots_sentence = (f"your root `{(apex / 'drawio').as_posix()}`, "
+                          f"the caller's root `{apex.as_posix()}` (the apex)")
+        truthy(roots_sentence in body, f"two-roots sentence verbatim, in role order: {roots_sentence!r}")
+        truthy(f"rooted at the apex, `{apex.as_posix()}`" in body, "caller's root is the apex")
+        truthy("Prefix your final answer with `drawio-pj: `" in body, "output prefix = the @ handle")
+        for s in _rules_sentences():
+            truthy(s not in body, f"a sentence of the live rules is copied into the shim: {s[:60]!r}")
+        paras = [p for p in body.split("---", 2)[2].split("\n\n") if p.strip()]
+        eq(len(paras), 4, "marker+banner, identity, pointer, prefix — four paragraphs, no more")
+
+
+@test("AG-47", "generate_agents")
+def _():
+    """Fail closed on a MISSING rules file, with an intact codex: no shim is
+    written, no claim is opened, and the boot report carries an ERROR (not a
+    warning). The scratch codex keeps the reactive modules, so only the one
+    file is absent — a guard that checked a different path, or the directory,
+    would let a shim through here."""
+    with scratch_apex([("drawio", "A tool.\n")]) as apex:
+        ag_optin(apex, [("drawio", 1, "drawio", "A tool.")])
+        saved = cboot.CODEX
+        cboot.CODEX = _scratch_codex(apex, with_rules=False)
+        try:
+            rep = ag_boot(apex)
+        finally:
+            cboot.CODEX = saved
+        truthy(not (apex / ".claude" / "agents" / "drawio-pj.md").exists(),
+               "no shim written while the rules file is missing")
+        truthy(any("agent shims not written" in e for e in rep.errors),
+               f"boot report ERROR (not warning): errors={rep.errors!r} warnings={rep.warnings!r}")
+        conn = sqlite3.connect(f"file:{(apex / '.state' / 'roots.db').as_posix()}?immutable=1&mode=ro", uri=True)
+        try:
+            eq(conn.execute("SELECT count(*) FROM agent_registry WHERE valid_to IS NULL").fetchone()[0], 0,
+               "no claim opened for a shim that was not written")
+        finally:
+            conn.close()
+
+
+@test("AG-48", "generate_agents")
+def _():
+    """Fail closed on a rules file WITHOUT a live Project-agent rules section —
+    existence alone is not enough (main's v6 file exists and has no section), and
+    neither is the phrase: the fixture is the REAL command file with its section
+    removed, demoted, annotated, fenced, commented out, quoted inline, or emptied,
+    so the rest of the file still names "Project-agent rules" several times."""
+    for label, text in _live_ask_variants().items():
+        with scratch_apex([("drawio", "A tool.\n")]) as apex:
+            ag_optin(apex, [("drawio", 1, "drawio", "A tool.")])
+            saved = cboot.CODEX
+            cboot.CODEX = _scratch_codex(apex, ask_text=text)
+            try:
+                rep = ag_boot(apex)
+            finally:
+                cboot.CODEX = saved
+            truthy(not (apex / ".claude" / "agents" / "drawio-pj.md").exists(),
+                   f"[{label}] no shim written while the rules section is not live")
+            truthy(any("lacks the Project-agent rules section" in e for e in rep.errors),
+                   f"[{label}] boot report names the missing section: {rep.errors!r}")
+    # Positive control: the unmodified live file passes the same gate.
+    live = (ROOT / ".codex" / "explicit" / "ask" / "start.md").read_text(encoding="utf-8")
+    with scratch_apex([("drawio", "A tool.\n")]) as apex:
+        ag_optin(apex, [("drawio", 1, "drawio", "A tool.")])
+        saved = cboot.CODEX
+        cboot.CODEX = _scratch_codex(apex, ask_text=live)
+        try:
+            rep = ag_boot(apex)
+        finally:
+            cboot.CODEX = saved
+        truthy((apex / ".claude" / "agents" / "drawio-pj.md").exists(),
+               f"the live file opens the gate: errors={rep.errors!r}")
+
+
+@test("AG-50", "generate_agents")
+def _():
+    """A NESTED root's shim names its full rel_path and root, not its folder
+    basename — drawio (AG-46) cannot tell the two apart."""
+    with scratch_apex([("grp", "Group.\n"), ("grp/sub", "Nested.\n")]) as apex:
+        ag_optin(apex, [("grp/sub", 1, "sub", "Nested.")])
+        ag_boot(apex)
+        files = sorted(p.name for p in (apex / ".claude" / "agents").glob("*.md"))
+        eq(len(files), 1, f"one shim for the nested root: {files!r}")
+        body = (apex / ".claude" / "agents" / files[0]).read_text(encoding="utf-8")
+        truthy(f"(`grp/sub`, root `{(apex / 'grp' / 'sub').as_posix()}`)" in body,
+               "identity names the full rel_path and absolute root")
+        truthy(f"your root `{(apex / 'grp' / 'sub').as_posix()}`" in body,
+               "two-roots sentence names the nested root")
+
+
+@test("AG-49", "generate_agents")
+def _():
+    """A fail-closed boot on an apex that ALREADY has a claim and a shim leaves
+    both alone AND keeps the roots mirror truthful (agent_enabled=1), so
+    test-safe T64 sub-check 6 does not go red for the duration."""
+    with scratch_apex([("drawio", "A tool.\n")]) as apex:
+        ag_optin(apex, [("drawio", 1, "drawio", "A tool.")])
+        ag_boot(apex)                                  # normal boot: claim + shim
+        shim = apex / ".claude" / "agents" / "drawio-pj.md"
+        before = shim.read_bytes()
+        saved = cboot.CODEX
+        cboot.CODEX = _scratch_codex(apex, with_rules=False)
+        try:
+            rep = ag_boot(apex)                        # rules missing this boot
+        finally:
+            cboot.CODEX = saved
+        eq(shim.read_bytes(), before, "existing shim untouched")
+        truthy(any("agent shims not written" in e for e in rep.errors), "ERROR reported")
+        conn = sqlite3.connect(f"file:{(apex / '.state' / 'roots.db').as_posix()}?immutable=1&mode=ro", uri=True)
+        try:
+            eq(conn.execute("SELECT count(*) FROM agent_registry WHERE valid_to IS NULL").fetchone()[0], 1,
+               "the one claim is still current")
+            eq(conn.execute("SELECT count(*) FROM roots WHERE agent_enabled = 1").fetchone()[0], 1,
+               "roots mirror still advertises the existing shim (T64 sub-check 6)")
+        finally:
+            conn.close()
+
+
+def _load_py(path, name):
+    spec = importlib.util.spec_from_file_location(name, path)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+@test("RN-01", "reserved_name_error")
+def _():
+    """/new-project refuses soft/hard/switch as the derived folder OR the name:,
+    case-insensitively, and does not refuse near-misses."""
+    bc = _load_py(ROOT / ".codex" / "explicit" / "new-project" / "bootstrap-child.py", "bootstrap_child")
+    for n in ("soft", "SOFT", "Switch Group", "Hard.", " hard "):
+        truthy(bc.reserved_name_error(n, bc.derive_folder_name(n)) is not None, f"{n!r} refused")
+    truthy(bc.reserved_name_error(" Soft ", "my-folder") is not None, "name branch refuses on its own")
+    for n in ("softer", "hard-copy", "Softly Group", "Soft Landing"):
+        truthy(bc.reserved_name_error(n, bc.derive_folder_name(n)) is None, f"{n!r} allowed")
+    truthy("reserved by /ask" in bc.reserved_name_error("soft", "soft"), "message names /ask")
+
+
+@test("RN-02", "reserved_dest_error")
+def _():
+    """/move-project refuses soft/hard/switch as a destination folder, case-
+    insensitively and ignoring trailing spaces/dots (Windows strips them)."""
+    mp = _load_py(ROOT / ".codex" / "explicit" / "move-project" / "move_project.py", "move_project")
+    for n in ("soft", "SOFT", "Switch", "soft ", "soft.", "hard. ", " soft", "soft\t",
+              "switch\xa0", "hard\u3000", "\uff53\uff4f\uff46\uff54", "\u017foft", "soft\u200b"):
+        truthy(mp.reserved_dest_error(n) is not None, f"{n!r} refused")
+    for n in ("softer", "hard-copy", "soft-landing"):
+        truthy(mp.reserved_dest_error(n) is None, f"{n!r} allowed")
+
+
+@test("RN-03", "reserved_name_error")
+def _():
+    """The refusal is WIRED: /new-project's main() stops on a reserved name before
+    anything is created. Run against a scratch apex; the mutator the name passes
+    through first is the real one."""
+    bc = _load_py(ROOT / ".codex" / "explicit" / "new-project" / "bootstrap-child.py", "bootstrap_child")
+    real_mutator = bc._load_module(ROOT / ".codex" / "implicit" / "01-infrastructural"
+                                   / "01b-materialization" / "hooks" / "tools"
+                                   / "claude-md-mutator.py")
+    bc._load_module = lambda path: real_mutator
+    tmp = Path(tempfile.mkdtemp(prefix="ctest-rn-"))
+    try:
+        (tmp / ".templates" / "child").mkdir(parents=True)
+        (tmp / "CLAUDE.md").write_text("---\nroot: true\napex-root: true\nname: apex\n---\n")
+        for n in ("soft", "Hard", "SWITCH"):
+            out = io.StringIO()
+            saved_argv = sys.argv
+            sys.argv = ["bootstrap-child.py", n, "--project-root", str(tmp)]
+            try:
+                with contextlib.redirect_stdout(out):
+                    code = bc.main()
+            finally:
+                sys.argv = saved_argv
+            eq(code, 1, f"{n!r}: main() refuses")
+            truthy("reserved by /ask" in out.getvalue(), f"{n!r}: the refusal is the reserved-name one: {out.getvalue()!r}")
+            truthy(not (tmp / n.lower()).exists(), f"{n!r}: no folder created")
+    finally:
+        _shutil.rmtree(tmp, ignore_errors=True)
+
+
+@test("RN-04", "reserved_dest_error")
+def _():
+    """The refusal is WIRED: /move-project's preflight raises Blocked for a
+    reserved destination before reading the database (conn is never touched)."""
+    mp = _load_py(ROOT / ".codex" / "explicit" / "move-project" / "move_project.py", "move_project")
+    tmp = Path(tempfile.mkdtemp(prefix="ctest-rn-"))
+    try:
+        (tmp / "src").mkdir()
+        for n in ("soft", "Hard", "\uff53\uff4f\uff46\uff54"):
+            try:
+                mp._preflight(None, tmp, tmp / "src", tmp / n, tmp)
+                truthy(False, f"{n!r}: preflight did not refuse")
+            except mp.Blocked as e:
+                truthy("reserved by /ask" in str(e), f"{n!r}: refused as reserved: {e}")
+    finally:
+        _shutil.rmtree(tmp, ignore_errors=True)
+
+
+@test("RN-05", "build_root_inventory")
+def _():
+    """The boot report warns once per root whose folder OR name: is a mode word —
+    including padded, dotted and full-width forms — and never for a near-miss."""
+    with scratch_apex([("soft", "x\n"), ("named", "x\n"), ("\uff53\uff57\uff49\uff54\uff43\uff48", "x\n"),
+                       ("softer", "x\n"), ("hard-copy", "x\n")]) as apex:
+        (apex / "named" / "CLAUDE.md").write_text("---\nroot: true\nname: Hard.\n---\n\nx\n")
+        rep = cboot.BootReport()
+        cboot.build_root_inventory(rep)
+        hits = [w for w in rep.warnings if "reads as a mode word" in str(w)]
+        eq(len(hits), 3, f"soft, name: Hard., full-width switch — and nothing else: {hits!r}")
 
 @test("AG-04", "generate_agents")
 def _():

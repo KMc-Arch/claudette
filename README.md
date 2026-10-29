@@ -12,7 +12,7 @@ Claude Code ships hooks, CLAUDE.md hierarchy, skills, and commands -- but no pre
 
 **Multi-project isolation.** Child projects inherit the parent's rules automatically, each as its own git repo with its own state. A gravity guard hook prevents child sessions from writing to parent state.
 
-**Self-testing.** 4-tier verification: `ctest.py` (bootstrap outputs), `chooks.py` (hook behavior via mock JSON), `test-safe` (78 structural checks inside a Claude session), `test-burn` (end-to-end command exercise).
+**Self-testing.** 4-tier verification: `ctest.py` (bootstrap outputs), `chooks.py` (hook behavior via mock JSON), `test-safe` (79 structural checks inside a Claude session), `test-burn` (end-to-end command exercise).
 
 ## Quick Start
 
@@ -61,15 +61,15 @@ The next day, start a new session and say "unpause" -- Claude reads the pause fi
 
 | Command | What It Does | Modifies State? |
 |---------|-------------|-----------------|
-| **test-safe** | 66 read-only structural checks. Safe to run anytime. | No (writes a log only) |
+| **test-safe** | 79 read-only structural checks. Safe to run anytime. | No (writes a log only) |
 | **test-burn** | DESTRUCTIVE end-to-end functional tests -- modifies instance state. | Yes |
 | **test-bench** | Run the TestBench cascade check; report human test reminders. | No |
 | **scrub** | Scan for secrets and PII before pushing code. | No |
 | **audit** | Run quality specs against a project. Dispatches sub-agents. | Writes findings |
 | **mileqa** | Pre-milestone holistic QA: blind multi-agent panels, fix critical/high, repeat until clean. | Yes (commits to a feature branch) |
 | **milestone** | Persist session knowledge to durable state. | Yes |
-| **ask** | Route a request to a subproject (hard/switch). For the soft path, address the project directly as `@<name>-pj` (cboot materializes each addressable project as an `@…-pj` agent). | Per request |
-| **new-project** | Scaffold a child project with standard structure. | Creates directory |
+| **ask** | Route a request to any project from any session: soft (default — dispatch a project sub, fenced by the caller), hard (fenced headless worker), or switch (launch command). At the apex, `@<name>-pj` is the same soft call precomputed. `soft`, `hard` and `switch` are reserved as project names. | Per request |
+| **new-project** | Scaffold a child project with standard structure (refuses the names `soft`, `hard`, `switch`). | Creates directory |
 | **move-project** | Move a child project within the apex -- carries identity, transcripts, sessions. | Yes (dry-run by default) |
 | **roots** | Reconfigure the root inventory (agent on/off, rename, relink). | Yes (roots.db) |
 | **pause** | Save session context for later resumption. | Writes pause files |
@@ -94,7 +94,7 @@ See [README-commands.md](README-commands.md) for detailed usage, parameters, and
 | `gravity-guard` | Writing to `.state/` in a parent project |
 | `remote-guard` | Pushes to main/master, force-pushes, direct GitHub API access |
 | `audit-immutability-guard` | Modifying existing audit records |
-| `claude-md-immutability-guard` | Editing the root CLAUDE.md |
+| `claude-md-immutability-guard` | Editing any CLAUDE.md (apex or child) |
 | `boot-inject` | _(not a guard)_ Injects boot instructions at session start |
 | `prefs-staleness-check` | _(not a guard)_ Warns if preferences are stale |
 | `memory-redirect-check` | _(not a guard)_ Warns if auto-memory is misconfigured |

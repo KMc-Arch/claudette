@@ -4,7 +4,7 @@ All commands can be invoked by name in conversation ("audit this project", "scru
 
 ## test-safe -- Structural Validation
 
-Read-only. 66 checks across 13 categories. Safe to run anytime, makes no changes (writes only a log file).
+Read-only. 79 checks across 13 categories. Safe to run anytime, makes no changes (writes only a log file).
 
 ```
 test-safe
@@ -12,9 +12,9 @@ test-safe
 
 **What it checks:**
 - Boot chain and structure (CLAUDE.md, codex, state)
-- All 13 hook scripts exist and are registered
+- All 14 hook scripts exist and are registered
 - Hook matcher coverage (visibility-guard covers all 6 tool types, etc.)
-- All 18 command folders exist with start.md manifests
+- Every command folder has a start.md manifest and a skill shim (21 today; a core floor of 18 is mandatory)
 - Reactive and reflexive modules present
 - State structure (memory, work, tests, traces files)
 - Preference system integrity (schema, cascade, resolved output)
@@ -103,34 +103,51 @@ mileqa <scope>
 
 **Output:** Per-round reports + summary in `.state/tests/mileqa/YYYYMMDD-HHMM/`; a commit at every checkpoint and round.
 
+## ask -- Route a Request to a Project
+
+Sends a one-shot request to any `root: true` project in the apex (never the apex itself), from any session -- apex or child.
+
+```
+ask drawio what is the diagram convention for a swimlane?    # soft (default)
+ask hard ~majel run the safe tests and report                 # hard
+ask switch fabriceng/pbir-composer                            # switch
+```
+
+The commands the file runs use `python3` (the interpreter on this instance; a native-Windows instance substitutes `python`).
+
+**Modes:**
+- **soft** (default) -- shorthand for "dispatch a sub rooted at that project's folder to do X". The calling session resolves the name, packages the request with the context it needs, and dispatches one subagent that works under the Project-agent rules in `.codex/explicit/ask/start.md`. The sub's writes are bounded by the calling session's own fence: a project inside it is worked in its own folder (memory updates included); a project outside it is consulted, and its expert writes only in the caller's folder. Every answer is also filed as a dated file (the Exchange Surfaces rule): in the project's `~outbox/<caller>/` when it is inside the caller's fence, in the caller's `~inbox/<project>/` when it is outside. At the apex, `@<name>-pj` is the same call precomputed at boot -- the agent files are shims pointing at the same rules.
+- **hard** -- a fresh headless worker session, rooted and guard-fenced at the project (`cboot --exec-file`). Returns the answer and a resumable `session_id`.
+- **switch** -- prints a `!` command that launches an interactive session rooted at the project.
+
+**Reserved names:** `soft`, `hard` and `switch` are the mode words. `new-project` and `move-project` refuse them as a folder name or `name:`, and cboot warns about any root that acquires one out of band; such a root is reachable only quoted (`ask "soft" …`) or by its path.
+
 ## new-project -- Child Project Scaffolding
 
-Creates a new child project with the standard Claudette2 structure.
+Creates a new child project with the standard Claudette2 structure. The names `soft`, `hard` and `switch` are refused (reserved by `ask`).
 
 ```
 new-project my-api
 ```
 
-**Creates:**
+**Creates** (the whole `.templates/child/` tree, then the per-child materialization):
 ```
 my-api/
-    CLAUDE.md              (root: true, codex: ^/^/.codex)
+    CLAUDE.md              (root: true, name: <name>, codex: ^/^/.codex)
     .gitignore
+    ~inbox/  ~outbox/      (Exchange Surfaces mailboxes, each with a start.md)
+    .tmp/                  (scratch; start.md only)
     .claude/
+        settings.json          (hooks + permissions, from the apex)
         settings.local.json    (auto-memory configured)
+        skills/                (one shim per codex command)
     .state/
         start.md
         prefs.json
-        memory/
-            start.md
-            decisions.md
-        work/
-            start.md
-            backlog.md
-        tests/
-            start.md
-        traces/
-            start.md
+        prefs-resolved.json
+        memory/   (start.md, state-abstract.md, user.md, decisions.md)
+        work/     (start.md, backlog.md, architecture.md, boundaries.md, enhancements.md, platform.md)
+        tests/  traces/  plans/  pauses/  bundles/   (each with a start.md)
 ```
 
 The child inherits the parent's codex automatically. It has its own state (memory, backlog, preferences) that is isolated from the parent.
@@ -247,7 +264,7 @@ rebuild my-api
 ### Daily development
 
 ```
-python cboot.py              # start session
+python3 cboot.py             # start session (native Windows: python)
 [work normally]
 pause                        # end of day
 ```
@@ -255,7 +272,7 @@ pause                        # end of day
 Next day:
 
 ```
-python cboot.py
+python3 cboot.py
 unpause                      # picks up where you left off
 ```
 
@@ -277,17 +294,17 @@ audit my-api                 # baseline check
 ### Periodic health check
 
 ```
-test-safe                    # 66 structural checks
+test-safe                    # 79 structural checks
 ```
 
 ### Deep verification after changes
 
 ```
-python ctest.py              # bootstrap verification (outside Claude)
-python chooks.py             # hook tests (outside Claude)
+python3 ctest.py             # bootstrap verification (outside Claude)
+python3 chooks.py            # hook tests (outside Claude)
 test-safe                    # structural validation (inside Claude)
 test-burn                    # functional end-to-end (inside Claude)
-python cboot.py              # re-boot to restore generated artifacts
+python3 cboot.py             # re-boot to restore generated artifacts
 ```
 
 ## Read Next
