@@ -25,7 +25,7 @@ Create a new child project following the Child Project Spec.
 
 The folder name is **derived** from `<name>` per the Naming Convention in `.codex/specs/child-project.md`.
 
-**Reserved names.** `soft`, `hard` and `switch` are refused, as the derived folder name or as the `name:` value (case-insensitive): `/ask` reads the first word of its invocation as the mode, so a project called that could never be routed to. `/move-project` refuses the same three as a destination folder.
+**Reserved names.** `soft`, `hard` and `switch` are refused, as the derived folder name or as the `name:` value (case-insensitive): `/ask` reads an unquoted first word as its mode, so a project called that would be reachable only quoted or by its path. `/move-project` refuses the same three as a destination folder.
 
 ## What It Creates
 
@@ -53,12 +53,18 @@ Every child is scaffolded with `~inbox/` and `~outbox/` per the apex **Exchange 
 ## Execution
 
 ```
-python .codex/explicit/new-project/bootstrap-child.py "<name>" --project-root ^
+python3 .codex/explicit/new-project/bootstrap-child.py "<name>" --project-root ^
 ```
 
 ## Post-Creation
 
-After scaffolding, ask the user what the project is about. Write a one-line description to the project's `CLAUDE.md` body, above the `Read .state/start.md` line. If the user provided the purpose with the creation request, write it directly without prompting.
+After scaffolding, ask the user what the project is about (if the creation request already gave its purpose, use that). Record it as the `description:` frontmatter key through the approved mutator — the only sanctioned agent edit of an existing `CLAUDE.md`:
+
+```
+python3 .codex/implicit/01-infrastructural/01b-materialization/hooks/tools/claude-md-mutator.py <child>/CLAUDE.md --set description="<one line>"
+```
+
+Never write the `CLAUDE.md` body: it is human-only (an ABSOLUTE HOLD in the apex `CLAUDE.md`), and the guard blocks the Write and Edit tools on it. If the user wants a line in the body as well, hand them the text to paste.
 
 ## Spec
 

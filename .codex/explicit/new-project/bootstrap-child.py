@@ -52,9 +52,10 @@ def copy_tree_tolerant(src: Path, dst: Path) -> None:
             raise
 
 
-# Reserved by /ask: it reads the first word of its invocation as the mode, so a
-# project with one of these as its folder name or its `name:` could never be
-# routed to. /move-project refuses the same set for a destination folder.
+# Reserved by /ask: it reads an unquoted first word of its invocation as the mode,
+# so a project with one of these as its folder name or its `name:` would be
+# reachable only quoted or by its rel_path. /move-project refuses the same set for
+# a destination folder.
 RESERVED_PROJECT_NAMES = frozenset({"soft", "hard", "switch"})
 
 
@@ -70,7 +71,7 @@ def reserved_name_error(name: str, folder_base: str):
     if hit is None:
         return None
     return (f"{hit!r} is reserved by /ask (its modes are soft, hard, switch); "
-            "a project with that folder or name: could never be routed to. Pick another name.")
+            "/ask would read it as a mode when typed bare. Pick another name.")
 
 
 def derive_folder_name(name: str) -> str:

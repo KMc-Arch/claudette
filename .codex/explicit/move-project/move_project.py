@@ -40,6 +40,7 @@ import os
 import shutil
 import subprocess
 import sys
+import unicodedata
 from pathlib import Path
 
 # Framework MODULES live under the apex; move_project.py sits at
@@ -212,21 +213,26 @@ class Blocked(Exception):
     """A preflight guard that refuses the move (message is user-facing)."""
 
 
-# Reserved by /ask: it reads the first word of its invocation as the mode, so a
-# project whose folder is one of these could never be routed to. /new-project
-# refuses the same set at creation; this is the rename/move entry point.
+# Reserved by /ask: it reads an unquoted first word of its invocation as the mode,
+# so a project whose folder is one of these is reachable only quoted or by its
+# rel_path. /new-project refuses the same set at creation; this is the rename/move
+# entry point.
 RESERVED_PROJECT_NAMES = frozenset({"soft", "hard", "switch"})
 
 
 def reserved_dest_error(dest_name):
     """The user-facing refusal if a destination folder name is reserved by /ask,
-    else None. ASCII case-folded, and trailing spaces/dots are stripped first:
-    Windows strips them from a folder name, so `"soft "` and `"soft."` would land
-    on disk as `soft`."""
-    if _fold(str(dest_name)).rstrip(" .") in RESERVED_PROJECT_NAMES:
+    else None. Folded the way cboot's boot-report warning folds (NFKC, so
+    full-width and long-s forms become ASCII; zero-width and other format
+    characters dropped; surrounding whitespace and trailing dots stripped —
+    Windows strips trailing spaces/dots from a folder name, so `"soft "` and
+    `"soft."` would land on disk as `soft`; lowercased)."""
+    s = unicodedata.normalize("NFKC", str(dest_name))
+    s = "".join(c for c in s if unicodedata.category(c) != "Cf")
+    if s.strip().rstrip(" .").strip().lower() in RESERVED_PROJECT_NAMES:
         return ("destination folder name %r is reserved by /ask (its modes are "
-                "soft, hard, switch) — a project with that name could never be "
-                "routed to; pick another destination" % dest_name)
+                "soft, hard, switch) — /ask would read it as a mode when typed bare; "
+                "pick another destination" % dest_name)
     return None
 
 

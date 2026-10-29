@@ -25,7 +25,7 @@ Runs at boot as part of `01b-materialization`. Must complete before user interac
 | Each folder in `explicit/` | `.claude/skills/<name>/SKILL.md` | Entry exists |
 | Reflexive temporal triggers | Cron task registration | `trigger: "cron ..."` in frontmatter |
 
-`.claude/agents/<name>.md` is NOT generated here. Project agents come from `cboot.py::generate_agents`, driven by the opt-in decisions and claims held in `.state/roots.db` — not by any walk of the codex. Since `/ask` v7 (2026-10) each project-agent file IS a shim in the sense below: a one-paragraph pointer at the **Project-agent rules** section of `.codex/explicit/ask/start.md`, with the project's root and the apex (as the caller's root) filled in — the codex entry is authoritative and the rules are never copied into `.claude/`. A generic module-shim step for other `isolation: subagent` modules remains unimplemented.
+`.claude/agents/<name>.md` is NOT generated here. Project agents come from `cboot.py::generate_agents`, driven by the opt-in decisions and claims held in `.state/roots.db` — not by any walk of the codex. Since `/ask` v7 (2026-10) each project-agent file IS a shim in the sense below: a short pointer (identity, pointer, answer prefix) at the **Project-agent rules** section of `.codex/explicit/ask/start.md`, with the project's root and the apex (as the caller's root) filled in — the codex entry is authoritative and the rules are never copied into `.claude/`. A generic module-shim step for other `isolation: subagent` modules remains unimplemented.
 
 ## Shim Format
 
