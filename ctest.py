@@ -10,6 +10,7 @@ Usage:
 
 import argparse
 import json
+import re
 import shlex
 import sys
 from pathlib import Path
@@ -172,6 +173,25 @@ def check_prefs_resolved(t, p):
         t.fail("V05", "Resolved keys match pref-options schema", detail)
 
 
+HOOKS_REL = ".codex/implicit/01-infrastructural/01b-materialization/hooks"
+
+
+def _hook_script(cmd):
+    """Script path from a hook command of any interpreter: `bash "x.sh"`,
+    `"/usr/bin/python3" "x.py"`, `VAR=1 python3 -I x.py`. None when there is
+    no script (an inline -c/-m command) or the command does not parse."""
+    try:
+        argv = shlex.split(cmd)
+    except ValueError:
+        return None
+    while argv and re.match(r"^[A-Za-z_][A-Za-z0-9_]*=", argv[0]):
+        argv = argv[1:]
+    if len(argv) < 2 or argv[1] in ("-c", "-m"):
+        return None
+    rest = [a for a in argv[1:] if not a.startswith("-")]
+    return rest[0] if rest else None
+
+
 def check_settings_json(t, p):
     """V06-V09: settings.json is valid, generated, and hooks resolve."""
     settings_file = p["claude"] / "settings.json"
@@ -215,11 +235,8 @@ def check_settings_json(t, p):
     # absolute paths (join to root only when the token is relative).
     broken = []
     for cmd in hook_commands:
-        if not cmd.startswith("bash "):
-            continue
-        try:
-            raw = shlex.split(cmd)[1]
-        except (ValueError, IndexError):
+        raw = _hook_script(cmd)
+        if not raw:
             continue
         script_path = Path(raw) if Path(raw).is_absolute() else p["root"] / raw
         if not script_path.is_file():
@@ -357,6 +374,45 @@ def check_scripts(t, p):
         t.ok("V17", f"Scripts: all {len(scripts)} present")
 
 
+def check_hook_parity(t, p):
+    """V22: the hooks folder, the registered settings, the hook inventory doc
+    (hooks/start.md) and chooks.py HOOK_SCRIPTS name the same hooks."""
+    hooks_dir = p["root"] / HOOKS_REL
+    on_disk = {f.name for f in hooks_dir.iterdir() if f.is_file() and f.suffix in (".sh", ".py")}
+    try:
+        settings = json.loads((p["root"] / ".claude" / "settings.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        t.fail("V22", "Hook parity", "cannot read .claude/settings.json")
+        return
+    registered = set()
+    for blocks in settings.get("hooks", {}).values():
+        for block in blocks:
+            for h in block.get("hooks", []):
+                sc = _hook_script(h.get("command", ""))
+                if sc:
+                    registered.add(Path(sc).name)
+    inv = (hooks_dir / "start.md").read_text(encoding="utf-8")
+    inventory = set(re.findall(r"^\| `([^`]+\.(?:sh|py))` \|", inv, re.M))
+    chooks_src = (p["root"] / "chooks.py").read_text(encoding="utf-8")
+    m = re.search(r"HOOK_SCRIPTS = \[(.*?)\]", chooks_src, re.S)
+    tested = set(re.findall(r'"([^"]+\.(?:sh|py))"', m.group(1))) if m else set()
+    problems = []
+    for label, names in (("not registered in settings", on_disk - registered),
+                         ("registered but missing from hooks/", registered - on_disk),
+                         ("missing from the hooks/start.md inventory", on_disk - inventory),
+                         ("in the inventory but not in hooks/", inventory - on_disk)):
+        if names:
+            problems.append(f"{label}: {', '.join(sorted(names))}")
+    if problems:
+        t.fail("V22", "Hook parity: folder, settings and inventory agree", "; ".join(problems))
+    else:
+        t.ok("V22", f"Hook parity: {len(on_disk)} hooks agree across folder, settings and inventory")
+    untested = on_disk - tested
+    if untested:
+        t.warn("V22", "Every hook is in chooks HOOK_SCRIPTS",
+               f"untested: {', '.join(sorted(untested))}")
+
+
 def check_child_propagation(t, p):
     """V18-V21: Child project propagation artifacts are correct."""
     # Discover children (lightweight re-implementation to keep ctest self-contained)
@@ -404,11 +460,8 @@ def check_child_propagation(t, p):
             for block in matchers:
                 for hook in block.get("hooks", []):
                     cmd = hook.get("command", "")
-                    if not cmd.startswith("bash "):
-                        continue
-                    try:
-                        script_rel = shlex.split(cmd)[1]
-                    except (ValueError, IndexError):
+                    script_rel = _hook_script(cmd)
+                    if not script_rel:
                         continue
                     if not script_rel.startswith("../"):
                         bad_prefix.append(f"{child.name}:{script_rel}")
@@ -478,6 +531,7 @@ def main():
     check_settings_json(t, p)
     check_settings_local(t, p)
     check_scripts(t, p)
+    check_hook_parity(t, p)
     check_child_propagation(t, p)
 
     t.print_results()

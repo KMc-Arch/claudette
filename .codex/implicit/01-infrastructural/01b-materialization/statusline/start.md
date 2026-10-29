@@ -1,5 +1,5 @@
 ---
-version: 6
+version: 7
 runtime: sh
 reads:
   - "the Claude Code status payload on stdin (model, cwd, workspace.project_dir, effort.level, thinking.enabled, rate_limits.five_hour, context_window, transcript_path); plus $COLUMNS from the environment"
@@ -7,6 +7,7 @@ reads:
   - "<cwd>/CLAUDE.md and ancestors (root: true probe — tints 🏠; also the fallback/left-^ anchor for 📁)"
   - "the nearest ProjectMetaBase.db walking up from cwd (sqlite: core_projects, trans_runs, core_context_files — the project-info segment)"
   - "the git repo at cwd (branch + porcelain status, when cwd is not gitignored)"
+  - "<project_dir or cwd>/.claude/read-only/read-only-<session_id>.flag (existence only — the /read-only indicator)"
 writes: []
 ---
 
@@ -38,7 +39,7 @@ This module is a shell script — an acknowledged exception to the Python-only r
 
 ## Bar contents
 
-Left to right: **model** · **effort** (`⚡lo`/`⚡md`/`⚡hi`/`⚡xh`/`⚡mx`) · **thinking** (`💭on`/`💭off`) · **location** (`🏠`/`📁`, detailed below) · **project-info** (from `ProjectMetaBase.db`, detailed below; absent when no db is found) · **git** (`🔀branch (status)`, omitted when `cwd` is gitignored) · **context bar** (`N% of Mk tokens`; a `~` prefix marks the estimated baseline shown before real token data arrives) · **5h quota bar** (`⏳ N% (reset countdown)`).
+Left to right: **read-only** (`🔒read-only`, warning colour, only while this session's `/read-only` flag exists under the launch root) · **model** · **effort** (`⚡lo`/`⚡md`/`⚡hi`/`⚡xh`/`⚡mx`) · **thinking** (`💭on`/`💭off`) · **location** (`🏠`/`📁`, detailed below) · **project-info** (from `ProjectMetaBase.db`, detailed below; absent when no db is found) · **git** (`🔀branch (status)`, omitted when `cwd` is gitignored) · **context bar** (`N% of Mk tokens`; a `~` prefix marks the estimated baseline shown before real token data arrives) · **5h quota bar** (`⏳ N% (reset countdown)`).
 
 The **project-info** segment appears when a `ProjectMetaBase.db` is found walking up (≤5 levels) from `cwd` and `cwd` sits under a `type/project` folder: it renders `project_id [phase]` (the project's status/last-run phase), a `+N new` badge for unanalyzed context files, `[unregistered]` for a folder not yet in the db, or an `N active projects` summary at the db root. This is a project-discovery integration, not core status-bar machinery.
 

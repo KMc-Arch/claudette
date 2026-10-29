@@ -255,6 +255,10 @@ def check_structure(report):
     EXCLUDE = {
         CLAUDE,
         ROOT / ".templates",
+        # Vendored third-party skills, kept VERBATIM (never edited; replaced
+        # wholesale on update), so they cannot carry our start.md convention.
+        # The library's own start.md and overrides/ are still checked.
+        CODEX / "mp-skills" / "skills",
     }
     # Patterns for runtime-created subdirs that won't have start.md
     RUNTIME_PATTERNS = {"pauses", "bundles", "boot", "compliance", "contract-conformance",
@@ -492,6 +496,7 @@ def assemble_settings(report):
                 {"type": "command", "command": hook_cmd("boot-inject.py", PYTHON_EXE)},
                 {"type": "command", "command": hook_cmd("prefs-staleness-check.sh")},
                 {"type": "command", "command": hook_cmd("memory-redirect-check.sh")},
+                {"type": "command", "command": hook_cmd("read-only-reinject.py", PYTHON_EXE)},
             ]
         }],
         "PreToolUse": [

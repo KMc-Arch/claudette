@@ -131,9 +131,9 @@ Condition: all three files exist
 
 ### Category C: Hooks
 
-**T13** — All 13 hook scripts exist
+**T13** — All 14 hook scripts exist
 Condition: these files exist in `.codex/implicit/01-infrastructural/01b-materialization/hooks/`:
-`boot-inject.py`, `prefs-staleness-check.sh`, `memory-redirect-check.sh`, `visibility-guard.sh`, `containment-guard.sh`, `gravity-guard.sh`, `remote-guard.sh`, `audit-immutability-guard.sh`, `claude-md-immutability-guard.sh`, `codex-edit-notify.sh`, `trace-logger.sh`, `session-close.sh`, `subagent-conformance.sh`
+`boot-inject.py`, `prefs-staleness-check.sh`, `memory-redirect-check.sh`, `visibility-guard.sh`, `containment-guard.sh`, `gravity-guard.sh`, `remote-guard.sh`, `audit-immutability-guard.sh`, `claude-md-immutability-guard.sh`, `codex-edit-notify.sh`, `trace-logger.sh`, `session-close.sh`, `subagent-conformance.sh`, `read-only-reinject.py`
 
 **T14** — Hook registration is bidirectionally complete
 Condition: two sub-checks (dynamic — a 14th script added to `hooks/` must not land invisible):

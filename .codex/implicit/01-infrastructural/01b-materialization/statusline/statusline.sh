@@ -207,9 +207,14 @@ if [[ -n "$cwd" ]]; then
 
     if [[ -n "$db_path" ]]; then
         # Determine which project we're in by checking if cwd is under a project folder
-        # Get the relative path from the db root to cwd
+        # Get the relative path from the db root to cwd (empty when cwd is the db root
+        # itself -- the "/"-suffixed strip below matches nothing there)
         db_root=$(dirname "$db_path")
-        rel_path="${cwd#$db_root/}"
+        if [[ "$cwd" == "$db_root" ]]; then
+            rel_path=""
+        else
+            rel_path="${cwd#"$db_root"/}"
+        fi
 
         # Try to match: type/project or type/project/deeper
         project_id=""
@@ -417,7 +422,23 @@ else
     thinking_label=" ${C_GRAY}💭off"
 fi
 
-output="${C_ACCENT}${model}${effort_label}${thinking_label}${C_GRAY}"
+# --- /read-only hold indicator ---
+# Shown first, in warning colour, while THIS session's flag exists under ^:
+# the nearest root: true ancestor-or-self of the launch directory
+# (workspace.project_dir == the hook's CLAUDE_PROJECT_DIR; cwd is the
+# fallback), which is where the hook looks too. The sid must match the hook's own pattern
+# before it becomes a path segment. Context loss can remove the model's report
+# of the hold; this segment survives it.
+ro_label=""
+ro_sid=$(echo "$input" | jq -r '.session_id // empty')
+ro_root=$(_nearest_root "${project_dir:-$cwd}") || ro_root=""
+[[ -z "$ro_root" ]] && ro_root="${project_dir:-$cwd}"
+if [[ "$ro_sid" =~ ^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$ && -n "$ro_root" \
+      && -f "$ro_root/.claude/read-only/read-only-$ro_sid.flag" ]]; then
+    ro_label="${C_WARN}🔒read-only${C_GRAY} | "
+fi
+
+output="${ro_label}${C_ACCENT}${model}${effort_label}${thinking_label}${C_GRAY}"
 [[ -n "$launch_label" ]] && output+=" | ${launch_label}"
 [[ -n "$dir" ]] && output+=" | 📁${dir}"
 [[ -n "$project_info" ]] && output+=" | ${project_info}"

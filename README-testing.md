@@ -47,7 +47,7 @@ python chooks.py --project-root /path/to/project
 
 Feeds mock tool-call JSON to each hook script via stdin and validates exit codes and stdout/stderr. Tests that hooks correctly allow or block specific operations.
 
-**12 hooks tested, ~45 individual test cases:**
+**13 hooks tested, ~55 individual test cases** (`remote-guard.sh` is untested, BL-24):
 
 | Hook | Test IDs | Key Behaviors Tested |
 |------|----------|---------------------|
@@ -59,6 +59,7 @@ Feeds mock tool-call JSON to each hook script via stdin and validates exit codes
 | boot-inject.py | BI01-BI03 | Outputs boot instructions with command index |
 | prefs-staleness-check.sh | PS01-PS04 | Detects missing prefs-resolved.json, no false warnings when fresh |
 | memory-redirect-check.sh | MR01-MR04 | Warns when auto-memory not configured, silent when correct |
+| read-only-reinject.py | RO01-RO10 | Re-injects a matching /read-only hold; session scoping; root resolution; non-UTF-8 stdout; hostile payloads; the notice after a new session id; OS-error warning; SessionStart binding |
 | codex-edit-notify.sh | CE01-CE06 | Notifies on .py/.sh edits in codex, silent on .md and non-codex files |
 | trace-logger.sh | TL01-TL02 | Writes trace entries to daily trace file |
 | session-close.sh | SC01-SC03 | Outputs session-closing governance prompt |
@@ -128,7 +129,7 @@ See [README-commands.md](README-commands.md) for the detailed phase breakdown.
 
 | Failure | Likely Cause | Fix |
 |---------|-------------|-----|
-| Script not found | Hook script missing from hooks directory | Verify `.codex/implicit/01-infrastructural/01b-materialization/hooks/` contains all 13 hook scripts (12 `.sh` + `boot-inject.py`) |
+| Script not found | Hook script missing from hooks directory | Verify `.codex/implicit/01-infrastructural/01b-materialization/hooks/` contains all 14 hook scripts (12 `.sh` + `boot-inject.py` and `read-only-reinject.py`) |
 | Wrong exit code | Hook logic error or Bash compatibility issue | Read the hook script, check for platform-specific issues (Windows line endings, path separators) |
 | COV1 -- untested hooks | New hook added without tests | Add test functions in chooks.py with `@register_test("hook-name.sh")` |
 

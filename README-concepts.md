@@ -120,6 +120,7 @@ Additional hooks handle operational concerns:
 | `boot-inject.py` | Injects hierarchy-aware boot sequence instructions at session start | SessionStart |
 | `prefs-staleness-check.sh` | Warns if resolved preferences are stale | SessionStart |
 | `memory-redirect-check.sh` | Warns if auto-memory is not configured | SessionStart |
+| `read-only-reinject.py` | Re-injects an engaged `/read-only` hold after compaction or resume; after a `/clear` or fork, tells the model to ask before mutating | SessionStart |
 | `codex-edit-notify.sh` | Notifies when a codex executable is modified | PostToolUse (Write, Edit) |
 | `trace-logger.sh` | Logs tool calls to the daily trace file | PostToolUse (all tools) |
 | `session-close.sh` | Prompts end-of-session governance tasks | Stop |

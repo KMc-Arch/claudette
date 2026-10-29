@@ -190,6 +190,28 @@ items, and every `start.md` manifest -- so `.state/pauses/`, `.state/bundles/`, 
 the other `.state/` dirs always survive as empty shells even under `purge all`;
 `cboot.py`, `ctest.py`, `chooks.py`.
 
+## read-only -- Hold a Secondary Session Read-Only
+
+```
+read-only          # engage the hold for this session
+read-only status   # report this session's state and list other sessions' flags
+read-only done     # lift the hold (the user types this; Claude never does)
+```
+
+For a **secondary** session running alongside a primary on the same tree: an observer or reviewer
+that must not collide with the primary's writes. While engaged, the session treats every mutation
+as held: file writes, mutating Bash, any state-changing git, `.state/` writes, outward sends, and
+dispatching subagents or workers to do any of these. A single mutation the user names explicitly
+can still run after one confirmation.
+
+The hold is keyed to the session id and recorded in `.claude/read-only/read-only-<session-id>.flag`
+under the launch root. The `read-only-reinject` SessionStart hook re-injects it after compaction and
+plain resume. `/clear` and forking start a new session id, which ends the hold; the hook then prints
+a notice so the model asks before mutating.
+
+The hold is behavioral: Claude follows it, but no guard blocks tool calls. For a session that is
+secondary from launch, also consider Claude Code's plan mode (`claude --permission-mode plan`).
+
 ## bundle -- Package for Portability
 
 Creates a standalone copy of a child project by inlining all inherited codex content.
