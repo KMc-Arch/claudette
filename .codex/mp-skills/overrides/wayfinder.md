@@ -1,5 +1,5 @@
 ---
-version: 3
+version: 4
 ---
 
 # wayfinder overrides
@@ -18,7 +18,7 @@ wayfinder's tracker vocabulary onto it.
 | Frontier query | scan `issues/` for files that are not resolved, unblocked and unclaimed; lowest number wins |
 | Rule out of scope (close) | `Status: out-of-scope`, plus one line in the map's Out of scope section |
 | Research on a `research/<name>` branch | a findings file per `common.md`; no branch |
-| "Call the Skill tool with grilling / domain-modeling / research / prototype" | read those skills by path from `/mnt/claudette/.codex/mp-skills/skills/` (plus their overrides) |
+| "Call the Skill tool with grilling / domain-modeling / research / prototype" | read those skills by path from `^/^/.codex/mp-skills/skills/` (plus their overrides) |
 
 **Refer by name:** a ticket's name is its first-line title. Link the file path inside the name.
 
@@ -85,7 +85,7 @@ picks by interest at a glance. **Last**, the map's reusable prompt, which names 
 lets the session take the next frontier ticket itself:
 
 ```
-use /mnt/claudette/.codex/mp-skills/skills/wayfinder — work the map at ^/.state/plans/<effort>/map.md
+/mp-skills wayfinder work the map at ^/.state/plans/<effort>/map.md
 ```
 
 It never changes for a map, because the map's Notes carry the standing instructions. If the

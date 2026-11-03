@@ -1,5 +1,5 @@
 ---
-version: 1
+version: 2
 ---
 
 # Common overrides (all mp-skills)
@@ -22,6 +22,8 @@ Paths below use `^` = the nearest `root: true` project (state gravity).
 | `docs/agents/*.md` config | None; this file is the config |
 | Research notes | `^/.state/plans/<effort>/research/<slug>.md`, or `^/.state/memory/reference/` if durable beyond the effort. **No throwaway git branches.** |
 | Triage labels (`needs-triage`, `ready-for-agent`, …) | None. Unattended work goes through Heartbeat (`/hb-send`), never labels. |
+| Files written into the current directory or the repo root (`teach`'s workspace, `to-questionnaire`'s questionnaire, `triage`'s `.out-of-scope/`) | `^/mp-skills/<skill>/`, keeping the upstream names beneath it (e.g. `^/mp-skills/teach/lessons/`). `teach`'s `GLOSSARY.md` is its workspace's glossary: it stays in `^/mp-skills/teach/`, not in the glossary row above. |
+| The OS temp directory (`$TMPDIR`, `/tmp`, `%TEMP%`): `handoff`'s document, `improve-codebase-architecture`'s HTML report | `^/.tmp/` (transient gravity), never outside `^`. A handoff for **another project** goes to `^/~outbox/<project>/<topic>/` with a dated filename (Exchange Surfaces). |
 
 **Never create** at a repo root: `GLOSSARY.md`, `GLOSSARY-MAP.md`, `docs/adr/`, `docs/agents/`, `.scratch/`.
 **Every new folder** gets a `start.md` (codex convention).

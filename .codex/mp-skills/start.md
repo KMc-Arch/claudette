@@ -1,5 +1,5 @@
 ---
-version: 1
+version: 2
 ---
 
 # mp-skills
@@ -14,8 +14,11 @@ command or an auto-invocable skill in any project. Never symlink or copy these i
 
 ## How to use
 
-The operator asks for a skill by explicit path, e.g. "use `/mnt/claudette/.codex/mp-skills/skills/wayfinder`".
-That explicit path is the sanctioned exception to "no lateral traversal"; invoking only reads these files.
+From any project, run `/mp-skills <skill> [input]` (e.g. `/mp-skills wayfinder`); `/mp-skills` alone
+lists the skills. That command is `^/^/.codex/explicit/mp-skills/`, which cboot propagates to every
+child, so every project uses this one library and this one set of overrides. Naming a skill by path
+(`^/^/.codex/mp-skills/skills/<skill>`) is equivalent. That path is the sanctioned exception to "no
+lateral traversal"; invoking only reads these files.
 
 Read, in this order:
 
