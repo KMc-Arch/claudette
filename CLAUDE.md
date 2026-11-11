@@ -55,6 +55,7 @@ A CONFIRMED HOLD on [X] means:
   creation. The two exceptions are narrow: /new-project *creates* a CLAUDE.md, and
   the mutator edits *only* the allowlisted frontmatter keys `name` / `description` /
   `orchestrator`. The body has no sanctioned agent editor — it is human-only.
+  - (Side-effect copies are outside this hold: a `CLAUDE.md` that git writes exactly as a commit holds it (by a checkout, a worktree, a merge or a reset), and a throwaway one a test fixture writes under a project's untracked scratch, such as zdm's `.build/local/`. Writing new content into any `CLAUDE.md`, by any route, stays under the hold.)
 
 - **ABSOLUTE HOLD: modifying, replacing, or deleting the mutator or the
   /new-project scaffolder.** They are the two exceptions to the hold above, so
