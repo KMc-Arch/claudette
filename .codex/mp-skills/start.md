@@ -1,11 +1,12 @@
 ---
-version: 2
+version: 3
 ---
 
 # mp-skills
 
 Third-party skills from `mattpocock/skills`, vendored as a **library**. Installed 2026-09-29 with
-`npx skills add` (37 skills); provenance and hashes are in `skills-lock.json`.
+`npx skills add` (37 skills); refreshed 2026-11-10 to upstream `4ae2317` (38 skills). Provenance and
+hashes are in `skills-lock.json`.
 
 **Not registered anywhere.** `codex-register` only walks `explicit/`, so nothing here becomes a slash
 command or an auto-invocable skill in any project. Never symlink or copy these into a project's
@@ -45,3 +46,12 @@ In a scratch directory outside any project, run `npx skills add mattpocock/skill
 `.agents/skills/` against `skills/`, then copy it over `skills/` and replace `skills-lock.json`.
 `npx skills add` does not bring the license, so keep `skills/LICENSE`, and refresh it from the
 upstream repo's `LICENSE` if that changed. Re-read the overrides against whatever changed.
+
+- **Where to run it:** the `skills` CLI needs Node 22.20+; WSL here has Node 18, where both versions
+  tried (1.8.1, 1.5.18) crashed on load. Run it from native Windows PowerShell (`npx.cmd`), with
+  Git's line-ending conversion off for the run (`core.autocrlf=false`, `core.eol=lf`) so files stay
+  byte-identical. 2026-11-10 used `skills@1.7.0`, the version current at the original install.
+- **What it installs:** the CLI appears to download from the skills.sh index, not the repo itself:
+  a skill in upstream's repo can be missing from the install (`software-factory`, 2026-11-10).
+- **New experimental skills:** a skill from upstream's `skills/in-progress/` gets a "stop: not
+  reviewed yet" override, like `overrides/claude-handoff.md`, before it ships here.
