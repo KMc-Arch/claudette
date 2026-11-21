@@ -346,10 +346,31 @@ def test_claude_md_allows_other_files(t: HookTestRunner):
     t.assert_exit("CM02", "Allows write to non-CLAUDE.md files", code, 0, err)
 
 @register_test("claude-md-immutability-guard.sh")
-def test_claude_md_allows_child_claude_md(t: HookTestRunner):
+def test_claude_md_blocks_child_claude_md(t: HookTestRunner):
+    # The guard has refused child CLAUDE.md files since its redesign; this test
+    # still asserted the old allow until 2026-11-20.
     target = str(t.root / "ChildProject" / "CLAUDE.md")
     code, out, err = t.run_hook("claude-md-immutability-guard.sh", write_tool(target))
-    t.assert_exit("CM03", "Allows write to child project CLAUDE.md", code, 0, err)
+    t.assert_exit("CM03", "Blocks write to child project CLAUDE.md", code, 2, err)
+
+@register_test("claude-md-immutability-guard.sh")
+def test_claude_md_allows_bundle_build(t: HookTestRunner):
+    bundle = t.root / ".state" / "bundles" / "20261120-1200-Child"
+    for i, target in enumerate((bundle / "CLAUDE.md", bundle / "projects" / "CLAUDE.md"), 1):
+        code, out, err = t.run_hook("claude-md-immutability-guard.sh", write_tool(str(target)))
+        t.assert_exit(f"CM04.{i}", "Allows CLAUDE.md inside a bundle's output folder", code, 0, err)
+
+@register_test("claude-md-immutability-guard.sh")
+def test_claude_md_bundle_carveout_edges(t: HookTestRunner):
+    bundles = t.root / ".state" / "bundles"
+    cases = (
+        ("CM05", "Blocks CLAUDE.md directly in .state/bundles/", str(bundles / "CLAUDE.md")),
+        ("CM06", "Blocks traversal out of a bundle folder", str(bundles / "b") + "/../../../CLAUDE.md"),
+        ("CM07", "Blocks a case variant of .state/bundles", str(t.root / ".State" / "Bundles" / "b" / "CLAUDE.md")),
+    )
+    for name, label, target in cases:
+        code, out, err = t.run_hook("claude-md-immutability-guard.sh", write_tool(target))
+        t.assert_exit(name, label, code, 2, err)
 
 
 # -- boot-inject.py --

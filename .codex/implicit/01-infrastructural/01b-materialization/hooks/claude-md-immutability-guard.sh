@@ -9,6 +9,14 @@
 # mutator. This hook is the blunt, fail-closed backstop: identify a CLAUDE.md
 # target and refuse.
 #
+# One carve-out, for the hold's third exception (an active /bundle build): a
+# CLAUDE.md inside a bundle's own output folder, `<root>/.state/bundles/<bundle>/...`,
+# is allowed. It is decided on the path's shape alone, so it stays env-independent,
+# and BOTH the given spelling and the symlink-resolved target must have that shape:
+# a link inside a bundle that resolves to a live CLAUDE.md is still refused. The
+# segment names compare exactly, so a case variant (.State/Bundles) fails closed.
+# A CLAUDE.md directly in `.state/bundles/` (no bundle folder) is refused.
+#
 # Redesign note (feature/claude-md-guard-redesign): the previous version keyed
 # off $CLAUDE_PROJECT_DIR + a case-sensitive apex compare, and permitted
 # frontmatter Edits. That (a) failed OPEN when CLAUDE_PROJECT_DIR was empty,
@@ -60,13 +68,25 @@ def is_claude_md(name):
     return os.path.basename(name).strip().rstrip(". ").lower() == "claude.md"
 
 
+def in_bundle_build(path):
+    # True when the path lies inside a bundle's own folder: some `.state/bundles/<bundle>/`
+    # with at least the file below it. The caller has already collapsed ".." (normpath)
+    # or resolved links (realpath), so the segments are final.
+    segs = [s for s in path.split("/") if s]
+    for i in range(len(segs) - 3):
+        if segs[i] == ".state" and segs[i + 1] == "bundles":
+            return True
+    return False
+
+
 def block():
     sys.stderr.write(
         "BLOCKED: CLAUDE.md is immutable to Claude (ABSOLUTE HOLD: updating any CLAUDE.md).\n"
         "  Every route and every part — body and frontmatter — is human-only, save\n"
         "  through /new-project (creation) or the approved claude-md-mutator\n"
         "  (allowlisted frontmatter keys), both of which edit by direct file IO and\n"
-        "  are invoked from the shell, not the Write/Edit tool.\n"
+        "  are invoked from the shell, not the Write/Edit tool, or an active /bundle\n"
+        "  build, inside its own output folder (<root>/.state/bundles/<bundle>/).\n"
         "  Body content evolves through start.md files downstream.\n"
     )
     sys.exit(2)
@@ -90,6 +110,8 @@ try:
     given = file_path.replace("\\", "/")
     candidates = [os.path.normpath(given), os.path.realpath(given)]
     if any(is_claude_md(c) for c in candidates):
+        if all(in_bundle_build(c) for c in candidates):
+            sys.exit(0)  # active /bundle build: the hold's third exception
         block()
     sys.exit(0)
 except SystemExit:

@@ -48,18 +48,23 @@ A CONFIRMED HOLD on [X] means:
   denied — via another tool, the shell, a subagent, or an alias of the same
   target. The denial binds the target, not the means.
 
-- **ABSOLUTE HOLD: updating any `CLAUDE.md`, save through /new-project or the approved mutator
-  (`^/^/.codex/implicit/01-infrastructural/01b-materialization/hooks/tools/claude-md-mutator.py`).**
+- **ABSOLUTE HOLD: updating any `CLAUDE.md`, save through /new-project, the approved mutator
+  (`^/^/.codex/implicit/01-infrastructural/01b-materialization/hooks/tools/claude-md-mutator.py`),
+  or an active /bundle build.**
   Every route — Write/Edit, shell,
   interpreter, subagent — and every part of the file: body, frontmatter,
-  creation. The two exceptions are narrow: /new-project *creates* a CLAUDE.md, and
+  creation. The three exceptions are narrow: /new-project *creates* a CLAUDE.md;
   the mutator edits *only* the allowlisted frontmatter keys `name` / `description` /
-  `orchestrator`. The body has no sanctioned agent editor — it is human-only.
-  - (Side-effect copies are outside this hold: a `CLAUDE.md` that git writes exactly as a commit holds it (by a checkout, a worktree, a merge or a reset), and a throwaway one a test fixture writes under a project's untracked scratch, such as zdm's `.build/local/`. Writing new content into any `CLAUDE.md`, by any route, stays under the hold.)
+  `orchestrator`; and /bundle, while it is building a bundle, creates and edits the
+  `CLAUDE.md` files *inside that bundle's own output folder* (`^/.state/bundles/<stamp>-<project>/`),
+  body and frontmatter, as its protocol's steps direct. Otherwise the body has no
+  sanctioned agent editor — it is human-only. The source project's `CLAUDE.md` files,
+  and a bundle whose build has ended, stay under this hold.
 
 - **ABSOLUTE HOLD: modifying, replacing, or deleting the mutator or the
-  /new-project scaffolder.** They are the two exceptions to the hold above, so
-  both are human-maintained. Suggest changes to the user to apply manually.
+  /new-project scaffolder.** They are exceptions to the hold above, so both are human-maintained. (The /bundle
+exception is fenced by location, its own output folder, not by its protocol's text,
+so the protocol stays agent-editable.)
 
 ## Naming Conventions
 
