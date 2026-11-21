@@ -54,7 +54,7 @@ All `.state/` operations within a child project target the child's `.state/` by 
 
 ## Bundle
 
-On `bundle`, the child gains its own `.codex/` (inlined from `^/^/.codex`), its CLAUDE.md becomes `apex-root: true`, `^/^` path references coalesce to `^`, and the `codex:` line is **removed** (an apex with a local `.codex/` resolves it natively; a literal `codex: .codex` is unresolvable and triggers a boot warning — see `explicit/bundle/start.md` step 5).
+On `bundle`, the child gains its own `.codex/` (inlined from `^/^/.codex`), its CLAUDE.md becomes `apex-root: true` (so `^/^` resolves to it, and `^/^` path references are kept, never coalesced to `^`), and the `codex:` line is **removed** (an apex with a local `.codex/` resolves it natively; a literal `codex: .codex` is unresolvable and triggers a boot warning — see `explicit/bundle/start.md` step 5).
 
 ## Naming Convention
 

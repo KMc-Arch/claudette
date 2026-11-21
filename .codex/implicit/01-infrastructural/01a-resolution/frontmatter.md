@@ -74,7 +74,7 @@ Use `^/^` in child project contexts when referencing artifacts owned by the apex
 
 ### Bundle Behavior
 
-On `bundle`, `^/^` coalesces to `^`. The bundled project becomes its own apex, so the distinction dissolves.
+On `bundle`, the bundled project's CLAUDE.md becomes `apex-root: true`, so `^/^` resolves to the bundled root for every session in the bundle (rule 1). `^/^` references are kept, never coalesced to `^`: a nested root inside the bundle is still its own `^`, so the two differ there. In a bundle with no nested root they resolve identically (rule 3).
 
 ---
 
