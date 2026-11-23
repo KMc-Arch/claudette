@@ -60,9 +60,12 @@ A CONFIRMED HOLD on [X] means:
   body and frontmatter, as its protocol's steps direct. Otherwise the body has no
   sanctioned agent editor — it is human-only. The source project's `CLAUDE.md` files,
   and a bundle whose build has ended, stay under this hold.
+  
+  - (Side-effect copies are outside this hold: a `CLAUDE.md` that git writes exactly as a commit holds it (by a checkout, a worktree, a merge or a reset), and a throwaway one a test fixture writes under a project's untracked scratch, such as zdm's `.build/local/`. Writing new content into any `CLAUDE.md`, by any route, stays under the hold.)
 
 - **ABSOLUTE HOLD: modifying, replacing, or deleting the mutator or the
-  /new-project scaffolder.** They are exceptions to the hold above, so both are human-maintained. (The /bundle
+  /new-project scaffolder.** They are exceptions to the hold above, so both are human-maintained.
+Suggest precise language changes to the user to apply manually.  (The /bundle
 exception is fenced by location, its own output folder, not by its protocol's text,
 so the protocol stays agent-editable.)
 
